@@ -19,7 +19,7 @@
       <div class="brand">
         <img class="brand__logo" src="/static/loom-logo.png" alt="Loom" />
         <span class="brand__name">Loom</span>
-        <span class="brand__tag">Claude agent console</span>
+        <span class="brand__tag">Agent workspace</span>
       </div>
     </div>
     <div class="topbar__meta">
@@ -206,11 +206,12 @@
         </section>
 
         <section class="tab-panel" data-panel="changes" role="tabpanel" hidden>
-          <p class="tab-panel__hint">Read-only diff of this task's worktree(s): uncommitted edits plus commits ahead of the base branch.</p>
-          <div class="changes-toolbar">
+          <div class="changes-toolbar changes-toolbar--simple">
+            <div>
+              <strong>Code changes</strong>
+              <span class="tab-panel__hint" id="changes-status"></span>
+            </div>
             <button type="button" class="btn btn--sm" id="btn-changes-refresh">Refresh</button>
-            <input type="text" id="changes-rules" class="changes-rules" spellcheck="false" placeholder="Review rules (optional, plain English) — defaults to the task's skills" />
-            <span class="tab-panel__hint" id="changes-status"></span>
           </div>
           <div id="changes-body" class="changes-body"></div>
         </section>

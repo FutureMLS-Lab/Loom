@@ -22,7 +22,7 @@ const MARKDOWN_PANELS = ['interview'];
 // task's agent setting (Claude / Codex).
 const TABS = [
   { id: 'claude', label: 'Claude', getLabel: (meta) => agentLabel(meta?.agent) },
-  { id: 'changes', label: 'Changes' },
+  { id: 'changes', label: 'Code Diff' },
 ];
 const DEFAULT_TAB = TABS[0].id;
 
@@ -1222,12 +1222,20 @@ function renderTasksFromState() {
     ul.appendChild(li);
     return;
   }
+  const fragment = document.createDocumentFragment();
   for (const t of tasks) {
     const li = document.createElement('li');
     li.dataset.slug = t.slug;
     li.draggable = true;
+    li.tabIndex = 0;
+    li.title = `${t.slug} · ${taskBackendLabel(t)}`;
     if (t.slug === selected) li.classList.add('active');
-    li.innerHTML = `<div class="task-title">${escapeHtml(t.title)}</div><div class="task-slug">${escapeHtml(t.slug)}</div>`;
+    const typeLabel = t.kind === 'kernel'
+      ? 'Kernel'
+      : (t.kind === 'aris' ? 'ARIS' : agentLabel(t.agent));
+    li.innerHTML =
+      `<div class="task-title-row"><span class="task-title">${escapeHtml(t.title)}</span>` +
+      `<span class="task-kind task-kind--${escapeHtml(t.kind || 'agent')}">${escapeHtml(typeLabel)}</span></div>`;
     li.addEventListener('dragstart', (ev) => {
       TASK_DRAG_SLUG = t.slug;
       TASK_JUST_DRAGGED = true;
@@ -1270,8 +1278,15 @@ function renderTasksFromState() {
         if (isMobileViewport()) setSidebarOpen(false);
       }
     });
-    ul.appendChild(li);
+    li.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        li.click();
+      }
+    });
+    fragment.appendChild(li);
   }
+  ul.appendChild(fragment);
 }
 
 function clearTaskSelection() {
@@ -1794,6 +1809,8 @@ function changesFileRowHtml(f, key, sel) {
 function renderChanges(d) {
   const body = document.getElementById('changes-body');
   if (!body) return;
+  const previousListTop = body.querySelector('.changes-filelist')?.scrollTop || 0;
+  const previousDiffTop = body.querySelector('.diffview')?.scrollTop || 0;
   const worktrees = (d && d.worktrees) || [];
   const totalFiles = worktrees.reduce((n, wt) => n + ((wt.files || []).length), 0);
   if (!worktrees.length) {
@@ -1816,40 +1833,24 @@ function renderChanges(d) {
   const listParts = [];
   worktrees.forEach((wt, wi) => {
     const files = wt.files || [];
-    const wtName = changesBaseName(wt.path);
-    const branch = wt.branch || '(detached)';
-    const baseKind = wt.base_kind || '';
-    const base = wt.base
-      ? (' · ' + (baseKind === 'fork' ? 'from ' : 'base ') + escapeHtml(wt.base))
-      : '';
     listParts.push('<div class="changes-wt">');
-    listParts.push(
-      '<div class="changes-wt__head" title="' + escapeHtml(wt.path) + '">' +
-        '<span class="changes-wt__name">' + escapeHtml(wtName) + '</span>' +
-        '<span class="changes-wt__branch">' + escapeHtml(branch) + base + '</span>' +
-        (wt.base
-          ? '<button type="button" class="changes-wt__merge" data-path="' + escapeHtml(wt.path) +
-            '" title="Merge this branch into the source repo base branch (no push)">Merge ↩</button>'
-          : '') +
-        '<button type="button" class="changes-wt__review" data-path="' + escapeHtml(wt.path) +
-          '" title="AI review (Bugbot-style) of this worktree diff vs your rules / the task skills">Review ⚖</button>' +
-      '</div>');
+    if (worktrees.length > 1) {
+      listParts.push(
+        '<div class="changes-scope" title="' + escapeHtml(wt.path) + '">' +
+        escapeHtml(changesBaseName(wt.path)) + '</div>'
+      );
+    }
     if (!files.length) {
       listParts.push('<div class="changes-wt__empty">clean</div>');
     } else {
-      [['uncommitted', 'Uncommitted'], ['committed', 'Committed (vs base)']].forEach(([scope, label]) => {
-        const rows = files
-          .map((f, i) => [f, i])
-          .filter(([f]) => f.scope === scope);
-        if (!rows.length) return;
-        listParts.push('<div class="changes-scope">' + label + '</div>');
-        rows.forEach(([f, i]) => listParts.push(changesFileRowHtml(f, wi + ':' + i, sel)));
+      files.forEach((file, index) => {
+        listParts.push(changesFileRowHtml(file, wi + ':' + index, sel));
       });
     }
     listParts.push('</div>');
   });
   body.innerHTML =
-    '<div class="changes-summary">' + totalFiles + ' file' + (totalFiles === 1 ? '' : 's') + ' changed' + (d && d.worktrees.length > 1 ? ' across ' + d.worktrees.length + ' worktrees' : '') + '</div>' +
+    '<div class="changes-summary">' + totalFiles + ' changed file' + (totalFiles === 1 ? '' : 's') + '</div>' +
     '<div class="changes-layout">' +
       '<div class="changes-filelist">' + listParts.join('') + '</div>' +
       '<div class="changes-diff" id="changes-diff"></div>' +
@@ -1860,80 +1861,24 @@ function renderChanges(d) {
       body.querySelectorAll('.changes-file').forEach((b) => b.classList.toggle('is-active', b === btn));
       renderChangesDiffPanel();
     });
-  });
-  body.querySelectorAll('.changes-wt__merge').forEach((btn) => {
-    btn.addEventListener('click', () => mergeWorktree(btn.dataset.path, btn));
-  });
-  body.querySelectorAll('.changes-wt__review').forEach((btn) => {
-    btn.addEventListener('click', () => reviewWorktree(btn.dataset.path, btn));
+    btn.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      event.preventDefault();
+      const files = [...body.querySelectorAll('.changes-file')];
+      const current = files.indexOf(btn);
+      const delta = event.key === 'ArrowDown' ? 1 : -1;
+      const next = files[Math.max(0, Math.min(files.length - 1, current + delta))];
+      if (next && next !== btn) {
+        next.focus();
+        next.click();
+      }
+    });
   });
   renderChangesDiffPanel();
-}
-
-async function reviewWorktree(path, btn) {
-  if (!STATE.slug || !path) return;
-  const rulesEl = document.getElementById('changes-rules');
-  const rules = rulesEl ? rulesEl.value : '';
-  const host = document.getElementById('changes-diff');
-  const original = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Reviewing…';
-  if (host) host.innerHTML = '<div class="changes-empty">Running review… (calls claude -p; ~10–60s)</div>';
-  try {
-    const r = await api('/api/tasks/' + encodeURIComponent(STATE.slug) + '/review', {
-      method: 'POST',
-      body: JSON.stringify({ path, rules }),
-    });
-    if (!r.ok) throw new Error(r.error || 'review failed');
-    if (host) {
-      host.innerHTML =
-        '<div class="changes-diff__head">' +
-          '<span class="changes-diff__path">Review — ' + escapeHtml(changesBaseName(path)) + '</span>' +
-          '<span class="changes-diff__scope">claude</span>' +
-        '</div>' +
-        '<div class="markdown-preview changes-review">' + renderMarkdown(r.review || '') + '</div>';
-    }
-  } catch (err) {
-    if (host) host.innerHTML = '<div class="changes-empty">Review failed: ' + escapeHtml(err.message) + '</div>';
-  } finally {
-    btn.textContent = original;
-    btn.disabled = false;
-  }
-}
-
-async function mergeWorktree(path, btn) {
-  if (!STATE.slug || !path) return;
-  if (!confirm(
-    "Merge this worktree's branch into the source repo's base branch?\n\n" +
-    'Runs "git merge --no-ff" in the source repo: it refuses if that repo has ' +
-    'uncommitted changes, aborts on conflicts, and does NOT push. Only commits ' +
-    'already on the branch are merged.'
-  )) return;
-  const original = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Merging…';
-  try {
-    const r = await api('/api/tasks/' + encodeURIComponent(STATE.slug) + '/worktree/merge', {
-      method: 'POST',
-      body: JSON.stringify({ path }),
-    });
-    if (!r.ok) {
-      const conflicts = (r.conflicts && r.conflicts.length)
-        ? '\n\nConflicts:\n- ' + r.conflicts.join('\n- ')
-        : '';
-      toast((r.error || 'merge failed') + conflicts, { type: 'error', ttl: 9000 });
-      btn.textContent = original;
-      btn.disabled = false;
-      return;
-    }
-    btn.textContent = 'Merged \u2713';
-    refreshChangesView(true);
-    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1500);
-  } catch (err) {
-    toast(err.message || 'merge failed', { type: 'error' });
-    btn.textContent = original;
-    btn.disabled = false;
-  }
+  const list = body.querySelector('.changes-filelist');
+  const diff = body.querySelector('.diffview');
+  if (list) list.scrollTop = previousListTop;
+  if (diff) diff.scrollTop = previousDiffTop;
 }
 
 function renderDiffBody(f) {
@@ -1941,20 +1886,52 @@ function renderDiffBody(f) {
     return '<div class="changes-empty">' + (f.binary ? 'Binary file — no text preview.' : 'No diff preview available.') + '</div>';
   }
   const out = [];
+  let oldLine = null;
+  let newLine = null;
   for (const line of f.patch.split('\n')) {
     let cls = 'ctx';
-    if (line.startsWith('@@')) cls = 'hunk';
+    if (line.startsWith('@@')) {
+      cls = 'hunk';
+      const match = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (match) {
+        oldLine = Number(match[1]);
+        newLine = Number(match[2]);
+      }
+    }
     else if (
       line.startsWith('+++') || line.startsWith('---') ||
       line.startsWith('diff --git') || line.startsWith('index ') ||
       line.startsWith('new file') || line.startsWith('deleted file') ||
       line.startsWith('rename ') || line.startsWith('similarity ') ||
       line.startsWith('old mode') || line.startsWith('new mode') ||
-      line.startsWith('Binary ')
-    ) cls = 'meta';
+      line.startsWith('Binary ') || line.startsWith('\\ No newline')
+    ) continue; // show code, not git transport metadata
     else if (line.startsWith('+')) cls = 'add';
     else if (line.startsWith('-')) cls = 'del';
-    out.push('<div class="diffline diffline--' + cls + '">' + (escapeHtml(line) || '&#8203;') + '</div>');
+    if (cls === 'hunk') {
+      out.push(
+        '<div class="diffline diffline--hunk"><span class="diffline__hunk">' +
+        (escapeHtml(line) || '&#8203;') + '</span></div>'
+      );
+      continue;
+    }
+    let oldNo = '';
+    let newNo = '';
+    if (cls === 'add') {
+      newNo = newLine != null ? String(newLine++) : '';
+    } else if (cls === 'del') {
+      oldNo = oldLine != null ? String(oldLine++) : '';
+    } else {
+      oldNo = oldLine != null ? String(oldLine++) : '';
+      newNo = newLine != null ? String(newLine++) : '';
+    }
+    out.push(
+      '<div class="diffline diffline--' + cls + '">' +
+      '<span class="diffline__no">' + oldNo + '</span>' +
+      '<span class="diffline__no">' + newNo + '</span>' +
+      '<span class="diffline__code">' + (escapeHtml(line) || '&#8203;') + '</span>' +
+      '</div>'
+    );
   }
   return '<div class="diffview">' + out.join('') + '</div>';
 }
@@ -1973,7 +1950,6 @@ function renderChangesDiffPanel() {
     '<div class="changes-diff__head">' +
       '<span class="changes-file__status changes-file__status--' + (f.status || 'modified') + '">' + glyph + '</span>' +
       '<span class="changes-diff__path">' + name + '</span>' +
-      '<span class="changes-diff__scope">' + (f.scope === 'committed' ? 'committed' : 'uncommitted') + '</span>' +
     '</div>' +
     renderDiffBody(f);
 }
