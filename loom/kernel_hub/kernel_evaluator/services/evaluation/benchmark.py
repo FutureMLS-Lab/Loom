@@ -98,6 +98,13 @@ def _clear_outputs(inputs: ExecutionInputs, output_names: tuple[str, ...]) -> No
         inputs.tensors[name].zero_()
 
 
+_FP8_DTYPES = tuple(
+    dt
+    for name in ("float8_e4m3fn", "float8_e5m2", "float8_e4m3fnuz", "float8_e5m2fnuz")
+    if (dt := getattr(torch, name, None)) is not None
+)
+
+
 def _outputs_close(
     inputs: ExecutionInputs,
     expected,
@@ -105,10 +112,18 @@ def _outputs_close(
     tolerances: tuple[float, float],
 ) -> bool:
     rtol, atol = tolerances
-    return all(
-        torch.allclose(inputs.tensors[name], expected[name], rtol=rtol, atol=atol)
-        for name in output_names
-    )
+    for name in output_names:
+        got = inputs.tensors[name]
+        exp = expected[name]
+        # allclose needs sub/mul kernels that some torch builds (e.g. NGC
+        # 24.12 / torch 2.6) don't implement for fp8; compare in fp32. fp8
+        # values are exactly representable in fp32, so this is lossless.
+        if got.dtype in _FP8_DTYPES:
+            got = got.float()
+            exp = exp.float()
+        if not torch.allclose(got, exp, rtol=rtol, atol=atol):
+            return False
+    return True
 
 
 @dataclass

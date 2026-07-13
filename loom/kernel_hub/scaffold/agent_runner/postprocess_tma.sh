@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Append tkcc TMA descriptor adapter functions to a ThunderKittens GEMM kernel.
-# These are required for plugging the kernel into tkcc (ThunderKittens compiler)
+# Append Loom Kernel Hub TMA descriptor adapters to a ThunderKittens GEMM kernel.
+# These are required for using TMA kernels with Loom Kernel Hub
 # when the kernel uses TMA — which is the only strategy that needs this adaptation.
 #
 # Usage:
-#   bash agents/run_agents_tkcc_adapt.sh <slug> --kernel-file path/to/kernel.cu [--output-file path/to/output.cu]
+#   bash postprocess_tma.sh <slug> --kernel-file path/to/kernel.cu [--output-file path/to/output.cu]
 #
 # If --output-file is omitted, the adapter code is appended in-place to the kernel file.
 #
 # Examples:
-#   bash agents/run_agents_tkcc_adapt.sh f-linear-512x3072x3072 --kernel-file eval_service/results/f-linear-512x3072x3072/best.cu
-#   bash agents/run_agents_tkcc_adapt.sh f-linear-512x3072x3072 --kernel-file best.cu --output-file best_tkcc.cu
+#   bash postprocess_tma.sh f-linear-512x3072x3072 --kernel-file eval_service/results/f-linear-512x3072x3072/best.cu
+#   bash postprocess_tma.sh f-linear-512x3072x3072 --kernel-file best.cu --output-file best_loom_kernel_hub.cu
 
 set -euo pipefail
 
@@ -56,13 +56,13 @@ if [ -z "$OUTPUT_FILE" ]; then
     OUTPUT_FILE="$KERNEL_FILE"
 fi
 
-echo "Generating tkcc TMA descriptor adapter for $SLUG"
+echo "Generating Loom Kernel Hub TMA descriptor adapter for $SLUG"
 echo "  Shape:  M=$M_VAL, N=$N_VAL, K=$K_VAL"
 echo "  Kernel: $KERNEL_FILE"
 echo "  Output: $OUTPUT_FILE"
 echo ""
 
-PROMPT="You are adapting a ThunderKittens CUDA GEMM kernel for use with tkcc (the ThunderKittens compiler).
+PROMPT="You are adapting a ThunderKittens CUDA GEMM kernel for use with Loom Kernel Hub.
 
 Shape: M=$M_VAL, N=$N_VAL, K=$K_VAL (bf16 ABt GEMM on H100).
 
@@ -71,7 +71,7 @@ Kernel to adapt ($(basename "$KERNEL_FILE")):
 $(cat "$KERNEL_FILE")
 \`\`\`
 
-Your task: append two tkcc TMA descriptor adapter functions to the output file.
+Your task: append two Loom Kernel Hub TMA descriptor adapter functions to the output file.
 
 These functions are only needed when the kernel uses TMA (Tensor Memory Accelerator) — i.e., when
 it uses ThunderKittens \`gl<>\` layouts with \`tma::load_async\`. If the kernel does not use TMA,
@@ -105,7 +105,7 @@ fi
 
 LOGS_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOGS_DIR"
-OUTPUT_LOG="$LOGS_DIR/tkcc-adapt-${SLUG}.log"
+OUTPUT_LOG="$LOGS_DIR/loom-kernel-hub-adapt-${SLUG}.log"
 
 echo "Running agent (log: $OUTPUT_LOG)..."
 claude -p "$PROMPT" \

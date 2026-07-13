@@ -76,13 +76,24 @@ def _suite_run_id(target: str, plugin: str, shapes: list[Mapping[str, Any]]) -> 
     return f"{target}_{plugin.replace('.', '_')}_suite_{digest}_{unique}"
 
 
-def _suite_instructions(name: str, shapes: list[Mapping[str, Any]], target_instruction: str) -> str:
+def _suite_instructions(
+    name: str,
+    shapes: list[Mapping[str, Any]],
+    target_instruction: str,
+    operation_instructions: str = "",
+) -> str:
     shapes_json = json.dumps([dict(shape) for shape in shapes], sort_keys=True, separators=(",", ":"))
-    return (
+    text = (
         f"Optimize {name} across {len(shapes)} shape(s): {shapes_json}. "
         "One submitted candidate is built once and benchmarked against every shape. "
         f"{target_instruction}"
     )
+    # Surface the operation's own task description (bench-run prints this run
+    # instruction string - previously the per-plugin instructions never reached
+    # the agent).
+    if operation_instructions:
+        text += f"\n\n{operation_instructions}"
+    return text
 
 
 def make_plugin_run(name: str, target: str, shapes: object, cuda_arch: str = "90a") -> dict:
@@ -114,7 +125,10 @@ def make_plugin_run(name: str, target: str, shapes: object, cuda_arch: str = "90
         "entrypoint": target_contract.entrypoint,
         "shapes": [dict(shape) for shape in normalized_shapes],
         "benchmark_shapes": benchmark_shapes,
-        "instructions": _suite_instructions(name, normalized_shapes, target_contract.instruction_contract),
+        "instructions": _suite_instructions(
+            name, normalized_shapes, target_contract.instruction_contract,
+            operations[0].instructions,
+        ),
         "cuda_arch": cuda_arch,
     }
 
@@ -130,7 +144,7 @@ def _load_external_plugins() -> None:
     ``KERNEL_EVALUATOR_EXTRA_PLUGINS_PATH`` (os.pathsep-separated). Each
     ``*.py`` that exports ``PLUGIN`` is loaded and registered. This lets a task
     work dir supply a per-kernel plugin without editing this file or rebuilding
-    the package — the harness installs from tkcc, the evaluator is customized
+    the package — the harness installs from loom-kernel-hub, the evaluator is customized
     in the work dir. Built-in names win; failures are logged and skipped."""
     import importlib.util
     import os

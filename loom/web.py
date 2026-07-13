@@ -26,6 +26,7 @@ import mimetypes
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -41,24 +42,29 @@ from urllib.parse import parse_qs, unquote, urlparse
 from loom.openclaw import OpenClawClient, OpenClawConfig, openclaw_status
 from loom.paths import bundled_skills_path, kernel_hub_dir, web_static_dir
 from loom.rud_task import (
+    AGENT_CURSOR,
     AGENT_CLAUDE,
     AGENT_CODEX,
     DEFAULT_MONITOR_PATTERN,
     PLAN,
+    SKILLS_PATH_SEP,
     SUPPORTED_AGENTS,
     add_claude_session,
     agent_default_model,
     agent_label,
+    agent_model_options,
     build_agent_command,
     create_task,
     delete_task,
     detect_and_persist_worktree,
+    join_skills_paths,
     list_session_files,
     list_task_markdown_files,
     list_task_worktree_statuses,
     list_task_worktrees,
     list_tasks,
     list_worktree_candidates,
+    load_skills_text,
     merge_worktree_to_base,
     normalize_agent,
     prepare_task_worktree_from,
@@ -73,6 +79,7 @@ from loom.rud_task import (
     reorder_tasks,
     rename_task_meta,
     session_id_from_path,
+    split_skills_paths,
     task_root,
     task_worktree_diffs,
     task_worktree_path,
@@ -108,6 +115,15 @@ _STATIC_MIME: dict[str, str] = {
 }
 
 
+def _project_worktree_candidates(
+    registry: WebProjectRegistry, root: Path, project_id: str
+) -> list[dict[str, Any]]:
+    preferred = registry.get_code_root(project_id)
+    return list_worktree_candidates(
+        root, [preferred] if preferred is not None else []
+    )
+
+
 # --- naming / filtering helpers --------------------------------------------
 
 
@@ -128,7 +144,7 @@ def _sanitize_session_name(raw: str, fallback: str) -> str:
     return safe[:90] or fallback
 
 
-def _safe_claude_session_name(project_id: str, slug: str, agent: str = AGENT_CLAUDE) -> str:
+def _safe_claude_session_name(project_id: str, slug: str, agent: str = AGENT_CURSOR) -> str:
     """Tmux session name for a task's agent pane (current ``loom-`` brand).
 
     The agent name is part of the prefix so a claude pane and a codex pane for
@@ -142,7 +158,7 @@ def _safe_claude_session_name(project_id: str, slug: str, agent: str = AGENT_CLA
     return _sanitize_session_name(f"{_SESSION_BRAND}-{agent}-{tid}-{slug}", f"{_SESSION_BRAND}-{agent}")
 
 
-def _legacy_claude_session_name(project_id: str, slug: str, agent: str = AGENT_CLAUDE) -> str:
+def _legacy_claude_session_name(project_id: str, slug: str, agent: str = AGENT_CURSOR) -> str:
     """Pre-rename ``claudeloop-`` session name for the same task/agent."""
     tid = _tmux_id_fragment(project_id)
     agent = normalize_agent(agent)
@@ -372,39 +388,146 @@ def _safe_static_path(static_root: Path, url_path: str) -> Path | None:
 # --- Kernel Lab (vendored kernel hub) ---------------------------------------
 # Loom drives kernel-optimization runs by shelling out to the bundled
 # kernel_hub/scaffold/agent_runner/rud_kernel.py helper (JSON in/out). Run
-# records are stored per task under <root>/.RUD/kernel-runs/<id>.json.
+# records and artifacts are stored under
+# <root>/.RUD/<task>/kernel/runs/<id>/.
 
 _KERNEL_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _kernel_runs_dir(root: Path) -> Path:
+    """Legacy project-level run directory (read/migrate only)."""
     return root / ".RUD" / "kernel-runs"
 
 
+def _kernel_task_dir(root: Path, slug: str) -> Path:
+    return task_root(root, slug) / "kernel"
+
+
+def _kernel_contract_dir(root: Path, slug: str) -> Path:
+    return _kernel_task_dir(root, slug) / "contract"
+
+
+def _kernel_task_runs_dir(root: Path, slug: str) -> Path:
+    return _kernel_task_dir(root, slug) / "runs"
+
+
+def _kernel_task_run_dir(root: Path, slug: str, run_uid: str) -> Path:
+    return _kernel_task_runs_dir(root, slug) / run_uid
+
+
+def _kernel_task_agent_dir(root: Path, slug: str, run_uid: str, agent_index: str) -> Path:
+    return _kernel_task_run_dir(root, slug, run_uid) / "agents" / f"agent-{agent_index}"
+
+
+def _kernel_winners_dir(root: Path, slug: str) -> Path:
+    return _kernel_task_dir(root, slug) / "winners"
+
+
+def _ensure_task_contract_wrapper(root: Path, slug: str, plugin: str) -> Path | None:
+    contract_dir = _kernel_contract_dir(root, slug)
+    contract_dir.mkdir(parents=True, exist_ok=True)
+    existing = sorted(contract_dir.glob("*.py"))
+    if existing:
+        return contract_dir / "plugin.py" if (contract_dir / "plugin.py").is_file() else existing[0]
+    if not plugin:
+        return None
+    wrapper = contract_dir / "plugin.py"
+    wrapper.write_text(
+        f'"""Task-local contract wrapper for {plugin}."""\n'
+        "from kernel_evaluator.services.plugins import (\n"
+        "    KernelEvalPlugin, _CONTRACT_FACTORIES, _REFERENCE_FACTORIES,\n"
+        ")\n"
+        f'PLUGIN_NAME = "{plugin}"\n'
+        "PLUGIN = KernelEvalPlugin(\n"
+        "    name=PLUGIN_NAME,\n"
+        "    reference_factory=_REFERENCE_FACTORIES[PLUGIN_NAME],\n"
+        "    contract_factory=_CONTRACT_FACTORIES.get(PLUGIN_NAME),\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    return wrapper
+
+
+def _task_contract_plugins(root: Path, slug: str) -> list[str]:
+    names: list[str] = []
+    for path in sorted(_kernel_contract_dir(root, slug).glob("*.py")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        match = re.search(r'^PLUGIN_NAME\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+        if match and match.group(1) not in names:
+            names.append(match.group(1))
+    return names
+
+
+def _ensure_kernel_task_layout(root: Path, slug: str) -> Path:
+    base = _kernel_task_dir(root, slug)
+    for directory in (
+        base,
+        _kernel_contract_dir(root, slug),
+        _kernel_task_runs_dir(root, slug),
+        _kernel_winners_dir(root, slug),
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+    # Migrate task docs from the pre-layout task root.
+    for name in ("INSTRUCTION.md", "EVALUATION.md", "WIKI.md"):
+        old = task_root(root, slug) / name
+        new = base / name
+        if old.is_file() and not new.exists():
+            try:
+                old.replace(new)
+            except OSError:
+                shutil.copy2(old, new)
+                old.unlink(missing_ok=True)
+    return base
+
+
+def _kernel_record_path(root: Path, slug: str, run_uid: str) -> Path:
+    return _kernel_task_run_dir(root, slug, run_uid) / "run.json"
+
+
 def _kernel_write_record(root: Path, rec: dict[str, Any]) -> None:
-    d = _kernel_runs_dir(root)
-    d.mkdir(parents=True, exist_ok=True)
-    dest = d / f"{rec['id']}.json"
+    slug = str(rec.get("slug") or "").strip()
+    if slug:
+        _ensure_kernel_task_layout(root, slug)
+        run_dir = _kernel_task_run_dir(root, slug, str(rec["id"]))
+        run_dir.mkdir(parents=True, exist_ok=True)
+        dest = run_dir / "run.json"
+    else:
+        # Compatibility for old/orphan records with no task ownership.
+        d = _kernel_runs_dir(root)
+        d.mkdir(parents=True, exist_ok=True)
+        dest = d / f"{rec['id']}.json"
     tmp = dest.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2))
     tmp.replace(dest)
 
 
 def _kernel_read_record(root: Path, run_uid: str) -> dict[str, Any] | None:
-    f = _kernel_runs_dir(root) / f"{run_uid}.json"
-    if not f.is_file():
-        return None
-    try:
-        return json.loads(f.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
+    candidates = list((root / ".RUD").glob(f"*/kernel/runs/{run_uid}/run.json"))
+    candidates.append(_kernel_runs_dir(root) / f"{run_uid}.json")
+    for f in candidates:
+        if not f.is_file():
+            continue
+        try:
+            return json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+    return None
 
 
 def _kernel_delete_record(root: Path, run_uid: str) -> bool:
     """Remove a run's record JSON (and its build log) from disk. Used by the UI
     to clear finished/errored runs. Returns True if the JSON existed."""
-    d = _kernel_runs_dir(root)
+    rec = _kernel_read_record(root, run_uid)
     existed = False
+    if rec and rec.get("slug"):
+        run_dir = _kernel_task_run_dir(root, str(rec["slug"]), run_uid)
+        if run_dir.is_dir():
+            shutil.rmtree(run_dir, ignore_errors=True)
+            existed = True
+    d = _kernel_runs_dir(root)
     for f in (d / f"{run_uid}.json", d / f"{run_uid}.json.tmp", d / f"{run_uid}.log"):
         try:
             if f.is_file():
@@ -414,6 +537,103 @@ def _kernel_delete_record(root: Path, run_uid: str) -> bool:
         except OSError:
             pass
     return existed
+
+
+def _kernel_delete_task_records(root: Path, slug: str) -> dict[str, Any]:
+    """Stop and remove every kernel-run record owned by a deleted task.
+
+    Run records live at project scope (``.RUD/kernel-runs``), not inside the
+    task directory. Without this cleanup, recreating a task with the same slug
+    resurrects the deleted task's runs. Active runs are stopped best-effort
+    first; local records/logs are removed even when their remote cluster is
+    temporarily unreachable.
+    """
+    records = _kernel_list_records(root, slug)
+    stopped = 0
+    stop_errors: list[str] = []
+    deleted = 0
+    for rec in records:
+        run_uid = str(rec.get("id") or "").strip()
+        if not run_uid:
+            continue
+        if rec.get("state") in ("launching", "running", "resolving") and rec.get("run_id"):
+            ok, result = _run_kernel_helper(
+                root,
+                ["stop", "--run-id", str(rec["run_id"])],
+                timeout=90,
+                cluster=_kernel_record_cluster(rec),
+            )
+            if ok:
+                stopped += 1
+            else:
+                stop_errors.append(
+                    f"{run_uid}: {(result or {}).get('error', 'stop failed')}"
+                )
+        if _kernel_delete_record(root, run_uid):
+            deleted += 1
+    return {
+        "records_deleted": deleted,
+        "active_runs_stopped": stopped,
+        "stop_errors": stop_errors,
+    }
+
+
+def _migrate_legacy_kernel_records(root: Path, slug: str | None = None) -> int:
+    """Move old project-level records/logs into their owning task tree."""
+    legacy = _kernel_runs_dir(root)
+    if not legacy.is_dir():
+        return 0
+    moved = 0
+    for record_file in legacy.glob("*.json"):
+        try:
+            rec = json.loads(record_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        owner = str(rec.get("slug") or rec.get("task_slug") or "").strip()
+        if not owner or (slug and owner != slug) or not task_root(root, owner).is_dir():
+            continue
+        rec["slug"] = owner
+        _ensure_kernel_task_layout(root, owner)
+        contract = _ensure_task_contract_wrapper(
+            root, owner, str(rec.get("plugin") or (rec.get("config") or {}).get("plugin") or "")
+        )
+        if contract is not None:
+            rec["contract_file"] = str(contract)
+        run_uid = str(rec.get("id") or record_file.stem)
+        judge = rec.get("judge") or {}
+        exported = Path(str(judge.get("export_path") or ""))
+        job_id = str(judge.get("job_id") or "")
+        if judge.get("verdict") == "pass" and exported.is_file() and job_id:
+            winner_dir = _kernel_winners_dir(root, owner) / job_id
+            winner_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(exported, winner_dir / "kernel.py")
+            (winner_dir / "metadata.json").write_text(
+                json.dumps(
+                    {
+                        "run_record": run_uid,
+                        "job_id": job_id,
+                        "plugin": rec.get("plugin") or (rec.get("config") or {}).get("plugin"),
+                        "speedup": judge.get("speedup"),
+                        "promoted_to": str(exported),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        run_dir = _kernel_task_run_dir(root, owner, run_uid)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        _kernel_write_record(root, rec)
+        old_log = legacy / f"{run_uid}.log"
+        if old_log.is_file():
+            try:
+                old_log.replace(run_dir / "launcher.log")
+            except OSError:
+                shutil.copy2(old_log, run_dir / "launcher.log")
+                old_log.unlink(missing_ok=True)
+        record_file.unlink(missing_ok=True)
+        (legacy / f"{run_uid}.json.tmp").unlink(missing_ok=True)
+        moved += 1
+    return moved
 
 
 def _sweep_stale_kernel_runs(roots: list[Path]) -> int:
@@ -430,10 +650,10 @@ def _sweep_stale_kernel_runs(roots: list[Path]) -> int:
         if key in seen:
             continue
         seen.add(key)
-        d = _kernel_runs_dir(root)
-        if not d.is_dir():
-            continue
-        for f in d.glob("*.json"):
+        _migrate_legacy_kernel_records(root)
+        files = list((root / ".RUD").glob("*/kernel/runs/*/run.json"))
+        files += list(_kernel_runs_dir(root).glob("*.json"))
+        for f in files:
             try:
                 rec = json.loads(f.read_text())
             except (json.JSONDecodeError, OSError):
@@ -450,13 +670,20 @@ def _sweep_stale_kernel_runs(roots: list[Path]) -> int:
 
 
 def _kernel_list_records(root: Path, slug: str | None = None) -> list[dict[str, Any]]:
-    d = _kernel_runs_dir(root)
-    if not d.is_dir():
-        return []
+    _migrate_legacy_kernel_records(root, slug)
     recs: list[dict[str, Any]] = []
-    for f in d.glob("*.json"):
+    if slug:
+        files = list(_kernel_task_runs_dir(root, slug).glob("*/run.json"))
+    else:
+        files = list((root / ".RUD").glob("*/kernel/runs/*/run.json"))
+        files += list(_kernel_runs_dir(root).glob("*.json"))
+    for f in files:
         try:
-            recs.append(json.loads(f.read_text()))
+            rec = json.loads(f.read_text())
+            if rec.get("slug") and not rec.get("submissions_seen") and rec.get("status"):
+                _kernel_merge_submissions(root, rec, rec["status"])
+                rec = _kernel_read_record(root, str(rec.get("id"))) or rec
+            recs.append(rec)
         except (json.JSONDecodeError, OSError):
             continue
     if slug:
@@ -494,6 +721,48 @@ def _kernel_helper_cmd(script_name: str) -> tuple[list[str] | None, str]:
     )
 
 
+# --- Kernel cluster profiles ---
+# The kernel stack can target different GPU clusters. Machine-specific profile
+# files live outside the repository under ~/.config/loom/kernel-clusters/*.env
+# (or LOOM_KERNEL_PROFILES_DIR), and are loaded by rud_kernel through
+# LOOM_KERNEL_ENV_FILE. Each run records only the opaque profile name so
+# status/log/stop route correctly without committing infrastructure topology.
+
+
+def _kernel_cluster_profiles() -> dict[str, Path]:
+    out: dict[str, Path] = {}
+    profile_dir = Path(
+        os.environ.get(
+            "LOOM_KERNEL_PROFILES_DIR",
+            str(Path.home() / ".config" / "loom" / "kernel-clusters"),
+        )
+    ).expanduser()
+    try:
+        for f in sorted(profile_dir.glob("*.env")):
+            name = f.stem
+            if name and f.is_file():
+                out[name] = f
+    except OSError:
+        pass
+    return out
+
+
+def _kernel_cluster_env(cluster: str) -> dict[str, str] | None:
+    """Subprocess env for a cluster profile ('' = default env)."""
+    cluster = (cluster or "").strip()
+    if not cluster:
+        return None
+    profile = _kernel_cluster_profiles().get(cluster)
+    if profile is None:
+        return None
+    return {**os.environ, "LOOM_KERNEL_ENV_FILE": str(profile)}
+
+
+def _kernel_record_cluster(rec: dict[str, Any] | None) -> str:
+    cfg = (rec or {}).get("config") or {}
+    return str(cfg.get("cluster") or "").strip()
+
+
 # Short TTL cache for `service-status` so frequent polls (and concurrent
 # browser tabs) don't each spawn a subprocess + network health-check.
 _KERNEL_SERVICE_CACHE: dict[str, tuple[float, bool, dict[str, Any]]] = {}
@@ -501,21 +770,21 @@ _KERNEL_SERVICE_TTL = 6.0
 _kernel_service_lock = threading.Lock()
 
 
-def _kernel_service_status_cached(root: Path) -> tuple[bool, dict[str, Any]]:
-    key = str(root)
+def _kernel_service_status_cached(root: Path, cluster: str = "") -> tuple[bool, dict[str, Any]]:
+    key = f"{root}::{cluster}"
     now = time.time()
     with _kernel_service_lock:
         hit = _KERNEL_SERVICE_CACHE.get(key)
         if hit and (now - hit[0]) < _KERNEL_SERVICE_TTL:
             return hit[1], hit[2]
-    ok, data = _run_kernel_helper(root, ["service-status"], timeout=15)
+    ok, data = _run_kernel_helper(root, ["service-status"], timeout=20, cluster=cluster)
     with _kernel_service_lock:
         _KERNEL_SERVICE_CACHE[key] = (now, ok, data)
     return ok, data
 
 
 def _run_kernel_helper(
-    root: Path, helper_args: list[str], timeout: int = 600
+    root: Path, helper_args: list[str], timeout: int = 600, cluster: str = ""
 ) -> tuple[bool, dict[str, Any]]:
     """Invoke rud_kernel (in-project script or pip module) and parse its JSON."""
     base, err = _kernel_helper_cmd("rud_kernel.py")
@@ -528,6 +797,7 @@ def _run_kernel_helper(
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=_kernel_cluster_env(cluster),
         )
     except subprocess.TimeoutExpired:
         return False, {"ok": False, "error": f"kernel helper timed out after {timeout}s"}
@@ -550,11 +820,270 @@ def _shape_to_str(shape: Any) -> str:
 
 
 def _kernel_run_log_path(root: Path, run_uid: str) -> Path:
+    rec = _kernel_read_record(root, run_uid)
+    if rec and rec.get("slug"):
+        return _kernel_task_run_dir(root, str(rec["slug"]), run_uid) / "launcher.log"
     return _kernel_runs_dir(root) / f"{run_uid}.log"
 
 
+KERNEL_WIKI = "kernel/WIKI.md"
+
+
+def _initialize_kernel_run_artifacts(root: Path, rec: dict[str, Any]) -> Path | None:
+    slug = str(rec.get("slug") or "").strip()
+    run_uid = str(rec.get("id") or "").strip()
+    if not slug or not run_uid:
+        return None
+    run_dir = _kernel_task_run_dir(root, slug, run_uid)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    source_wiki = task_root(root, slug) / KERNEL_WIKI
+    run_wiki = run_dir / "WIKI.md"
+    if source_wiki.is_file() and not run_wiki.exists():
+        shutil.copy2(source_wiki, run_wiki)
+    count = int((rec.get("config") or {}).get("n_agents") or 0)
+    for index in range(1, count + 1):
+        agent_dir = _kernel_task_agent_dir(root, slug, run_uid, str(index))
+        (agent_dir / "attempts").mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
+def _kernel_mirror_submission(
+    root: Path,
+    rec: dict[str, Any],
+    item: dict[str, Any],
+) -> dict[str, Any]:
+    slug = str(rec.get("slug") or "").strip()
+    run_uid = str(rec.get("id") or "").strip()
+    job_id = str(item.get("job_id") or "").strip()
+    if not slug or not run_uid or not job_id:
+        return item
+    agent_index = str(item.get("agent_index") if item.get("agent_index") is not None else "unknown")
+    agent_dir = _kernel_task_agent_dir(root, slug, run_uid, agent_index)
+    attempts_dir = agent_dir / "attempts"
+    attempts_dir.mkdir(parents=True, exist_ok=True)
+    attempt_no = item.get("n") or job_id[:8]
+    result_path = attempts_dir / f"{attempt_no}-{job_id}.json"
+    source_ext = ".py" if (rec.get("config") or {}).get("target") in ("cutedsl", "triton") else ".cu"
+    source_path = attempts_dir / f"{attempt_no}-{job_id}{source_ext}"
+    try:
+        result_path.write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
+        item["local_result_path"] = str(result_path)
+    except OSError:
+        pass
+    if not source_path.is_file():
+        ok, source_data = _run_kernel_helper(
+            root,
+            ["job-source", "--job-id", job_id],
+            timeout=30,
+            cluster=_kernel_record_cluster(rec),
+        )
+        source = str((source_data or {}).get("source") or "")
+        if ok and source:
+            try:
+                source_path.write_text(source.rstrip() + "\n", encoding="utf-8")
+            except OSError:
+                pass
+    if source_path.is_file():
+        item["local_source_path"] = str(source_path)
+        latest = agent_dir / f"latest{source_ext}"
+        try:
+            shutil.copy2(source_path, latest)
+            item["local_latest_path"] = str(latest)
+        except OSError:
+            pass
+    return item
+
+
+def _kernel_mirror_agent_log(
+    root: Path,
+    rec: dict[str, Any],
+    agent_index: str,
+    text: str,
+) -> str:
+    slug = str(rec.get("slug") or "").strip()
+    run_uid = str(rec.get("id") or "").strip()
+    if not slug or not run_uid:
+        return ""
+    agent_dir = _kernel_task_agent_dir(root, slug, run_uid, agent_index)
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    path = agent_dir / "agent.log"
+    try:
+        path.write_text(text, encoding="utf-8")
+    except OSError:
+        return ""
+    return str(path)
+
+
+def _mirror_kernel_agent_logs(root: Path, rec: dict[str, Any], agents: list[dict[str, Any]]) -> None:
+    for agent in agents:
+        index = str(agent.get("index") or "").strip()
+        if not index.isdigit():
+            continue
+        ok, data = _run_kernel_helper(
+            root,
+            [
+                "agent-log",
+                "--run-id",
+                str(rec.get("run_id") or ""),
+                "--agent",
+                index,
+                "--tail",
+                "2000",
+            ],
+            timeout=40,
+            cluster=_kernel_record_cluster(rec),
+        )
+        if ok and (data or {}).get("log"):
+            _kernel_mirror_agent_log(root, rec, index, str(data["log"]))
+
+
+def _maybe_mirror_kernel_agent_logs(
+    root: Path, rec: dict[str, Any], status: dict[str, Any]
+) -> None:
+    now = time.time()
+    if now - float(rec.get("logs_mirrored_at") or 0) < 30:
+        return
+    rec["logs_mirrored_at"] = now
+    _kernel_write_record(root, rec)
+    threading.Thread(
+        target=_mirror_kernel_agent_logs,
+        args=(root, dict(rec), list(status.get("agents") or [])),
+        daemon=True,
+    ).start()
+
+
+def _kernel_merge_submissions(root: Path, rec: dict[str, Any], status: dict[str, Any]) -> None:
+    """Merge the submissions the evaluator currently remembers into the run
+    record on disk, so the per-attempt history survives the evaluator's
+    in-memory TTL/restarts. Attempt numbers are assigned once (first seen) and
+    stay stable. Mutates ``status['submissions']`` to the merged view."""
+    by_id: dict[str, dict[str, Any]] = {
+        s.get("job_id"): dict(s)
+        for s in rec.get("submissions_seen") or []
+        if s.get("job_id")
+    }
+    changed = False
+    for s in status.get("submissions") or []:
+        jid = s.get("job_id")
+        if not jid:
+            continue
+        incoming = dict(s)
+        if jid in by_id:
+            incoming["n"] = by_id[jid].get("n")
+            if by_id[jid] != incoming:
+                by_id[jid] = incoming
+                changed = True
+        else:
+            incoming["n"] = len(by_id) + 1
+            by_id[jid] = incoming
+            changed = True
+    # Correct kernels persist in the DB-backed archive after in-memory jobs
+    # expire. Merge them too so task-local history remains complete.
+    for archived in status.get("archive") or []:
+        jid = archived.get("job_id")
+        if not jid or jid in by_id:
+            continue
+        by_id[jid] = {
+            "n": len(by_id) + 1,
+            "job_id": jid,
+            "agent_index": archived.get("agent_index"),
+            "state": "completed",
+            "correct": True,
+            "speedup": archived.get("speedup"),
+            "candidate_us": archived.get("kernel_us"),
+            "baseline_us": archived.get("baseline_us"),
+            "error": None,
+            "achieved_at": archived.get("achieved_at"),
+        }
+        changed = True
+    merged = sorted(by_id.values(), key=lambda x: x.get("n") or 0)
+    for item in merged:
+        _kernel_mirror_submission(root, rec, item)
+    slug = str(rec.get("slug") or "").strip()
+    run_dir = _initialize_kernel_run_artifacts(root, rec)
+    if run_dir is not None:
+        rec["artifact_root"] = str(run_dir)
+        for agent in status.get("agents") or []:
+            index = str(agent.get("index") or "unknown")
+            agent["local_dir"] = str(
+                _kernel_task_agent_dir(root, slug, str(rec.get("id")), index)
+            )
+    # Mirror terminal evaluator outcomes into the task's public WIKI.md. This
+    # is the host-side durable knowledge base; workers also share a run-local
+    # WIKI.md on the cluster, updated directly by bench-poll.
+    plan_seen = set(rec.get("plan_submission_ids") or [])
+    plan_path = task_root(root, slug) / KERNEL_WIKI if slug else None
+    plan_blocks: list[str] = []
+    for item in merged:
+        jid = str(item.get("job_id") or "")
+        state = str(item.get("state") or "")
+        if not jid or jid in plan_seen:
+            continue
+        if state != "completed" and not state.endswith("_failed"):
+            continue
+        n = item.get("n") or "?"
+        agent = item.get("agent_index")
+        correct = item.get("correct")
+        speedup = item.get("speedup")
+        candidate = item.get("candidate_us")
+        baseline = item.get("baseline_us")
+        error = str(item.get("error") or "").strip()
+        lines = [
+            "",
+            f"<!-- kernel-submission:{jid} -->",
+            f"### Kernel submission #{n} — agent {agent if agent is not None else '?'}",
+            f"- Job: `{jid}`",
+            f"- State: `{state}`",
+        ]
+        if correct is not None:
+            lines.append(f"- Correct: `{bool(correct)}`")
+        if isinstance(speedup, (int, float)):
+            lines.append(
+                f"- Performance: `{speedup:.4f}×`"
+                + (
+                    f" ({candidate:.2f}µs vs {baseline:.2f}µs baseline)"
+                    if isinstance(candidate, (int, float)) and isinstance(baseline, (int, float))
+                    else ""
+                )
+            )
+        if error:
+            lines += ["- Evaluator issue:", "```text", error[:3000], "```"]
+        if state.endswith("_failed"):
+            lines.append("- Next action: resolve the evaluator error before changing optimization strategy.")
+        elif correct is False:
+            lines.append("- Next action: fix the numerical/ABI mismatch and preserve this attempt's lessons.")
+        elif isinstance(speedup, (int, float)) and speedup < 1:
+            lines.append("- Next action: correctness passes; preserve it while reducing latency.")
+        plan_blocks.append("\n".join(lines))
+        plan_seen.add(jid)
+        changed = True
+    if plan_blocks and plan_path is not None:
+        try:
+            existing = plan_path.read_text(encoding="utf-8") if plan_path.is_file() else "# Plan\n"
+            heading = (
+                "\n\n## Kernel evaluator knowledge"
+                if "## Kernel evaluator knowledge" not in existing
+                else ""
+            )
+            plan_path.write_text(
+                existing.rstrip() + heading + "\n" + "\n".join(plan_blocks) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+    if plan_seen:
+        rec["plan_submission_ids"] = sorted(plan_seen)
+    if changed:
+        rec["submissions_seen"] = merged
+        _kernel_write_record(root, rec)
+    if merged:
+        status["submissions"] = merged
+    _maybe_mirror_kernel_agent_logs(root, rec, status)
+
+
 def _run_kernel_launch_streaming(
-    root: Path, run_uid: str, helper_args: list[str], timeout: int = 2400
+    root: Path, run_uid: str, helper_args: list[str], timeout: int = 2400,
+    cluster: str = "",
 ) -> tuple[bool, dict[str, Any]]:
     """Run the launch helper, streaming its progress (docker build, agent
     bring-up, …) to ``<run_uid>.log`` live so the web UI can tail it. The
@@ -568,7 +1097,8 @@ def _run_kernel_launch_streaming(
     out = ""
     try:
         with open(log_path, "w", encoding="utf-8") as lf:
-            lf.write(f"$ {' '.join(base + helper_args)}\n\n")
+            lf.write(f"$ {' '.join(base + helper_args)}\n")
+            lf.write(f"cluster: {cluster or 'default'}\n\n")
             lf.flush()
             proc = subprocess.Popen(
                 [*base, *helper_args],
@@ -576,6 +1106,7 @@ def _run_kernel_launch_streaming(
                 stdout=subprocess.PIPE,
                 stderr=lf,
                 text=True,
+                env=_kernel_cluster_env(cluster),
             )
             try:
                 out, _ = proc.communicate(timeout=timeout)
@@ -602,6 +1133,444 @@ def _run_kernel_launch_streaming(
     if data is None:
         return False, {"ok": False, "error": "launch produced no result (see build log)"}
     return bool(data.get("ok")), data
+
+
+# --- Kernel task docs: INSTRUCTION.md (worker brief) + EVALUATION.md (judge
+# criteria), generated from the kernel interview and kept as editable files in
+# the task dir. INSTRUCTION.md is shipped into every agent workdir at launch;
+# EVALUATION.md drives the judge agent that reviews the winning kernel source
+# against the task intent alongside the hard eval-service results.
+
+
+def _kernel_doc_path(root: Path, slug: str, name: str) -> Path:
+    return _kernel_task_dir(root, slug) / name
+
+
+def _seed_kernel_wiki(root: Path, slug: str, spec: dict[str, Any], plugin: str) -> None:
+    """Create the durable task-level knowledge ledger for a kernel task.
+
+    Preserve an existing user/agent-authored wiki; otherwise seed the shared
+    contract, CUDA/PTX notes, acceptance gates, and evaluator ledger.
+    """
+    path = task_root(root, slug) / KERNEL_WIKI
+    existing = ""
+    try:
+        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    except OSError:
+        pass
+    if existing:
+        return
+    target = spec.get("target_speedup")
+    target_text = f"{float(target):.2f}×" if isinstance(target, (int, float)) else "the configured target"
+    content = f"""# Kernel Knowledge Base
+
+## Goal
+Build and validate `{plugin}` on `{spec.get('cluster') or 'default'}` / `{spec.get('target') or 'unknown'}`.
+
+## Contract
+- Source/reference: {spec.get('source') or '(described in INSTRUCTION.md)'}
+- Requested precision: `{spec.get('dtype') or 'unspecified'}`
+- Shape: `{json.dumps(spec.get('shape') or {}, sort_keys=True)}`
+- Worker brief: `INSTRUCTION.md`
+- Evaluator rubric: `EVALUATION.md`
+
+## CUDA / PTX field notes
+- CUDA/CuTe/Triton source is lowered through PTX to a GPU binary; always verify the actual target architecture (for example `sm_90a` or `sm_100`).
+- PTX is an intermediate ISA, while `ptxas` produces SASS/cubin. Register count, shared memory, spills, occupancy, and memory traffic decide whether a mathematically faster kernel is actually faster.
+- Use evaluator artifacts (`ptx`, `cuobjdump`, Nsight summaries) to confirm tensor-core instructions and catch accidental scalar/fallback paths.
+- Timed launch code must be CUDA-graph safe: no `.cpu()`, `.item()`, host synchronization, JIT compilation, or data-dependent host control flow.
+- For NVFP4 on SM100, verify e2m1 operands, per-block scale-factor layout, tcgen05/block-scaled MMA use, fp32 accumulation, and that both QK and PV execute.
+- Correctness comes first, but a correct diagnostic probe is not a valid winner if it skips required work; EVALUATION.md is authoritative.
+
+## Acceptance
+- [ ] Evaluator reports `correct=True`.
+- [ ] Speedup reaches {target_text}.
+- [ ] Evaluator judge passes the source-level rubric.
+
+## Next steps
+- [ ] Launch workers.
+- [ ] Read the shared attempt log before each new strategy.
+- [ ] Preserve correctness while resolving the latest evaluator issue.
+
+## Kernel evaluator knowledge
+Every submission, hard result, error, diagnosis, and judge verdict is appended here.
+"""
+    try:
+        path.write_text(content, encoding="utf-8")
+        legacy_plan = task_root(root, slug) / PLAN
+        if legacy_plan.is_file():
+            legacy_text = legacy_plan.read_text(encoding="utf-8", errors="replace")
+            if "How will we know it's done?" in legacy_text:
+                legacy_plan.unlink()
+    except OSError:
+        pass
+
+
+def _generate_kernel_docs(
+    root: Path, slug: str, spec: dict[str, Any], messages: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Generate INSTRUCTION.md + EVALUATION.md from the interview (host claude).
+    Existing files are kept (the user may have edited them)."""
+    _ensure_kernel_task_layout(root, slug)
+    ipath = _kernel_doc_path(root, slug, "INSTRUCTION.md")
+    epath = _kernel_doc_path(root, slug, "EVALUATION.md")
+    if ipath.is_file() and epath.is_file():
+        return {"ok": True, "generated": False,
+                "instruction": str(ipath), "evaluation": str(epath)}
+    convo = "\n".join(
+        f"[{m.get('role', '?')}] {m.get('content', '')}" for m in (messages or [])
+    )[:12000]
+    prompt = (
+        "You are preparing a GPU-kernel optimization task for autonomous worker "
+        "agents and for a judge agent, based on a user interview.\n\n"
+        f"Interview transcript:\n{convo or '(none)'}\n\n"
+        f"Final task spec (JSON):\n{json.dumps(spec, ensure_ascii=False)}\n\n"
+        "Write TWO markdown documents:\n"
+        "1. INSTRUCTION.md — the worker agents' task brief: what kernel to write "
+        "(operation, dtype/precision strategy, hardware target), what the ABI/"
+        "reference is (and that correctness is judged against it), what counts as "
+        "done, and explicit anti-goals (e.g. reimplementing the reference in the "
+        "reference's own precision instead of the requested one does NOT count). "
+        "Be concrete and terse; the agents also get the eval-service usage docs, "
+        "so do not explain bench tooling.\n"
+        "2. EVALUATION.md — the judge's rubric: given the submitted kernel SOURCE "
+        "plus the hard results (correct=?, speedup vs reference baseline), state "
+        "the checks that decide PASS or FAIL. Include source-level checks that "
+        "hard metrics cannot see (e.g. does the kernel actually use the requested "
+        "precision/instructions internally, not just pass the tolerance check).\n\n"
+        "Reply with exactly this format:\n"
+        "===INSTRUCTION.md===\n<content>\n===EVALUATION.md===\n<content>\n"
+    )
+    cmd = ["claude", "-p", prompt, "--dangerously-skip-permissions",
+           "--model", agent_default_model(AGENT_CLAUDE)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return {"ok": False, "error": f"doc generation failed: {exc}"}
+    text = (proc.stdout or "").strip()
+    m = re.search(r"===INSTRUCTION\.md===\s*(.*?)\s*===EVALUATION\.md===\s*(.*)", text, re.DOTALL)
+    if not m:
+        return {"ok": False, "error": "doc generation returned unexpected format",
+                "stdout": text[-800:]}
+    try:
+        if not ipath.is_file():
+            ipath.write_text(m.group(1).strip() + "\n", encoding="utf-8")
+        if not epath.is_file():
+            epath.write_text(m.group(2).strip() + "\n", encoding="utf-8")
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "generated": True, "instruction": str(ipath), "evaluation": str(epath)}
+
+
+_JUDGE_FALLBACK_RUBRIC = (
+    "No EVALUATION.md was provided. Judge on: (1) does the kernel plausibly "
+    "implement the task named by the run/task slug (including any precision/"
+    "hardware requirement implied by its name), rather than trivially wrapping "
+    "or re-implementing the reference; (2) are the hard results acceptable "
+    "(correct=True and a credible latency)."
+)
+
+
+def _judge_kernel_candidate(
+    rubric: str, metrics: dict[str, Any], source: str
+) -> dict[str, Any]:
+    """One source-level judge call for one hard-correct candidate."""
+    prompt = (
+        "You are the judge for a GPU-kernel optimization run. Decide PASS or "
+        "FAIL for the submitted kernel below, using the rubric plus the hard "
+        "results. The hard results are ground truth for correctness/speed; your "
+        "job is the source-level judgment the metrics cannot see. Inspect the "
+        "actual launch path, not merely helper classes or comments.\n\n"
+        f"RUBRIC:\n{rubric}\n\n"
+        f"HARD RESULTS (from the eval service):\n{json.dumps(metrics, ensure_ascii=False)}\n\n"
+        f"FULL KERNEL SOURCE:\n```\n{source[:180000]}\n```\n\n"
+        "Reply with ONLY a fenced ```json block: "
+        '{"verdict": "pass"|"fail", "score": 0-100, "reasoning": "<3-6 concise sentences>"}'
+    )
+    cmd = [
+        "claude", "-p", prompt, "--dangerously-skip-permissions",
+        "--model", agent_default_model(AGENT_CLAUDE),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return {"state": "error", "error": f"judge failed: {exc}"}
+    text = (proc.stdout or "").strip()
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL) or re.search(
+        r"(\{.*\})", text, re.DOTALL
+    )
+    if not m:
+        return {"state": "error", "error": "judge returned unexpected output", "raw": text[-500:]}
+    try:
+        obj = json.loads(m.group(1))
+    except json.JSONDecodeError:
+        return {"state": "error", "error": "judge returned invalid JSON", "raw": text[-500:]}
+    return {
+        "state": "done",
+        "verdict": "pass" if str(obj.get("verdict", "")).lower() == "pass" else "fail",
+        "score": obj.get("score"),
+        "reasoning": str(obj.get("reasoning", ""))[:2000],
+    }
+
+
+def _export_judged_kernel(
+    root: Path,
+    slug: str,
+    run_uid: str,
+    job_id: str,
+    speedup: Any,
+    source: str,
+    plugin: str,
+) -> str:
+    """Archive the Judge-approved source task-locally and promote to worktree.
+
+    Worker run directories intentionally retain experiments and probes; only a
+    source-level PASS is promoted into the user's worktree.
+    """
+    stem = re.sub(r"[^A-Za-z0-9_]+", "_", plugin or "kernel").strip("_")
+    worktree = task_worktree_path(root, slug)
+    dest = worktree / f"{stem}_candidate.py" if worktree is not None else None
+    header = (
+        "# Judge-approved kernel candidate\n"
+        f"# run_record: {run_uid}\n"
+        f"# evaluator_job: {job_id}\n"
+        f"# speedup_vs_reference: {speedup}\n"
+        "# NOTE: this file uses the evaluator prepare(inputs)->launch ABI;\n"
+        "# adapt the integration wrapper separately before production use.\n\n"
+    )
+    try:
+        winner_dir = _kernel_winners_dir(root, slug) / job_id
+        winner_dir.mkdir(parents=True, exist_ok=True)
+        (winner_dir / "kernel.py").write_text(
+            header + source.rstrip() + "\n", encoding="utf-8"
+        )
+        (winner_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "run_record": run_uid,
+                    "job_id": job_id,
+                    "plugin": plugin,
+                    "speedup": speedup,
+                    "promoted_to": str(dest) if dest is not None else "",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        if dest is not None:
+            dest.write_text(header + source.rstrip() + "\n", encoding="utf-8")
+    except OSError:
+        return ""
+    return str(dest or (winner_dir / "kernel.py"))
+
+
+def _ensure_judged_kernel_export(root: Path, rec: dict[str, Any]) -> dict[str, Any]:
+    """Repair/export an older PASS verdict when its source service is reachable.
+
+    This lets a completed run export automatically after a temporary remote
+    evaluator outage, without paying for another LLM judge call.
+    """
+    judge = rec.get("judge") or {}
+    if judge.get("verdict") != "pass" or judge.get("export_path"):
+        return rec
+    job_id = str(judge.get("job_id") or "")
+    slug = str(rec.get("slug") or "")
+    if not job_id or not slug:
+        return rec
+    ok, source_data = _run_kernel_helper(
+        root,
+        ["kernel-source", "--job-id", job_id],
+        timeout=30,
+        cluster=_kernel_record_cluster(rec),
+    )
+    source = str((source_data or {}).get("source") or "")
+    if not ok or not source:
+        return rec
+    export_path = _export_judged_kernel(
+        root,
+        slug,
+        str(rec.get("id") or ""),
+        job_id,
+        judge.get("speedup"),
+        source,
+        str((rec.get("config") or {}).get("plugin") or rec.get("plugin") or ""),
+    )
+    if export_path:
+        judge = dict(judge)
+        judge["export_path"] = export_path
+        rec["judge"] = judge
+        _kernel_write_record(root, rec)
+    return rec
+
+
+def _maybe_export_judged_kernel_async(root: Path, rec: dict[str, Any]) -> dict[str, Any]:
+    judge = rec.get("judge") or {}
+    if judge.get("verdict") != "pass" or judge.get("export_path"):
+        return rec
+    last_attempt = float(judge.get("export_attempt_at") or 0)
+    if time.time() - last_attempt < 60:
+        return rec
+    judge = dict(judge)
+    judge["export_attempt_at"] = time.time()
+    rec["judge"] = judge
+    _kernel_write_record(root, rec)
+    threading.Thread(
+        target=_ensure_judged_kernel_export,
+        args=(root, dict(rec)),
+        daemon=True,
+    ).start()
+    return rec
+
+
+def _judge_kernel_run(root: Path, run_uid: str) -> None:
+    """Judge the run's best kernel: EVALUATION.md rubric + kernel source + hard
+    results -> PASS/FAIL verdict with reasoning, stored on the run record."""
+    rec = _kernel_read_record(root, run_uid) or {}
+    rid = rec.get("run_id")
+    slug = rec.get("slug") or rec.get("task_slug") or ""
+
+    def _store(judge: dict[str, Any]) -> None:
+        cur = _kernel_read_record(root, run_uid) or {"id": run_uid}
+        judge["judged_at"] = time.time()
+        cur["judge"] = judge
+        _kernel_write_record(root, cur)
+        if judge.get("state") == "done" and slug:
+            plan_path = task_root(root, str(slug)) / KERNEL_WIKI
+            marker = f"<!-- kernel-judge:{run_uid}:{judge.get('job_id', '')} -->"
+            try:
+                existing = plan_path.read_text(encoding="utf-8") if plan_path.is_file() else "# Plan\n"
+                blocks: list[str] = []
+                if marker not in existing:
+                    verdict = str(judge.get("verdict") or "unknown").upper()
+                    blocks.append(
+                        f"\n\n{marker}\n### Evaluator judge — {verdict}\n"
+                        f"- Score: `{judge.get('score', '?')}/100`\n"
+                        f"- Speedup: `{judge.get('speedup', '?')}×`\n"
+                        + (
+                            f"- Exported winner: `{judge.get('export_path')}`\n"
+                            if judge.get("export_path")
+                            else ""
+                        )
+                        + f"- Review: {judge.get('reasoning', '')}\n"
+                    )
+                for candidate in judge.get("candidate_reviews") or []:
+                    candidate_id = str(candidate.get("job_id") or "")
+                    candidate_marker = f"<!-- kernel-candidate-judge:{candidate_id} -->"
+                    if not candidate_id or candidate_marker in existing:
+                        continue
+                    verdict = str(candidate.get("verdict") or candidate.get("state") or "unknown").upper()
+                    blocks.append(
+                        f"\n\n{candidate_marker}\n"
+                        f"#### Candidate `{candidate_id}` — {verdict}\n"
+                        f"- Speedup: `{candidate.get('speedup', '?')}×`\n"
+                        f"- Judge score: `{candidate.get('score', '?')}/100`\n"
+                        f"- Finding: {candidate.get('reasoning') or candidate.get('error') or 'No details.'}\n"
+                    )
+                if blocks:
+                    plan_path.write_text(existing.rstrip() + "".join(blocks), encoding="utf-8")
+            except OSError:
+                pass
+
+    if not rid:
+        _store({"state": "error", "error": "run not started"})
+        return
+    rubric = _JUDGE_FALLBACK_RUBRIC
+    if slug:
+        ep = _kernel_doc_path(root, slug, "EVALUATION.md")
+        if ep.is_file():
+            rubric = ep.read_text(encoding="utf-8", errors="replace")[:12000]
+
+    # The numerically fastest library entry can be a diagnostic probe that
+    # skipped required work yet happened to pass tolerance. Judge candidates
+    # in speed order and select the fastest source-level PASS, not raw rank #1.
+    ok, status = _run_kernel_helper(
+        root, ["status", "--run-id", rid], timeout=30,
+        cluster=_kernel_record_cluster(rec),
+    )
+    archive = list((status or {}).get("archive") or []) if ok else []
+    archive.sort(key=lambda item: float(item.get("speedup") or 0), reverse=True)
+    if not archive:
+        ok, best = _run_kernel_helper(
+            root, ["best-kernel", "--run-id", rid], timeout=30,
+            cluster=_kernel_record_cluster(rec),
+        )
+        if ok and best.get("job_id"):
+            archive = [best]
+    if not archive:
+        _store({"state": "error", "error": "no kernel available to judge"})
+        return
+
+    reviews: list[dict[str, Any]] = []
+    for candidate in archive[:10]:
+        job_id = str(candidate.get("job_id") or "")
+        ok, source_data = _run_kernel_helper(
+            root, ["kernel-source", "--job-id", job_id], timeout=30,
+            cluster=_kernel_record_cluster(rec),
+        )
+        source = str((source_data or {}).get("source") or "")
+        if not ok or not source:
+            reviews.append({
+                "job_id": job_id,
+                "speedup": candidate.get("speedup"),
+                "state": "error",
+                "error": (source_data or {}).get("error", "source unavailable"),
+            })
+            continue
+        metrics = {
+            "correct": True,  # only correct kernels enter the library
+            "speedup_vs_reference": candidate.get("speedup"),
+            "kernel_us": candidate.get("kernel_us"),
+            "baseline_us": candidate.get("baseline_us"),
+            "agent_index": candidate.get("agent_index"),
+            "task_slug": rec.get("task_slug"),
+            "total_submissions": len(rec.get("submissions_seen") or []) or None,
+        }
+        review = _judge_kernel_candidate(rubric, metrics, source)
+        review.update({"job_id": job_id, "speedup": candidate.get("speedup")})
+        reviews.append(review)
+        if review.get("verdict") == "pass":
+            final_review = dict(review)
+            final_review["candidate_reviews"] = [dict(item) for item in reviews]
+            final_review["export_path"] = _export_judged_kernel(
+                root,
+                str(slug),
+                run_uid,
+                job_id,
+                candidate.get("speedup"),
+                source,
+                str((rec.get("config") or {}).get("plugin") or rec.get("plugin") or ""),
+            )
+            _store(final_review)
+            return
+
+    _store({
+        "state": "done",
+        "verdict": "fail",
+        "score": max(
+            (int(r.get("score") or 0) for r in reviews if r.get("state") == "done"),
+            default=0,
+        ),
+        "reasoning": (
+            f"No source-level PASS among the top {len(reviews)} correct kernels. "
+            + " | ".join(
+                f"{r.get('job_id', '')[:8]} ({float(r.get('speedup') or 0):.2f}×): "
+                f"{r.get('reasoning') or r.get('error') or 'failed review'}"
+                for r in reviews[:3]
+            )
+        )[:2000],
+        "job_id": reviews[0].get("job_id") if reviews else None,
+        "speedup": reviews[0].get("speedup") if reviews else None,
+        "candidate_reviews": reviews,
+    })
+
+
+def _kernel_judge_async(root: Path, run_uid: str) -> None:
+    rec = _kernel_read_record(root, run_uid) or {"id": run_uid}
+    rec["judge"] = {"state": "judging", "started_at": time.time()}
+    _kernel_write_record(root, rec)
+    threading.Thread(
+        target=_judge_kernel_run, args=(root, run_uid), daemon=True
+    ).start()
 
 
 def _kernel_propose_shape(root: Path, cfg: dict[str, Any]) -> Any:
@@ -708,7 +1677,28 @@ def _launch_kernel_run(root: Path, run_uid: str, cfg: dict[str, Any]) -> None:
         args += ["--build"]
     if cfg.get("build_mode"):
         args += ["--build-mode"]
-    ok, data = _run_kernel_launch_streaming(root, run_uid, args, timeout=2400)
+    # Ship the task's INSTRUCTION.md (from the interview) to every agent.
+    rec0 = _kernel_read_record(root, run_uid) or {}
+    slug0 = str(rec0.get("slug") or "").strip()
+    if slug0:
+        contract_path = Path(str(rec0.get("contract_file") or ""))
+        if not contract_path.is_file():
+            contract_files = sorted(_kernel_contract_dir(root, slug0).glob("*.py"))
+            contract_path = contract_files[0] if contract_files else Path()
+        if contract_path.is_file():
+            args += ["--contract-file", str(contract_path)]
+        ipath = _kernel_doc_path(root, slug0, "INSTRUCTION.md")
+        if ipath.is_file():
+            args += ["--instructions-file", str(ipath)]
+        wpath = task_root(root, slug0) / KERNEL_WIKI
+        if wpath.is_file():
+            args += ["--wiki-file", str(wpath)]
+        epath = _kernel_doc_path(root, slug0, "EVALUATION.md")
+        if epath.is_file():
+            args += ["--evaluation-file", str(epath)]
+    ok, data = _run_kernel_launch_streaming(
+        root, run_uid, args, timeout=2400, cluster=str(cfg.get("cluster") or "")
+    )
     rec = _kernel_read_record(root, run_uid) or {"id": run_uid}
     # Persist the resolved shape + how it was chosen so the UI can show it.
     rec["config"] = cfg
@@ -762,21 +1752,36 @@ def _kernel_set_unverified(root: Path, name: str, unverified: bool) -> None:
     tmp.replace(f)
 
 
-def _resolve_plugin_for(root: Path, source: str, timeout: int = 2400) -> tuple[str | None, bool, str]:
+def _resolve_plugin_for(
+    root: Path,
+    source: str,
+    timeout: int = 2400,
+    intent: str = "",
+    out_dir: Path | None = None,
+) -> tuple[str | None, bool, str]:
     """Run resolve_plugin (in-project script or pip module); return
     (plugin_name, created, output_tail)."""
     base, err = _kernel_helper_cmd("resolve_plugin.py")
     if base is None:
         return None, False, err
+    cmd = [*base, "--source", source]
+    if intent.strip():
+        cmd += ["--intent", intent.strip()]
+    if out_dir is not None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cmd += ["--out-dir", str(out_dir)]
     try:
         proc = subprocess.run(
-            [*base, "--source", source],
+            cmd,
             cwd=str(root), capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
         return None, False, "resolve_plugin timed out"
     out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
-    m = re.search(r"RESULT:\s*(CREATE|REUSE)\s+(\S+)", out)
+    # The resolver may emphasize the name in Markdown (`**name**`). Capture
+    # only plugin-name characters so formatting never leaks into the registry
+    # key stored on the prepared record.
+    m = re.search(r"RESULT:\s*(CREATE|REUSE)\s+([A-Za-z0-9_.-]+)", out)
     if not m:
         return None, False, out[-1500:]
     return m.group(2), (m.group(1) == "CREATE"), out[-1500:]
@@ -793,7 +1798,21 @@ def _prepare_kernel_run(root: Path, prep_uid: str, spec: dict[str, Any]) -> None
         return
     rec["state"] = "resolving"
     _kernel_write_record(root, rec)
-    plugin, created, out = _resolve_plugin_for(root, source)
+    # Resolution must match the user's TASK, not just the literal source file
+    # (e.g. "nvfp4 version of this fp8 kernel" -> the nvfp4 plugin).
+    intent_bits = []
+    if spec.get("dtype"):
+        intent_bits.append(f"desired precision/variant: {spec['dtype']}")
+    if spec.get("target"):
+        intent_bits.append(f"target backend: {spec['target']}")
+    slug = str(rec.get("slug") or "").strip()
+    contract_dir = _kernel_contract_dir(root, slug) if slug else None
+    plugin, created, out = _resolve_plugin_for(
+        root,
+        source,
+        intent="; ".join(intent_bits),
+        out_dir=contract_dir,
+    )
     if plugin is None:
         rec.update({"state": "error", "error": "plugin resolution failed", "error_detail": out})
         _kernel_write_record(root, rec)
@@ -801,27 +1820,111 @@ def _prepare_kernel_run(root: Path, prep_uid: str, spec: dict[str, Any]) -> None
     if created:
         _kernel_set_unverified(root, plugin, True)
     rec.update({
-        "state": "prepared",
+        "state": "documenting",
         "kind": "prepare",
         "plugin": plugin,
         "plugin_created": created,
         "verified": plugin not in _kernel_unverified_set(root),
         "needs_build": created,
         "resolve_output": out,
-        "prepared_at": time.time(),
     })
+    if contract_dir is not None:
+        contract_files = sorted(contract_dir.glob("*.py"))
+        if contract_files:
+            rec["contract_file"] = str(
+                contract_dir / "plugin.py"
+                if (contract_dir / "plugin.py").is_file()
+                else contract_files[0]
+            )
+    _kernel_write_record(root, rec)
+    # Turn the interview into the task docs: INSTRUCTION.md for the worker
+    # agents (shipped into their workdirs at launch) and EVALUATION.md for the
+    # judge. Best-effort; the files stay editable in the task dir.
+    if slug:
+        # REUSE still gets an explicit task-local contract wrapper so task
+        # ownership is visible and no generated contract lives in Loom.
+        if contract_dir is not None:
+            _ensure_task_contract_wrapper(root, slug, plugin)
+        if contract_dir is not None:
+            contract_files = sorted(contract_dir.glob("*.py"))
+            if contract_files:
+                rec["contract_file"] = str(
+                    contract_dir / "plugin.py"
+                    if (contract_dir / "plugin.py").is_file()
+                    else contract_files[0]
+                )
+                _kernel_write_record(root, rec)
+        try:
+            iv = read_kernel_interview(root, slug)
+            docs = _generate_kernel_docs(root, slug, spec, (iv or {}).get("messages"))
+            rec["docs"] = docs
+            if not docs.get("ok"):
+                rec.update({
+                    "state": "error",
+                    "error": "task document generation failed",
+                    "error_detail": docs,
+                })
+                _kernel_write_record(root, rec)
+                return
+            _seed_kernel_wiki(root, slug, spec, plugin)
+        except Exception as exc:  # noqa: BLE001
+            rec.update({
+                "state": "error",
+                "error": "task document generation failed",
+                "error_detail": str(exc),
+            })
+            _kernel_write_record(root, rec)
+            print(f"[web] kernel doc generation failed slug={slug}: {exc}", flush=True)
+            return
+    rec.update({"state": "prepared", "prepared_at": time.time()})
     _kernel_write_record(root, rec)
 
 
 _KERNEL_INTERVIEW_SYS = """You are running a short technical interview inside "Kernel Lab" to collect everything needed to (a) define a kernel eval plugin for a GPU kernel and (b) launch an optimization run for it. Ask ONE focused question at a time and be concise. If the user gives a GitHub raw URL or a source link, use your tools to read it and INFER as much as possible (dims, dtype, operation) — only ask what you cannot infer.
 
-Collect: source (a GitHub raw URL, a kernel name, or a clear description of the operation); target hardware (SM100 -> cutedsl/fp8, or H100 -> cuda with bf16/fp8 — this affects whether benchmarking is possible here); run params (target speedup [optional], number of agents, starter mode where "preset" means use the user's file as starting code).
+Collect: source (a GitHub raw URL, a kernel name, or a clear description of the operation); desired implementation precision/variant (e.g. nvfp4 even when the correctness reference is fp8); target architecture (SM100 -> the `sm100` external cluster profile and cutedsl for nvfp4; default profile -> cuda/cutedsl with bf16/fp8); run params (target speedup [optional], number of agents, starter mode: none/generic/best-similar/preset; only use preset when there is a real local preset directory).
 
 Do NOT ask the user for the operation shape/dims. Infer a single representative shape yourself from the source/operation (operation-specific; for attention: heads, head_dim or latent+rope, page_size, KV length, query length Sq, batch, dtype) and include it in the spec — the evaluator benchmarks this shape and the user can override it later if needed.
 
 When AND ONLY WHEN you have everything, reply with ONLY a fenced ```json code block (no other prose), shaped like:
-{"done": true, "spec": {"source": "<url-or-name>", "target": "cutedsl", "shape": {"batch_size": 4, "num_heads": 128}, "dtype": "fp8", "model": "claude-sonnet-4-20250514", "n_agents": 3, "starter_mode": "preset", "target_speedup": null}}
+{"done": true, "spec": {"source": "<url-or-name>", "plugin": "mla.decode_nvfp4", "cluster": "sm100", "target": "cutedsl", "shape": {"batch_size": 4, "num_heads": 128}, "dtype": "nvfp4", "model": "claude-fable-5", "n_agents": 3, "starter_mode": "none", "target_speedup": 1.0}}
 Otherwise reply with your next question as plain text only."""
+
+
+def _normalize_kernel_interview_spec(raw: Any) -> dict[str, Any]:
+    spec = dict(raw) if isinstance(raw, dict) else {}
+    shape = dict(spec.get("shape") or {})
+    aliases = {"sq": "seq_len_q", "kv_len": "max_sequence_kv"}
+    for old, new in aliases.items():
+        if old in shape and new not in shape:
+            shape[new] = shape.pop(old)
+    if shape:
+        spec["shape"] = shape
+
+    dtype = str(spec.get("dtype") or "").strip().lower()
+    if dtype == "nvfp4":
+        spec.setdefault("plugin", "mla.decode_nvfp4")
+        spec.setdefault("cluster", "sm100")
+        spec.setdefault("target", "cutedsl")
+        if spec.get("target_speedup") is None:
+            spec["target_speedup"] = 1.0
+
+    model = str(spec.get("model") or "").strip()
+    if not model or model in {
+        "claude-sonnet-4-20250514",
+        "claude-opus-4-20250514",
+    }:
+        spec["model"] = agent_default_model(AGENT_CLAUDE)
+
+    starter = str(spec.get("starter_mode") or "none").strip().lower()
+    if starter == "scratch":
+        starter = "none"
+    source = str(spec.get("source") or "")
+    if starter == "preset" and source.startswith(("http://", "https://")):
+        # A URL is context in INSTRUCTION.md, not a mountable preset directory.
+        starter = "none"
+    spec["starter_mode"] = starter
+    return spec
 
 
 def _kernel_interview_turn(messages: list[dict[str, Any]], model: str = "") -> dict[str, Any]:
@@ -851,7 +1954,11 @@ def _kernel_interview_turn(messages: list[dict[str, Any]], model: str = "") -> d
         try:
             obj = json.loads(m.group(1))
             if obj.get("done"):
-                return {"ok": True, "done": True, "spec": obj.get("spec", obj)}
+                return {
+                    "ok": True,
+                    "done": True,
+                    "spec": _normalize_kernel_interview_spec(obj.get("spec", obj)),
+                }
         except json.JSONDecodeError:
             pass
     return {"ok": True, "done": False, "assistant": text}
@@ -933,13 +2040,10 @@ def _build_claude_prompt(
     td = task_root(project_root, slug)
     wt = task_worktree_path(project_root, slug)
     wt_line = f"Worktree (branch {meta.branch or '(unset)'}): {wt}" if wt else "Worktree: (none)"
-    skills = ""
-    skills_path = Path(meta.skills_path).expanduser() if meta.skills_path else None
-    if skills_path is None or not skills_path.is_file():
-        skills_path = default_skills if default_skills and default_skills.is_file() else bundled_skills_path()
-    if skills_path.is_file():
-        skills = skills_path.read_text(encoding="utf-8", errors="replace")[:12000]
-    plan_path = td / PLAN
+    # meta.skills_path may name several ;-joined skills files - inject them all.
+    skills = load_skills_text(meta.skills_path, default_skills)
+    state_doc = KERNEL_WIKI if meta.kind == "kernel" else PLAN
+    plan_path = td / state_doc
     if (meta.kind or "").strip().lower() == "aris":
         aris_skill_path = bundled_skills_path().parent / "aris" / "ARIS.md"
         aris_skill = ""
@@ -988,7 +2092,7 @@ General goal:
 {wt_line}
 
 Default skills from:
-{skills_path}
+{meta.skills_path or "(bundled default)"}
 
 Default skills:
 ---
@@ -1009,21 +2113,21 @@ RUD workflow:
    - Progress Log / Result section
    Do not leave interview notes only in chat; the result of the interview
    must be captured DIRECTLY in {plan_path}.
-3. After PLAN.md is solid, tell the user it is ready to run. The user can
-   click RUD's "Run /goal" button (or type /goal) to execute PLAN.md.
+3. After {state_doc} is solid, tell the user it is ready to run. The user can
+   click RUD's "Run /goal" button (or type /goal) to execute {state_doc}.
 4. While executing and when finished, keep writing useful progress,
    blockers, decisions, and final results back into {plan_path}. Remove
    obsolete/noisy details, but preserve unrelated prior sections.
 
 Behavioural constraints:
-- PLAN.md is the ONLY task-state file. Do not create INTERVIEW.md,
+- {state_doc} is the ONLY task-state file. Do not create INTERVIEW.md,
   TODO.md, PROGRESS.md, NOTES.md, or any other scattered status files in
   the task directory or the repo.
 - Project-scoped scratch lives in the project's NOTES.md at .RUD/NOTES.md
   (handled by the user via the web UI), not inside the worktree.
 
 Begin by reading {plan_path}, then either ask the first interview
-question or, if PLAN.md is already detailed enough, acknowledge that it is
+question or, if {state_doc} is already detailed enough, acknowledge that it is
 ready and wait for the user to run ``/goal``.
 """
 
@@ -1099,9 +2203,35 @@ class ClaudeRegistry:
         cwd = _task_pane_cwd(project_root, slug, meta)
 
         agent = normalize_agent(meta.agent)
-        session_name = self._live_or_default_session(project_id, slug, agent)
+
+        def launch_line(argv: list[str]) -> str:
+            line = shlex.join(argv)
+            if agent == AGENT_CURSOR:
+                # Cursor asks the terminal for capabilities/colors during
+                # startup. Because web input is injected through tmux, those
+                # response bytes can arrive before Cursor enables raw mode and
+                # get echoed as `^[[?1;2c...`. Disable tty echo around the
+                # process and restore it when Cursor exits.
+                return f"stty -echo; {line}; stty echo"
+            return line
+
+        def watch_cursor_ready() -> None:
+            if agent == AGENT_CURSOR:
+                threading.Thread(
+                    target=self._wait_for_claude_ready,
+                    args=(target, 45.0),
+                    daemon=True,
+                ).start()
+
+        session_name = self._live_or_default_session(
+            project_id, slug, agent, meta.tmux_interview_target or ""
+        )
         target = f"{session_name}:0.0"
-        existing_files = {p.name for p in list_session_files(cwd, agent)}
+        existing_ids = {
+            sid
+            for p in list_session_files(cwd, agent)
+            if (sid := session_id_from_path(p, agent))
+        }
         if self._tmux_session_exists(session_name):
             if resume_session_id:
                 pane_command = self._pane_current_command(target)
@@ -1123,7 +2253,7 @@ class ClaudeRegistry:
                 )
                 try:
                     proc = subprocess.Popen(
-                        ["tmux", "send-keys", "-t", target, shlex.join(agent_cmd), "Enter"],
+                        ["tmux", "send-keys", "-t", target, launch_line(agent_cmd), "Enter"],
                         cwd=str(cwd),
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
@@ -1134,11 +2264,12 @@ class ClaudeRegistry:
                     return {"ok": False, "error": str(e)}
                 with self._lock:
                     self._runs[self._registry_key(project_id, slug)] = proc
+                watch_cursor_ready()
                 update_meta(project_root, slug, tmux_interview_target=target)
                 add_claude_session(project_root, slug, resume_session_id)
                 threading.Thread(
                     target=self._watch_for_session_id,
-                    args=(project_root, slug, cwd, agent, existing_files),
+                    args=(project_root, slug, cwd, agent, existing_ids),
                     daemon=True,
                 ).start()
                 return {
@@ -1153,6 +2284,47 @@ class ClaudeRegistry:
                     "prompt_pending": False,
                     "pane_command": pane_command,
                 }
+            pane_command = self._pane_current_command(target)
+            if self._pane_is_idle_shell(pane_command):
+                # The tmux session survived but the previous agent exited back
+                # to its shell. "Start Agent" should relaunch it rather than
+                # incorrectly reporting an already-running pane.
+                agent_cmd = build_agent_command(
+                    agent,
+                    model=meta.interview_model or agent_default_model(agent),
+                )
+                try:
+                    proc = subprocess.Popen(
+                        ["tmux", "send-keys", "-t", target, launch_line(agent_cmd), "Enter"],
+                        cwd=str(cwd),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        env=tmux_subprocess_env(),
+                        start_new_session=True,
+                    )
+                except OSError as e:
+                    return {"ok": False, "error": str(e)}
+                with self._lock:
+                    self._runs[self._registry_key(project_id, slug)] = proc
+                watch_cursor_ready()
+                threading.Thread(
+                    target=self._watch_for_session_id,
+                    args=(project_root, slug, cwd, agent, existing_ids),
+                    daemon=True,
+                ).start()
+                update_meta(project_root, slug, tmux_interview_target=target)
+                return {
+                    "ok": True,
+                    "target": target,
+                    "session": session_name,
+                    "cwd": str(cwd),
+                    "agent": agent,
+                    "already_running": False,
+                    "reused_tmux": True,
+                    "prompt_pending": True,
+                    "pane_command": pane_command,
+                }
+            watch_cursor_ready()
             update_meta(project_root, slug, tmux_interview_target=target)
             return {
                 "ok": True,
@@ -1185,7 +2357,7 @@ class ClaudeRegistry:
         )
         try:
             proc = subprocess.Popen(
-                ["tmux", "send-keys", "-t", target, shlex.join(agent_cmd), "Enter"],
+                ["tmux", "send-keys", "-t", target, launch_line(agent_cmd), "Enter"],
                 cwd=str(cwd),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -1196,19 +2368,20 @@ class ClaudeRegistry:
             return {"ok": False, "error": str(e)}
         with self._lock:
             self._runs[self._registry_key(project_id, slug)] = proc
+        watch_cursor_ready()
 
         update_meta(project_root, slug, tmux_interview_target=target)
         if resume_session_id:
             add_claude_session(project_root, slug, resume_session_id)
             threading.Thread(
                 target=self._watch_for_session_id,
-                args=(project_root, slug, cwd, agent, existing_files),
+                args=(project_root, slug, cwd, agent, existing_ids),
                 daemon=True,
             ).start()
         else:
             threading.Thread(
                 target=self._watch_for_session_id,
-                args=(project_root, slug, cwd, agent, existing_files),
+                args=(project_root, slug, cwd, agent, existing_ids),
                 daemon=True,
             ).start()
         return {
@@ -1235,17 +2408,26 @@ class ClaudeRegistry:
         if not meta:
             return {"ok": False, "error": "Task not found"}
         agent = normalize_agent(meta.agent)
-        session_name = self._live_or_default_session(project_id, slug, agent)
-        target = (meta.tmux_interview_target or "").strip() or f"{session_name}:0.0"
+        session_name = self._live_or_default_session(
+            project_id, slug, agent, meta.tmux_interview_target or ""
+        )
         if not self._tmux_session_exists(session_name):
             return {"ok": False, "error": "Start the agent pane first"}
+        target = (meta.tmux_interview_target or "").strip() or f"{session_name}:0.0"
+        # If the recorded target points at a dead session (while a live pane
+        # exists under another name), paste into the live one instead.
+        if not self._tmux_session_exists(_session_name_from_tmux_target(target)):
+            target = f"{session_name}:0.0"
+        if agent == AGENT_CURSOR:
+            self._wait_for_claude_ready(target, timeout=15.0)
         update_meta(project_root, slug, tmux_interview_target=target)
         return self._paste_prompt_to_target(project_root, slug, target, default_skills=default_skills)
 
     def stop(self, project_root: Path, project_id: str, slug: str) -> dict[str, Any]:
         meta = read_meta(project_root, slug)
-        agent = normalize_agent(meta.agent) if meta else AGENT_CLAUDE
-        session_name = self._live_or_default_session(project_id, slug, agent)
+        agent = normalize_agent(meta.agent) if meta else AGENT_CURSOR
+        meta_target = (meta.tmux_interview_target or "") if meta else ""
+        session_name = self._live_or_default_session(project_id, slug, agent, meta_target)
         stopped, msg = self._kill_tmux_session(session_name)
         # Clean up every other variant for this task: the other agent's session
         # (if the user flipped agents), the old "interview" pane name, and the
@@ -1279,17 +2461,23 @@ class ClaudeRegistry:
         return r.returncode == 0
 
     def _live_or_default_session(
-        self, project_id: str, slug: str, agent: str = AGENT_CLAUDE
+        self, project_id: str, slug: str, agent: str = AGENT_CURSOR, meta_target: str = ""
     ) -> str:
         """Session name to operate on: an already-running pane for this task
-        (current ``loom-`` or legacy ``claudeloop-``), otherwise the new
-        ``loom-`` name for a fresh start. Keeps pre-rename panes fully working."""
+        (current ``loom-`` or legacy ``claudeloop-`` brand), else the live
+        session recorded in task meta (its name embeds the project id from
+        creation time, and the registry can re-issue ids - e.g. after the
+        claudeloop->loom rename - so it may differ from today's derived name),
+        otherwise the new ``loom-`` name for a fresh start."""
         primary = _safe_claude_session_name(project_id, slug, agent)
         if self._tmux_session_exists(primary):
             return primary
         legacy = _legacy_claude_session_name(project_id, slug, agent)
         if legacy != primary and self._tmux_session_exists(legacy):
             return legacy
+        recorded = _session_name_from_tmux_target(meta_target)
+        if recorded and recorded not in (primary, legacy) and self._tmux_session_exists(recorded):
+            return recorded
         return primary
 
     def _pane_current_command(self, target: str) -> str:
@@ -1312,8 +2500,10 @@ class ClaudeRegistry:
         cmd = Path((command or "").strip()).name.lower()
         return cmd in {"", "bash", "dash", "fish", "sh", "tmux", "zsh"}
 
-    def session_status(self, project_id: str, slug: str, agent: str = AGENT_CLAUDE) -> dict[str, Any]:
-        session_name = self._live_or_default_session(project_id, slug, agent)
+    def session_status(
+        self, project_id: str, slug: str, agent: str = AGENT_CURSOR, meta_target: str = ""
+    ) -> dict[str, Any]:
+        session_name = self._live_or_default_session(project_id, slug, agent, meta_target)
         target = f"{session_name}:0.0"
         tmux_alive = self._tmux_session_exists(session_name)
         pane_command = self._pane_current_command(target) if tmux_alive else ""
@@ -1345,10 +2535,20 @@ class ClaudeRegistry:
 
     def _wait_for_claude_ready(self, target: str, timeout: float = 45.0) -> None:
         deadline = time.time() + timeout
-        markers = ("\u276f", "\u256d", "tips:", "/help")
+        markers = ("\u276f", "\u256d", "tip:", "tips:", "/help", "cursor agent")
         while time.time() < deadline:
             ok, text = capture_pane(target, 80)
-            if ok and any(m in text.lower() for m in markers):
+            lower = text.lower() if ok else ""
+            # Cursor Agent asks once per new workspace. Loom creates isolated
+            # task workdirs, so accept this prompt automatically; otherwise
+            # the subsequent deep-interview paste lands on the trust screen.
+            if "trust this workspace" in lower:
+                # Enter activates the preselected "Trust" row without leaking
+                # the shortcut letter `a` into the first chat prompt.
+                send_pane_key(target, "Enter")
+                time.sleep(2)
+                continue
+            if ok and any(m in lower for m in markers):
                 time.sleep(2)
                 return
             time.sleep(2)
@@ -1359,17 +2559,16 @@ class ClaudeRegistry:
         slug: str,
         cwd: Path,
         agent: str,
-        existing_filenames: set[str],
+        existing_ids: set[str],
     ) -> None:
         """Poll the agent's session dir for a freshly-written session file."""
         deadline = time.time() + 90.0
         while time.time() < deadline:
             for p in list_session_files(cwd, agent):
-                if p.name not in existing_filenames:
-                    sid = session_id_from_path(p, agent)
-                    if sid:
-                        add_claude_session(project_root, slug, sid)
-                        return
+                sid = session_id_from_path(p, agent)
+                if sid and sid not in existing_ids:
+                    add_claude_session(project_root, slug, sid)
+                    return
             time.sleep(2)
 
     def _paste_prompt_and_watch_session(
@@ -1379,7 +2578,7 @@ class ClaudeRegistry:
         target: str,
         cwd: Path,
         agent: str,
-        existing_filenames: set[str],
+        existing_ids: set[str],
         default_skills: Path | None = None,
     ) -> None:
         # Give the CLI a short chance to paint its input prompt, but do not
@@ -1393,7 +2592,7 @@ class ClaudeRegistry:
                 f"[web] paste prompt failed slug={slug}: {result.get('error', 'unknown error')}",
                 flush=True,
             )
-        self._watch_for_session_id(project_root, slug, cwd, agent, existing_filenames)
+        self._watch_for_session_id(project_root, slug, cwd, agent, existing_ids)
 
     def _paste_prompt_to_target(
         self,
@@ -1814,7 +3013,9 @@ def make_handler(
                 if sid not in seen:
                     ordered.append(info)
             ordered.sort(key=lambda x: x.get("mtime", 0.0), reverse=True)
-            live = claude_registry.session_status(project_id, slug, agent)
+            live = claude_registry.session_status(
+                project_id, slug, agent, meta.tmux_interview_target or ""
+            )
             return {
                 "agent": agent,
                 "agent_label": agent_label(agent),
@@ -1881,9 +3082,19 @@ def make_handler(
                     {
                         "projectRoot": str(root),
                         "projectId": pid,
+                        "codeRootPattern": pr.get_code_root_pattern(pid),
+                        "codeRootPath": str(pr.get_code_root(pid) or root),
                         "skillsPath": str(sk),
                         "skillsBundledRelative": "loom/skills/charlie_skills.md",
                         "skillsOptions": _available_skill_options(sk, root),
+                        "modelDefaults": {
+                            agent: agent_default_model(agent)
+                            for agent in sorted(SUPPORTED_AGENTS)
+                        },
+                        "modelOptions": {
+                            agent: list(agent_model_options(agent))
+                            for agent in sorted(SUPPORTED_AGENTS)
+                        },
                     }
                 )
                 self._send(st, b, h)
@@ -2055,7 +3266,15 @@ def make_handler(
                     return
                 ok, data = _run_kernel_helper(root, ["plugins"], timeout=30)
                 if ok:
+                    task_slug = (parse_qs(parsed.query or "").get("task") or [""])[0].strip()
+                    if task_slug and _SLUG_RE.match(task_slug):
+                        task_plugins = _task_contract_plugins(root, task_slug)
+                        data["plugins"] = list(dict.fromkeys([
+                            *task_plugins,
+                            *(data.get("plugins") or []),
+                        ]))
                     data["unverified"] = sorted(_kernel_unverified_set(root))
+                    data["clusters"] = [""] + sorted(_kernel_cluster_profiles())
                 st, b, h = _json_bytes(data, 200 if ok else 502)
                 self._send(st, b, h)
                 return
@@ -2065,7 +3284,12 @@ def make_handler(
                 if root is None:
                     self._bad_project()
                     return
-                ok, data = _kernel_service_status_cached(root)
+                qs_cluster = (parse_qs(parsed.query or "").get("cluster") or [""])[0].strip()
+                if qs_cluster and qs_cluster not in _kernel_cluster_profiles():
+                    qs_cluster = ""
+                ok, data = _kernel_service_status_cached(root, qs_cluster)
+                if isinstance(data, dict):
+                    data["cluster"] = qs_cluster
                 st, b, h = _json_bytes(data, 200 if ok else 502)
                 self._send(st, b, h)
                 return
@@ -2103,6 +3327,52 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
+            m_kalog = re.match(r"^/api/kernel/runs/([^/]+)/agents/([0-9]+)/log$", path)
+            if m_kalog:
+                root, _pid = self._resolve_scope(parsed)
+                if root is None:
+                    self._bad_project()
+                    return
+                run_uid, agent_idx = m_kalog.group(1), m_kalog.group(2)
+                if not _KERNEL_ID_RE.match(run_uid):
+                    st, b, h = _json_bytes({"error": "invalid run id"}, 400)
+                    self._send(st, b, h)
+                    return
+                rec = _kernel_read_record(root, run_uid)
+                rid = (rec or {}).get("run_id")
+                if not rid:
+                    st, b, h = _json_bytes({"ok": False, "error": "run not started yet"})
+                    self._send(st, b, h)
+                    return
+                ok, data = _run_kernel_helper(
+                    root,
+                    ["agent-log", "--run-id", rid, "--agent", agent_idx, "--tail", "300"],
+                    timeout=40,
+                    cluster=_kernel_record_cluster(rec),
+                )
+                if ok and (data or {}).get("log"):
+                    local_path = _kernel_mirror_agent_log(
+                        root, rec or {}, agent_idx, str(data["log"])
+                    )
+                    if local_path:
+                        data["local_path"] = local_path
+                elif not ok and rec is not None:
+                    local_log = _kernel_task_agent_dir(
+                        root, str(rec.get("slug") or ""), run_uid, agent_idx
+                    ) / "agent.log"
+                    if local_log.is_file():
+                        data = {
+                            "ok": True,
+                            "agent": agent_idx,
+                            "log": local_log.read_text(encoding="utf-8", errors="replace"),
+                            "local_path": str(local_log),
+                            "source": "task-local mirror",
+                        }
+                        ok = True
+                st, b, h = _json_bytes(data, 200 if ok else 200)  # soft-fail: UI shows data.error
+                self._send(st, b, h)
+                return
+
             m_kleader = re.match(r"^/api/kernel/runs/([^/]+)/leaderboard$", path)
             if m_kleader:
                 root, _pid = self._resolve_scope(parsed)
@@ -2124,7 +3394,12 @@ def make_handler(
                     st, b, h = _json_bytes({"ok": False, "error": "run not started yet"})
                     self._send(st, b, h)
                     return
-                ok, status = _run_kernel_helper(root, ["status", "--run-id", rid], timeout=30)
+                ok, status = _run_kernel_helper(
+                    root, ["status", "--run-id", rid], timeout=30,
+                    cluster=_kernel_record_cluster(rec),
+                )
+                if ok:
+                    _kernel_merge_submissions(root, rec, status)
                 st, b, h = _json_bytes(
                     status if ok else {"ok": False, "error": (status or {}).get("error", "status failed")},
                     200 if ok else 502,
@@ -2149,7 +3424,10 @@ def make_handler(
                     st, b, h = _json_bytes({"ok": False, "error": "run not started yet"})
                     self._send(st, b, h)
                     return
-                ok, data = _run_kernel_helper(root, ["best-kernel", "--run-id", rid], timeout=30)
+                ok, data = _run_kernel_helper(
+                    root, ["best-kernel", "--run-id", rid], timeout=30,
+                    cluster=_kernel_record_cluster(rec),
+                )
                 st, b, h = _json_bytes(data, 200 if ok else 502)
                 self._send(st, b, h)
                 return
@@ -2160,12 +3438,33 @@ def make_handler(
                 if root is None:
                     self._bad_project()
                     return
-                job_id = m_ksrc.group(2)
+                run_uid, job_id = m_ksrc.group(1), m_ksrc.group(2)
                 if not _KERNEL_ID_RE.match(job_id):
                     st, b, h = _json_bytes({"error": "invalid job id"}, 400)
                     self._send(st, b, h)
                     return
-                ok, data = _run_kernel_helper(root, ["kernel-source", "--job-id", job_id], timeout=30)
+                rec = _kernel_read_record(root, run_uid) if _KERNEL_ID_RE.match(run_uid) else None
+                local_matches: list[Path] = []
+                if rec is not None and rec.get("slug"):
+                    local_matches = list(
+                        (_kernel_task_run_dir(root, str(rec["slug"]), run_uid) / "agents").glob(
+                            f"*/attempts/*-{job_id}.*"
+                        )
+                    )
+                if local_matches:
+                    source = local_matches[0].read_text(encoding="utf-8", errors="replace")
+                    st, b, h = _json_bytes({
+                        "ok": True,
+                        "job_id": job_id,
+                        "source": source,
+                        "local_path": str(local_matches[0]),
+                    })
+                    self._send(st, b, h)
+                    return
+                ok, data = _run_kernel_helper(
+                    root, ["kernel-source", "--job-id", job_id], timeout=30,
+                    cluster=_kernel_record_cluster(rec),
+                )
                 st, b, h = _json_bytes(data, 200 if ok else 502)
                 self._send(st, b, h)
                 return
@@ -2188,18 +3487,40 @@ def make_handler(
                     return
                 if rec.get("run_id") and rec.get("state") == "running":
                     ok, status = _run_kernel_helper(
-                        root, ["status", "--run-id", rec["run_id"]], timeout=30
+                        root, ["status", "--run-id", rec["run_id"]], timeout=30,
+                        cluster=_kernel_record_cluster(rec),
                     )
                     if ok:
+                        _kernel_merge_submissions(root, rec, status)
                         rec["status"] = status
+                        # The auto-terminate watcher finishes runs out-of-band
+                        # (kills agents, postprocesses the winner) and nothing
+                        # told this record - detect "all agents gone" and flip
+                        # the state so the UI doesn't show a zombie "running".
+                        age = time.time() - (rec.get("launched_at") or rec.get("created_at") or 0)
+                        if (
+                            status.get("agents_known")
+                            and not status.get("agents_running")
+                            and age > 180
+                        ):
+                            done = bool(status.get("best") or status.get("improvements"))
+                            rec["state"] = "finished" if done else "stopped"
+                            rec["finished_at"] = time.time()
+                            _kernel_write_record(root, rec)
+                            # Judge the winning kernel against EVALUATION.md
+                            # (hard results + source review) once, on finish.
+                            if done and not rec.get("judge"):
+                                _kernel_judge_async(root, run_uid)
+                                rec = _kernel_read_record(root, run_uid) or rec
+                rec = _maybe_export_judged_kernel_async(root, rec)
                 st, b, h = _json_bytes(rec)
                 self._send(st, b, h)
                 return
 
             m_wt_cand = re.match(r"^/api/tasks/([^/]+)/worktree-candidates$", path)
             if m_wt_cand:
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
+                root, project_id = self._resolve_scope(parsed)
+                if root is None or project_id is None:
                     self._bad_project()
                     return
                 slug = m_wt_cand.group(1)
@@ -2212,7 +3533,7 @@ def make_handler(
                     st, b, h = _json_bytes({"error": "not found"}, 404)
                     self._send(st, b, h)
                     return
-                candidates = list_worktree_candidates(root)
+                candidates = _project_worktree_candidates(pr, root, project_id)
                 # Annotate each candidate with the destination path + a
                 # flag the UI uses to disable rows that are already wired
                 # in.  "Already created" means the dest dir is a registered
@@ -2334,27 +3655,29 @@ def make_handler(
                         if project_id
                         else None
                     )
-                    # Surface every top-level *.md file in the task directory so
-                    # the Claude tab's embedded picker can switch between them.
-                    # PLAN.md is always present even if empty so the dedicated
-                    # PLAN.md editor has something to render.
+                    # Surface every top-level *.md file in the task directory.
+                    # Normal tasks use PLAN.md; kernel tasks deliberately use
+                    # WIKI.md as the shared worker/evaluator knowledge base.
                     md_names = list_task_markdown_files(root, slug)
                     templates: dict[str, str] = {}
                     for md_name in md_names:
                         content = read_task_markdown_file(root, slug, md_name)
                         if content is not None:
                             templates[md_name] = content
-                    if PLAN not in templates:
-                        templates[PLAN] = read_template(root, slug, PLAN) or ""
-                        if PLAN not in md_names:
-                            md_names = [PLAN, *md_names]
+                    primary_md = KERNEL_WIKI if meta.kind == "kernel" else PLAN
+                    if primary_md not in templates:
+                        templates[primary_md] = read_template(root, slug, primary_md) or ""
+                        if primary_md not in md_names:
+                            md_names = [primary_md, *md_names]
+                    elif primary_md in md_names:
+                        md_names = [primary_md, *(name for name in md_names if name != primary_md)]
                     statuses = statuses_fut.result()
                     summary = summary_fut.result() if summary_fut is not None else None
                 st, b, h = _json_bytes(
                     {
                         "meta": meta.to_dict(),
                         "task_root": str(task_root(root, slug)),
-                        "plan_path": str(task_root(root, slug) / PLAN),
+                        "plan_path": str(task_root(root, slug) / primary_md),
                         "templates": templates,
                         "task_markdown_files": md_names,
                         "claude": summary or {},
@@ -2394,14 +3717,34 @@ def make_handler(
                     )
                     self._send(st, b, h)
                     return
+                cluster = str(body.get("cluster", "") or "").strip()
+                if cluster and cluster not in _kernel_cluster_profiles():
+                    st, b, h = _json_bytes(
+                        {"error": f"unknown cluster profile: {cluster}"}, 400
+                    )
+                    self._send(st, b, h)
+                    return
+                raw_run_mode = str(body.get("run_mode", "") or "").strip()
+                run_mode = "optimize" if raw_run_mode == "optimize" else "scratch"
+                starter_mode = (
+                    "best-similar"
+                    if raw_run_mode and run_mode == "optimize"
+                    else (
+                        "none"
+                        if raw_run_mode
+                        else str(body.get("starter_mode", "none") or "none")
+                    )
+                )
                 run_uid = uuid.uuid4().hex[:12]
                 cfg = {
                     "plugin": plugin,
                     "target": target,
                     "model": model,
+                    "cluster": cluster,
+                    "run_mode": run_mode,
                     "shape": shape if shape else None,
                     "n_agents": int(body.get("n_agents", 1) or 1),
-                    "starter_mode": str(body.get("starter_mode", "none") or "none"),
+                    "starter_mode": starter_mode,
                     "target_speedup": body.get("target_speedup"),
                     "auto_terminate": bool(body.get("auto_terminate", False)),
                     "poll_interval": int(body.get("poll_interval", 60) or 60),
@@ -2424,10 +3767,38 @@ def make_handler(
                     "created_at": time.time(),
                 }
                 _kernel_write_record(root, rec)
+                _initialize_kernel_run_artifacts(root, rec)
                 threading.Thread(
                     target=_launch_kernel_run, args=(root, run_uid, cfg), daemon=True
                 ).start()
                 st, b, h = _json_bytes({"ok": True, "id": run_uid, "state": "launching"}, 202)
+                self._send(st, b, h)
+                return
+
+            m_kjudge = re.match(r"^/api/kernel/runs/([^/]+)/judge$", path)
+            if m_kjudge:
+                root, _pid = self._resolve_scope(parsed)
+                if root is None:
+                    self._bad_project()
+                    return
+                run_uid = m_kjudge.group(1)
+                if not _KERNEL_ID_RE.match(run_uid):
+                    st, b, h = _json_bytes({"error": "invalid run id"}, 400)
+                    self._send(st, b, h)
+                    return
+                rec = _kernel_read_record(root, run_uid)
+                if rec is None:
+                    st, b, h = _json_bytes({"error": "not found"}, 404)
+                    self._send(st, b, h)
+                    return
+                judge_state = rec.get("judge") or {}
+                judge_age = time.time() - float(judge_state.get("started_at") or 0)
+                if judge_state.get("state") == "judging" and judge_age < 600:
+                    st, b, h = _json_bytes({"ok": True, "state": "judging"}, 202)
+                    self._send(st, b, h)
+                    return
+                _kernel_judge_async(root, run_uid)
+                st, b, h = _json_bytes({"ok": True, "state": "judging"}, 202)
                 self._send(st, b, h)
                 return
 
@@ -2450,7 +3821,8 @@ def make_handler(
                 result: dict[str, Any] = {"ok": True}
                 if rec.get("run_id"):
                     _ok, result = _run_kernel_helper(
-                        root, ["stop", "--run-id", rec["run_id"]], timeout=600
+                        root, ["stop", "--run-id", rec["run_id"]], timeout=600,
+                        cluster=_kernel_record_cluster(rec),
                     )
                 rec["state"] = "stopped"
                 _kernel_write_record(root, rec)
@@ -2541,13 +3913,22 @@ def make_handler(
                     st, b, h = _json_bytes({"error": "title and general_goal required"}, 400)
                     self._send(st, b, h)
                     return
-                skills_path = default_skills.resolve() if default_skills.is_file() else bundled_skills_path().resolve()
+                # skills_path may be one path, a ;-joined string, or a list of
+                # paths (multiple skills used together).
                 raw_sp = body.get("skills_path")
-                if raw_sp and str(raw_sp).strip():
-                    cand = Path(str(raw_sp)).expanduser().resolve()
-                    if cand.is_file():
-                        skills_path = cand
-                raw_agent = str(body.get("agent", AGENT_CLAUDE)).strip().lower()
+                if isinstance(raw_sp, list):
+                    raw_sp = SKILLS_PATH_SEP.join(str(x) for x in raw_sp)
+                requested = [
+                    p.resolve() for p in split_skills_paths(str(raw_sp or ""))
+                    if p.is_file()
+                ]
+                if not requested:
+                    requested = [
+                        default_skills.resolve() if default_skills.is_file()
+                        else bundled_skills_path().resolve()
+                    ]
+                skills_path = join_skills_paths(requested)
+                raw_agent = str(body.get("agent", AGENT_CURSOR)).strip().lower()
                 if raw_agent and raw_agent not in SUPPORTED_AGENTS:
                     st, b, h = _json_bytes(
                         {"error": f"agent must be one of {sorted(SUPPORTED_AGENTS)}"},
@@ -2562,25 +3943,30 @@ def make_handler(
                     skills_path=skills_path,
                     interview_model=(
                         str(body.get("interview_model", "")).strip()
-                        or agent_default_model(raw_agent or AGENT_CLAUDE)
+                        or agent_default_model(raw_agent or AGENT_CURSOR)
                     ),
-                    agent=raw_agent or AGENT_CLAUDE,
+                    agent=raw_agent or AGENT_CURSOR,
                     kind={"kernel": "kernel", "aris": "aris"}.get(
                         str(body.get("kind", "")).strip().lower(), "agent"
                     ),
+                    auto_worktree=False,
                 )
-                cands = list_worktree_candidates(root)
+                code_root = pr.get_code_root(project_id) or root
+                wt, _branch, auto_msg = prepare_task_worktree_from(
+                    root, meta.slug, code_root
+                )
+                meta = read_meta(root, meta.slug) or meta
+                cands = _project_worktree_candidates(pr, root, project_id)
                 hint = ""
                 if not meta.worktree_path:
                     if not cands:
                         hint = (
-                            f" (no git repo at project root {root} or its direct"
-                            " children; nothing to worktree)"
+                            f" (configured code root {code_root} is not a git repo)"
                         )
                     else:
                         hint = (
-                            f" (auto-skip: {len(cands)} candidate(s) "
-                            f"available - pick one via the Claude tab)"
+                            f" (auto-skip: {auto_msg}; {len(cands)} candidate(s) "
+                            f"available - pick one via the Agent tab)"
                         )
                 print(
                     f"[web] created task slug={meta.slug} dir={task_root(root, meta.slug)} "
@@ -2695,6 +4081,7 @@ def make_handler(
                 raw_path = str(body.get("path", "")).strip()
                 mode = str(body.get("mode", "existing")).strip().lower()
                 repo_url = str(body.get("repo_url", "")).strip()
+                code_root_pattern = str(body.get("code_root_pattern", ".") or ".").strip()
                 if not raw_path:
                     st, b, h = _json_bytes({"error": "path required"}, 400)
                     self._send(st, b, h)
@@ -2733,7 +4120,21 @@ def make_handler(
                             self._send(st, b, h)
                             return
                     raw_path = str(dest)
-                new_id, err = pr.add_by_path(raw_path)
+                try:
+                    normalized_code_root = pr._normalize_code_root_pattern(code_root_pattern)
+                except ValueError as exc:
+                    st, b, h = _json_bytes({"error": str(exc)}, 400)
+                    self._send(st, b, h)
+                    return
+                candidate_code_root = (Path(raw_path).expanduser().resolve() / normalized_code_root)
+                if not candidate_code_root.is_dir():
+                    st, b, h = _json_bytes(
+                        {"error": f"code root directory does not exist: {candidate_code_root}"},
+                        400,
+                    )
+                    self._send(st, b, h)
+                    return
+                new_id, err = pr.add_by_path(raw_path, normalized_code_root)
                 if err or not new_id:
                     st, b, h = _json_bytes({"error": err or "failed"}, 400)
                     self._send(st, b, h)
@@ -2742,6 +4143,26 @@ def make_handler(
                     {"id": new_id, "defaultProjectId": pr.default_project_id, "projects": pr.list_projects()},
                     201,
                 )
+                self._send(st, b, h)
+                return
+
+            m_code_root = re.match(r"^/api/projects/([^/]+)/code-root$", path)
+            if m_code_root:
+                pid_code = m_code_root.group(1)
+                ok_code, err_code = pr.set_code_root_pattern(
+                    pid_code, str(body.get("pattern", "."))
+                )
+                if not ok_code:
+                    status = 404 if err_code == "project not found" else 400
+                    st, b, h = _json_bytes({"error": err_code}, status)
+                    self._send(st, b, h)
+                    return
+                st, b, h = _json_bytes({
+                    "ok": True,
+                    "pattern": pr.get_code_root_pattern(pid_code),
+                    "path": str(pr.get_code_root(pid_code) or ""),
+                    "projects": pr.list_projects(),
+                })
                 self._send(st, b, h)
                 return
 
@@ -2961,7 +4382,7 @@ def make_handler(
                 # against an arbitrary path on disk.
                 allowed = {
                     str(Path(c["path"]).resolve())
-                    for c in list_worktree_candidates(root)
+                    for c in _project_worktree_candidates(pr, root, project_id)
                 }
                 try:
                     src_resolved = str(Path(raw_src).expanduser().resolve())
@@ -3138,12 +4559,9 @@ def make_handler(
                     )
                     self._send(st, b, h)
                     return
-                skills_text = ""
-                sp = Path(meta.skills_path).expanduser() if meta.skills_path else None
-                if sp is None or not sp.is_file():
-                    sp = default_skills if default_skills.is_file() else bundled_skills_path()
-                if sp.is_file():
-                    skills_text = sp.read_text(encoding="utf-8", errors="replace")[:8000]
+                skills_text = load_skills_text(
+                    meta.skills_path, default_skills, limit_total=8000
+                )
                 result = _run_worktree_review(
                     wt,
                     str(body.get("rules", "")),
@@ -3306,9 +4724,19 @@ def make_handler(
                 goal = body.get("general_goal")
                 agent_in = body.get("agent")
                 skills_in = body.get("skills_path")
-                if title is None and goal is None and agent_in is None and skills_in is None:
+                model_in = body.get("interview_model")
+                if (
+                    title is None
+                    and goal is None
+                    and agent_in is None
+                    and skills_in is None
+                    and model_in is None
+                ):
                     st, b, h = _json_bytes(
-                        {"error": "supply title and/or general_goal and/or agent and/or skills_path"},
+                        {
+                            "error": "supply title and/or general_goal and/or "
+                            "agent and/or skills_path and/or interview_model"
+                        },
                         400,
                     )
                     self._send(st, b, h)
@@ -3322,19 +4750,50 @@ def make_handler(
                         )
                         self._send(st, b, h)
                         return
-                    update_meta(root, slug, agent=raw)
+                    update_meta(
+                        root,
+                        slug,
+                        agent=raw,
+                        # A model from the other CLI is generally invalid
+                        # (claude-* for Codex or gpt-* for Claude). Switching
+                        # agent resets to that CLI's configured default unless
+                        # the request explicitly supplies a model below.
+                        interview_model=(
+                            agent_default_model(raw) if model_in is None else None
+                        ),
+                    )
                 if skills_in is not None:
+                    if isinstance(skills_in, list):
+                        skills_in = SKILLS_PATH_SEP.join(str(x) for x in skills_in)
                     try:
-                        cand = Path(str(skills_in)).expanduser().resolve()
+                        cands = [
+                            p.resolve() for p in split_skills_paths(str(skills_in))
+                        ]
                     except OSError as exc:
                         st, b, h = _json_bytes({"error": f"invalid skills_path: {exc}"}, 400)
                         self._send(st, b, h)
                         return
-                    if not cand.is_file() or cand.suffix.lower() != ".md":
-                        st, b, h = _json_bytes({"error": "skills_path must be a markdown file"}, 400)
+                    bad = [
+                        str(c) for c in cands
+                        if not c.is_file() or c.suffix.lower() != ".md"
+                    ]
+                    if not cands or bad:
+                        st, b, h = _json_bytes(
+                            {"error": "every skills_path entry must be an existing markdown file",
+                             "invalid": bad},
+                            400,
+                        )
                         self._send(st, b, h)
                         return
-                    update_meta(root, slug, skills_path=str(cand))
+                    update_meta(root, slug, skills_path=join_skills_paths(cands))
+                if model_in is not None:
+                    model = str(model_in).strip()
+                    if not model:
+                        current = read_meta(root, slug)
+                        model = agent_default_model(
+                            current.agent if current is not None else AGENT_CURSOR
+                        )
+                    update_meta(root, slug, interview_model=model)
                 updated = rename_task_meta(
                     root,
                     slug,
@@ -3497,13 +4956,20 @@ def make_handler(
                     self._bad_project()
                     return
                 slug = m_task_del.group(1)
+                if read_meta(root, slug) is None:
+                    st, b, h = _json_bytes({"error": "task not found"}, 404)
+                    self._send(st, b, h)
+                    return
+                kernel_cleanup = _kernel_delete_task_records(root, slug)
                 ok_task, err_task = delete_task(root, slug)
                 if not ok_task:
                     status = 404 if err_task == "task not found" else 400
                     st, b, h = _json_bytes({"error": err_task}, status)
                     self._send(st, b, h)
                     return
-                st, b, h = _json_bytes({"ok": True, "slug": slug})
+                st, b, h = _json_bytes(
+                    {"ok": True, "slug": slug, "kernel_cleanup": kernel_cleanup}
+                )
                 self._send(st, b, h)
                 return
 

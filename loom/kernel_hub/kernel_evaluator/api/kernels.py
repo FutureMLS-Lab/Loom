@@ -42,7 +42,7 @@ def get_best_kernel_route(
     gpu: str = "h100",
     _principal: ApiPrincipal = Depends(require_api_key),
 ):
-    """Get the best kernel for inliner/TKCC.
+    """Get the best kernel for inliner/Loom Kernel Hub.
 
     Query by either:
     - function_name + scalar_args: lookup by function name and scalar parameters

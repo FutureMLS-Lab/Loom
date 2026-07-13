@@ -14,6 +14,11 @@ STARTER_MODE="none"
 PRESET_PATH=""
 MAX_ITERATIONS=1
 BUILD_MODE=false
+# Task INSTRUCTION.md path (note: $INSTRUCTIONS_FILE below is the unrelated
+# per-agent CLAUDE.md/AGENTS.md filename).
+INSTRUCTIONS_FILE_PATH=""
+WIKI_FILE_PATH=""
+EVALUATION_FILE_PATH=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -29,6 +34,9 @@ while [[ $# -gt 0 ]]; do
         --preset-path)    PRESET_PATH="$2";    shift 2 ;;
         --max-iterations) MAX_ITERATIONS="$2"; shift 2 ;;
         --build-mode)     BUILD_MODE=true;     shift ;;
+        --instructions-file) INSTRUCTIONS_FILE_PATH="$2"; shift 2 ;;
+        --wiki-file|--plan-file) WIKI_FILE_PATH="$2"; shift 2 ;;
+        --evaluation-file) EVALUATION_FILE_PATH="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -248,6 +256,17 @@ for i in $(seq 1 "$N_AGENTS"); do
     if [ "$BUILD_MODE" = true ] && [ -f "$SCAFFOLD_DIR/eval/BUILD_MODE.md" ]; then
         cat "$SCAFFOLD_DIR/eval/BUILD_MODE.md" >> "$WORKDIR/$INSTRUCTIONS_FILE"
     fi
+    if [ -n "$INSTRUCTIONS_FILE_PATH" ] && [ -f "$INSTRUCTIONS_FILE_PATH" ]; then
+        cp "$INSTRUCTIONS_FILE_PATH" "$WORKDIR/INSTRUCTION.md"
+        { echo; echo "## Task brief (INSTRUCTION.md)"; echo; cat "$INSTRUCTIONS_FILE_PATH"; } >> "$WORKDIR/$INSTRUCTIONS_FILE"
+    fi
+    if [ -n "$WIKI_FILE_PATH" ] && [ -f "$WIKI_FILE_PATH" ]; then
+        cp "$WIKI_FILE_PATH" "$WORKDIR/WIKI.md"
+    fi
+    if [ -n "$EVALUATION_FILE_PATH" ] && [ -f "$EVALUATION_FILE_PATH" ]; then
+        cp "$EVALUATION_FILE_PATH" "$WORKDIR/EVALUATION.md"
+        { echo; echo "## Evaluator rubric (EVALUATION.md)"; echo; cat "$EVALUATION_FILE_PATH"; } >> "$WORKDIR/$INSTRUCTIONS_FILE"
+    fi
     if [ "$KB_ENABLED" = "true" ]; then
         cat "$SCAFFOLD_DIR/knowledge_base/REFERENCE.md" >> "$WORKDIR/$INSTRUCTIONS_FILE"
     fi
@@ -318,6 +337,7 @@ for i in $(seq 1 "$N_AGENTS"); do
         -e BENCH_AGENT_INDEX="$AGENT_INDEX" \
         -e KERNEL_EVALUATOR_API_KEY="$AGENT_KEY" \
         -e BENCH_STARTER_MODE="$STARTER_MODE" \
+        -e BENCH_SHARED_WIKI=/workspace/WIKI.md \
         "${PRESET_ENV[@]}" \
         -v "$WORKDIR":/workspace \
         "${KB_DOCKER_MOUNT[@]}" \

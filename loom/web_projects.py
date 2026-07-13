@@ -58,6 +58,7 @@ class WebProjectRegistry:
                         "name": str(p.get("name") or Path(raw_path).name),
                         "path": resolved,
                         "defaultWorkDirs": list(p.get("defaultWorkDirs") or []),
+                        "codeRootPattern": str(p.get("codeRootPattern") or "."),
                     }
                 )
             return out
@@ -84,6 +85,7 @@ class WebProjectRegistry:
                     "name": name or path.name,
                     "path": str(path),
                     "defaultWorkDirs": [],
+                    "codeRootPattern": ".",
                 }
             )
             if not self._data.get("defaultProjectId"):
@@ -91,7 +93,9 @@ class WebProjectRegistry:
             self._save_unlocked()
             return pid
 
-    def add_by_path(self, raw_path: str) -> tuple[str | None, str | None]:
+    def add_by_path(
+        self, raw_path: str, code_root_pattern: str = "."
+    ) -> tuple[str | None, str | None]:
         """Returns (new_id, error_message)."""
         try:
             path = Path(raw_path).expanduser().resolve()
@@ -115,12 +119,64 @@ class WebProjectRegistry:
                     "name": path.name,
                     "path": str(path),
                     "defaultWorkDirs": [],
+                    "codeRootPattern": self._normalize_code_root_pattern(code_root_pattern),
                 }
             )
             if not self._data.get("defaultProjectId"):
                 self._data["defaultProjectId"] = pid
             self._save_unlocked()
             return pid, None
+
+    @staticmethod
+    def _normalize_code_root_pattern(pattern: str) -> str:
+        raw = (pattern or ".").strip().replace("\\", "/")
+        if raw in ("", ".", "./"):
+            return "."
+        candidate = Path(raw)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise ValueError("code root pattern must be relative and stay inside the project")
+        return candidate.as_posix().strip("/") or "."
+
+    def set_code_root_pattern(self, pid: str, pattern: str) -> tuple[bool, str]:
+        try:
+            normalized = self._normalize_code_root_pattern(pattern)
+        except ValueError as exc:
+            return False, str(exc)
+        with self._lock:
+            for project in self._data["projects"]:
+                if not isinstance(project, dict) or str(project.get("id")) != pid:
+                    continue
+                root = Path(str(project.get("path", ""))).expanduser().resolve()
+                target = (root / normalized).resolve()
+                try:
+                    target.relative_to(root)
+                except ValueError:
+                    return False, "code root must stay inside the project"
+                if not target.is_dir():
+                    return False, f"code root directory does not exist: {target}"
+                project["codeRootPattern"] = normalized
+                self._save_unlocked()
+                return True, ""
+        return False, "project not found"
+
+    def get_code_root_pattern(self, pid: str) -> str:
+        with self._lock:
+            for project in self._data["projects"]:
+                if isinstance(project, dict) and str(project.get("id")) == pid:
+                    return str(project.get("codeRootPattern") or ".")
+        return "."
+
+    def get_code_root(self, pid: str) -> Path | None:
+        root = self.get_path(pid)
+        if root is None:
+            return None
+        pattern = self.get_code_root_pattern(pid)
+        try:
+            target = (root / pattern).resolve()
+            target.relative_to(root.resolve())
+        except (OSError, ValueError):
+            return None
+        return target if target.is_dir() else None
 
     def prune_redundant_parent_projects(self, launch_root: Path) -> None:
         """Remove a project row that is exactly *launch_root* when another registered path is a strict subdirectory.

@@ -1,8 +1,10 @@
 import argparse
+import fcntl
 import os
 import sys
 import time
 import urllib.parse
+from datetime import datetime, timezone
 from pathlib import Path
 
 from scaffold.client.api import EvaluatorClient, EvaluatorError
@@ -11,8 +13,73 @@ _RUN_ID = os.environ.get("BENCH_RUN_ID", "")
 _AGENT_INDEX = os.environ.get("BENCH_AGENT_INDEX", "")
 _STARTER_MODE = os.environ.get("BENCH_STARTER_MODE", "none")
 _PRESET_PATH = os.environ.get("BENCH_PRESET_PATH", "")
+_SHARED_WIKI = os.environ.get("BENCH_SHARED_WIKI") or os.environ.get("BENCH_SHARED_PLAN", "")
 
 _CLIENT: EvaluatorClient | None = None
+
+
+def _append_shared_wiki(job_id: str, result: dict) -> None:
+    """Persist one evaluator outcome into the run-wide WIKI.md.
+
+    All worker pods in a run point BENCH_SHARED_WIKI at the same RWX-PVC file,
+    so later attempts and other agents inherit concrete compile/correctness/
+    performance knowledge instead of rediscovering the same failure.
+    """
+    if not _SHARED_WIKI:
+        return
+    path = Path(_SHARED_WIKI)
+    marker = f"<!-- bench-job:{job_id} -->"
+    state = str(result.get("state") or "unknown")
+    compile_error = str(result.get("compile_error") or "").strip()
+    benchmark_error = str(result.get("benchmark_error") or "").strip()
+    correct = result.get("correct")
+    baseline = result.get("baseline_us")
+    candidate = result.get("candidate_us")
+    speedup = result.get("speedup")
+    if speedup is None and isinstance(baseline, (int, float)) and isinstance(candidate, (int, float)) and candidate > 0:
+        speedup = baseline / candidate
+
+    lines = [
+        "",
+        marker,
+        f"### Submission `{job_id}` — agent {_AGENT_INDEX or '?'}",
+        f"- Time: {datetime.now(timezone.utc).isoformat()}",
+        f"- State: `{state}`",
+    ]
+    if correct is not None:
+        lines.append(f"- Correct: `{bool(correct)}`")
+    if isinstance(baseline, (int, float)) and isinstance(candidate, (int, float)):
+        lines.append(
+            f"- Timing: baseline {baseline:.2f}µs, kernel {candidate:.2f}µs, "
+            f"speedup {(speedup or 0):.4f}×"
+        )
+    error = compile_error or benchmark_error
+    if error:
+        lines += ["- Evaluator error:", "```text", error[:3000], "```"]
+    if compile_error:
+        lines.append("- Next focus: fix the compile/API error before changing performance strategy.")
+    elif benchmark_error:
+        lines.append("- Next focus: fix runtime/graph-safety/ABI failure, then resubmit.")
+    elif correct is False:
+        lines.append("- Next focus: diagnose numerical/ABI mismatch against the reference.")
+    elif correct is True and isinstance(speedup, (int, float)) and speedup < 1:
+        lines.append("- Next focus: correctness passes; preserve it while reducing kernel latency.")
+    elif correct is True:
+        lines.append("- Result: correctness passes and the candidate beats the reference baseline.")
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a+", encoding="utf-8") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            f.seek(0)
+            if marker not in f.read():
+                f.seek(0, 2)
+                f.write("\n".join(lines) + "\n")
+                f.flush()
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        # Feedback persistence must never hide the actual benchmark result.
+        pass
 
 
 def _client() -> EvaluatorClient:
@@ -190,12 +257,15 @@ def cmd_poll():
         state = r.get("state", "unknown")
         if r.get("compile_error"):
             print(f"COMPILE ERROR:\n{r['compile_error']}")
+            _append_shared_wiki(args.job_id, r)
             raise SystemExit(1)
         if r.get("benchmark_error"):
             print(f"BENCHMARK ERROR:\n{r['benchmark_error']}")
+            _append_shared_wiki(args.job_id, r)
             raise SystemExit(1)
         if state == "completed":
             _print_result(r)
+            _append_shared_wiki(args.job_id, r)
             if r.get("artifacts"):
                 print(f"artifacts={','.join(r['artifacts'])}")
             break

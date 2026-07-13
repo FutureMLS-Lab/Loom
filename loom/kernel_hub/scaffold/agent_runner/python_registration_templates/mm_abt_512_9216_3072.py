@@ -44,7 +44,7 @@ def _mm_abt_512_9216_3072_stub(
     tl.store(c_ptr, tl.load(a_ptr))
 
 
-@triton_op("tkcc::mm_abt_512_9216_3072", mutates_args=("c",))
+@triton_op("loom_kernel_hub::mm_abt_512_9216_3072", mutates_args=("c",))
 def mm_abt_512_9216_3072(a: torch.Tensor, bt: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
     M, K = a.shape
     N, _ = bt.shape

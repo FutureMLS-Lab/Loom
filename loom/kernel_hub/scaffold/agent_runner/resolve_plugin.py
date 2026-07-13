@@ -29,8 +29,8 @@ PLUGINS_DIR = REPO_ROOT / "kernel_evaluator" / "services" / "plugins"
 PROMPT_TMPL = """You are resolving which kernel-eval "plugin" a GPU kernel maps to, and creating one if needed. Work inside the repo at {repo}.
 
 KERNEL TO CLASSIFY: {src_desc}
-
-A "plugin" is the math/IO contract of an operation (NOT the kernel): inputs (tensors+shapes+dtypes), output, the reference math, and the dtype/quantization. Two ops are the same plugin only if math + IO layout + dtype all match.
+{intent}
+A "plugin" is the math/IO contract of an operation (NOT the kernel): inputs (tensors+shapes+dtypes), output, the reference math, and the dtype/quantization. Two ops are the same plugin only if math + IO layout + dtype all match. When a USER INTENT is given above, resolve for the TASK the user wants (e.g. an nvfp4-variant task of an fp8 source kernel should map to the nvfp4 plugin when one exists), not just for what the source file literally is.
 
 STEPS:
 1. Read the kernel {src_read}. Determine the OPERATION it computes: input tensors (names/shapes/dtypes), output, the math, and any fp8/int4 quantization. Ignore implementation details (tiling/warps/TMA/target arch).
@@ -90,6 +90,9 @@ def _plugin_mtimes(directory: Path):
 def main():
     ap = argparse.ArgumentParser(description="Resolve a kernel to a kernel-eval plugin (reuse or create) via the logged-in claude CLI")
     ap.add_argument("--source", required=True, help="GitHub raw URL or a kernel name")
+    ap.add_argument("--intent", default="",
+                    help="user intent from the interview (e.g. desired dtype/variant), "
+                         "so resolution matches the task rather than the literal source")
     ap.add_argument("--model", default="", help="optional claude model override")
     ap.add_argument("--out-dir", default="", dest="out_dir",
                     help="write a self-contained plugin here (e.g. the task work dir) instead of editing the "
@@ -109,8 +112,9 @@ def main():
         scope = f"Do NOT touch files outside {PLUGINS_DIR}."
 
     src_desc, src_read = fetch_source(args.source)
+    intent = f"\nUSER INTENT: {args.intent.strip()}\n" if args.intent.strip() else "\n"
     prompt = PROMPT_TMPL.format(repo=REPO_ROOT, plugins_dir=PLUGINS_DIR, src_desc=src_desc, src_read=src_read,
-                                create_instructions=create_instructions, scope=scope)
+                                intent=intent, create_instructions=create_instructions, scope=scope)
 
     if args.dry_run:
         print("=== DRY RUN: prompt that would be sent to `claude -p` ===")

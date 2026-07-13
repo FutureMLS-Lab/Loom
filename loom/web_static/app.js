@@ -26,9 +26,9 @@ const TABS = [
 ];
 const DEFAULT_TAB = TABS[0].id;
 
-const AGENT_LABELS = { claude: 'Claude', codex: 'Codex' };
-function agentLabel(name) { return AGENT_LABELS[(name || '').toLowerCase()] || 'Claude'; }
-function normalizeAgent(name) { return AGENT_LABELS[(name || '').toLowerCase()] ? name.toLowerCase() : 'claude'; }
+const AGENT_LABELS = { cursor: 'Agent', claude: 'Claude', codex: 'Codex' };
+function agentLabel(name) { return AGENT_LABELS[(name || '').toLowerCase()] || 'Agent'; }
+function normalizeAgent(name) { return AGENT_LABELS[(name || '').toLowerCase()] ? name.toLowerCase() : 'cursor'; }
 function taskBackendLabel(meta) {
   meta = meta || {};
   const base = `${agentLabel(meta.agent)}${meta.interview_model ? ' · ' + meta.interview_model : ''}`;
@@ -70,6 +70,10 @@ const STATE = {
   projects: [],
   skillsPath: '',
   skillsOptions: [],
+  codeRootPattern: '.',
+  codeRootPath: '',
+  modelDefaults: { cursor: 'gpt-5.6-sol-max', claude: 'claude-fable-5', codex: 'gpt-5.5' },
+  modelOptions: { cursor: [], claude: [], codex: [] },
   tasks: [],
   currentMeta: null,
   worktreeStatuses: [],
@@ -421,6 +425,8 @@ async function openAddProjectModal() {
   modal.hidden = false;
   $('#add-project-status').textContent = '';
   $('#new-project-path').value = '';
+  const codeRoot = document.getElementById('new-project-code-root');
+  if (codeRoot) codeRoot.value = '.';
   const repoEl = document.getElementById('new-project-repo');
   if (repoEl) repoEl.value = '';
   try {
@@ -514,6 +520,7 @@ async function submitAddProject() {
   const path = $('#new-project-path').value.trim();
   const repoEl = document.getElementById('new-project-repo');
   const repo_url = repoEl ? repoEl.value.trim() : '';
+  const code_root_pattern = (document.getElementById('new-project-code-root')?.value || '.').trim() || '.';
   const status = $('#add-project-status');
   const btn = $('#btn-add-project-save');
   if (mode === 'clone' && !repo_url) {
@@ -531,7 +538,7 @@ async function submitAddProject() {
   try {
     const created = await apiNoProject('/api/projects', {
       method: 'POST',
-      body: JSON.stringify({ path, mode, repo_url }),
+      body: JSON.stringify({ path, mode, repo_url, code_root_pattern }),
     });
     if (created.id) STATE.projectId = created.id;
     else if (created.defaultProjectId) STATE.projectId = created.defaultProjectId;
@@ -547,11 +554,66 @@ async function submitAddProject() {
   }
 }
 
+function updateCodeRootPreview() {
+  const pattern = (document.getElementById('project-code-root-pattern')?.value || '.').trim() || '.';
+  const project = (STATE.projects || []).find((p) => p.id === STATE.projectId);
+  const root = (project && project.path) || '';
+  const resolved = pattern === '.' ? root : `${root.replace(/\/+$/, '')}/${pattern.replace(/^\/+/, '')}`;
+  const target = document.getElementById('project-code-root-resolved');
+  if (target) target.textContent = resolved || '—';
+}
+
+function openCodeRootModal() {
+  if (!STATE.projectId) return;
+  const modal = document.getElementById('code-root-modal');
+  const input = document.getElementById('project-code-root-pattern');
+  const status = document.getElementById('code-root-status');
+  if (input) input.value = STATE.codeRootPattern || '.';
+  if (status) status.textContent = '';
+  updateCodeRootPreview();
+  if (modal) modal.hidden = false;
+  requestAnimationFrame(() => input && input.focus());
+}
+
+function closeCodeRootModal() {
+  const modal = document.getElementById('code-root-modal');
+  if (modal) modal.hidden = true;
+}
+
+async function saveCodeRootPattern() {
+  if (!STATE.projectId) return;
+  const input = document.getElementById('project-code-root-pattern');
+  const status = document.getElementById('code-root-status');
+  const button = document.getElementById('btn-code-root-save');
+  const pattern = (input?.value || '.').trim() || '.';
+  if (button) button.disabled = true;
+  if (status) status.textContent = 'Saving…';
+  try {
+    const result = await apiNoProject(`/api/projects/${encodeURIComponent(STATE.projectId)}/code-root`, {
+      method: 'POST',
+      body: JSON.stringify({ pattern }),
+    });
+    STATE.codeRootPattern = result.pattern || '.';
+    STATE.codeRootPath = result.path || '';
+    await loadProjectsList();
+    closeCodeRootModal();
+    toast(`Code root: ${STATE.codeRootPath}`, { type: 'success' });
+  } catch (error) {
+    if (status) status.textContent = error.message || 'Failed to save code root.';
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 async function loadProject() {
   if (!STATE.projectId) {
     $('#hdr-project').textContent = '(select a project above)';
     STATE.skillsPath = '';
     STATE.skillsOptions = [];
+    STATE.codeRootPattern = '.';
+    STATE.codeRootPath = '';
+    STATE.modelDefaults = { cursor: 'gpt-5.6-sol-max', claude: 'claude-fable-5', codex: 'gpt-5.5' };
+    STATE.modelOptions = { cursor: [], claude: [], codex: [] };
     renderSkillsPicker();
     renderTaskSkillsPicker();
     return;
@@ -562,14 +624,44 @@ async function loadProject() {
   $('#hdr-project').textContent = meta ? `${meta.name} — ${pathLine}` : pathLine;
   STATE.skillsPath = d.skillsPath || '';
   STATE.skillsOptions = Array.isArray(d.skillsOptions) ? d.skillsOptions : [];
+  STATE.codeRootPattern = d.codeRootPattern || '.';
+  STATE.codeRootPath = d.codeRootPath || d.projectRoot || '';
+  const codeRootButton = document.getElementById('btn-code-root-open');
+  if (codeRootButton) {
+    codeRootButton.title = `Code root: ${STATE.codeRootPath}`;
+  }
+  STATE.modelDefaults = d.modelDefaults || STATE.modelDefaults;
+  STATE.modelOptions = d.modelOptions || STATE.modelOptions;
   renderSkillsPicker();
   renderTaskSkillsPicker(STATE.currentMeta || {});
+  renderTaskModelPicker(STATE.currentMeta || {});
+}
+
+// skills_path holds one or more ;-joined paths (multiple skills used together).
+function splitSkillsValue(v) {
+  return String(v || '').split(';').map((s) => s.trim()).filter(Boolean);
+}
+
+function selectedSkillsValue(sel) {
+  return [...sel.selectedOptions].map((o) => o.value).join(';');
+}
+
+function applySkillsSelection(sel, joined) {
+  const wanted = new Set(splitSkillsValue(joined));
+  for (const opt of sel.options) opt.selected = wanted.has(opt.value);
+}
+
+function skillsDisplayLabel(joined) {
+  const parts = splitSkillsValue(joined).map((p) => p.split('/').pop());
+  return parts.length ? parts.join(' + ') : '—';
 }
 
 function renderSkillsPicker() {
   const sel = document.getElementById('new-skills');
   if (!sel) return;
-  const current = sel.value || STATE.skillsPath || '';
+  sel.multiple = true;
+  sel.size = Math.min(6, Math.max(3, STATE.skillsOptions.length || 3));
+  const current = selectedSkillsValue(sel) || STATE.skillsPath || '';
   sel.innerHTML = '';
   const options = STATE.skillsOptions.length
     ? STATE.skillsOptions
@@ -583,11 +675,8 @@ function renderSkillsPicker() {
     option.title = path;
     sel.appendChild(option);
   }
-  if ([...sel.options].some((opt) => opt.value === current)) {
-    sel.value = current;
-  } else if ([...sel.options].some((opt) => opt.value === STATE.skillsPath)) {
-    sel.value = STATE.skillsPath;
-  }
+  applySkillsSelection(sel, current);
+  if (!sel.selectedOptions.length && STATE.skillsPath) applySkillsSelection(sel, STATE.skillsPath);
 }
 
 async function loadTmuxSessions() {
@@ -1278,8 +1367,8 @@ async function selectTask(slug) {
     $('#task-goal').textContent = cached.general_goal || '';
     $('#inp-interview-target').value = cached.tmux_interview_target || '';
     setTmuxOutputText(cached.tmux_interview_target
-      ? 'Loading Claude pane…'
-      : 'Click Start Claude to launch a tmux pane in the worktree.');
+      ? 'Loading agent pane…'
+      : `Click Start ${agentLabel(cached.agent)} to launch a tmux pane in the worktree.`);
     // Empty out the markdown viewer so the previous task's content
     // doesn't briefly flash through.
     $('#editor-interview').value = '';
@@ -1326,7 +1415,7 @@ async function selectTask(slug) {
   $('#inp-interview-target').value = d.meta.tmux_interview_target || '';
   if (!d.meta.tmux_interview_target) {
     disconnectTerminal();
-    setTmuxOutputText('Click Start Claude to launch a tmux pane in the worktree.');
+    setTmuxOutputText(`Click Start ${agentLabel(d.meta.agent)} to launch a tmux pane in the worktree.`);
   }
   restorePaneDraftForTask(slug);
   renderClaudeInfo(d.meta, d.claude || null, STATE.worktreeStatuses);
@@ -1368,18 +1457,69 @@ function applyAgentLabels(meta) {
       sel.addEventListener('change', onAgentChange);
     }
   }
+  renderTaskModelPicker(meta);
   renderTaskSkillsPicker(meta);
+}
+
+function renderTaskModelPicker(meta = STATE.currentMeta || {}) {
+  const input = document.getElementById('claude-info-model');
+  const list = document.getElementById('task-model-list');
+  if (!input || !list) return;
+  const agent = normalizeAgent(meta.agent);
+  populateModelPicker(
+    input,
+    list,
+    agent,
+    String(meta.interview_model || '').trim()
+      || (STATE.modelDefaults && STATE.modelDefaults[agent])
+      || '',
+  );
+  input.disabled = !STATE.slug;
+  if (!input.dataset.bound) {
+    input.dataset.bound = '1';
+    input.addEventListener('change', onTaskModelChange);
+  }
+}
+
+async function onTaskModelChange(ev) {
+  const input = ev.target;
+  if (!STATE.slug) return;
+  const previous = STATE.currentMeta?.interview_model || '';
+  input.disabled = true;
+  try {
+    const r = await saveTaskMeta({ interview_model: input.value.trim() });
+    if (r?.meta) {
+      STATE.currentMeta = r.meta;
+      renderTaskModelPicker(r.meta);
+      const backend = document.getElementById('task-backend');
+      if (backend) backend.textContent = taskBackendLabel(r.meta);
+      const hint = document.getElementById('claude-info-model-hint');
+      if (hint) {
+        hint.textContent = 'saved for next start';
+        setTimeout(() => { hint.textContent = 'used on next start'; }, 1800);
+      }
+    }
+  } catch (err) {
+    toast(err.message || 'failed to update model', { type: 'error' });
+    input.value = previous;
+  } finally {
+    input.disabled = false;
+  }
 }
 
 function renderTaskSkillsPicker(meta = STATE.currentMeta || {}) {
   const sel = document.getElementById('claude-info-skills');
   if (!sel) return;
+  sel.multiple = true;
   const current = String(meta.skills_path || STATE.skillsPath || '').trim();
+  const currentPaths = splitSkillsValue(current);
   const options = STATE.skillsOptions.length
     ? STATE.skillsOptions.slice()
-    : (current ? [{ label: current, path: current }] : []);
-  if (current && !options.some((opt) => String(opt.path || '') === current)) {
-    options.unshift({ label: current, path: current });
+    : currentPaths.map((p) => ({ label: p, path: p }));
+  for (const p of currentPaths) {
+    if (!options.some((opt) => String(opt.path || '') === p)) {
+      options.unshift({ label: p, path: p });
+    }
   }
   const wanted = options.map((opt) => String(opt.path || '')).join('\u0000');
   if (sel.dataset.options !== wanted) {
@@ -1395,12 +1535,11 @@ function renderTaskSkillsPicker(meta = STATE.currentMeta || {}) {
     }
     sel.dataset.options = wanted;
   }
+  sel.size = Math.min(5, Math.max(2, sel.options.length));
   sel.disabled = !STATE.slug || sel.options.length === 0;
-  if ([...sel.options].some((opt) => opt.value === current)) {
-    sel.value = current;
-  }
+  applySkillsSelection(sel, current);
   const hdr = document.getElementById('hdr-skills');
-  if (hdr && current) hdr.textContent = current;
+  if (hdr && current) { hdr.textContent = skillsDisplayLabel(current); hdr.title = current; }
   if (!sel.dataset.bound) {
     sel.dataset.bound = '1';
     sel.addEventListener('change', onTaskSkillsChange);
@@ -1409,8 +1548,8 @@ function renderTaskSkillsPicker(meta = STATE.currentMeta || {}) {
 
 async function onTaskSkillsChange(ev) {
   const sel = ev.target;
-  const skillsPath = String(sel.value || '').trim();
-  if (!STATE.slug || !skillsPath) return;
+  const skillsPath = selectedSkillsValue(sel);
+  if (!STATE.slug || !skillsPath) return;  // keep at least one skill selected
   const previous = STATE.currentMeta?.skills_path || STATE.skillsPath || '';
   sel.disabled = true;
   try {
@@ -1427,7 +1566,7 @@ async function onTaskSkillsChange(ev) {
     }
   } catch (err) {
     toast(err.message || 'failed to update skills', { type: 'error' });
-    if (previous) sel.value = previous;
+    if (previous) applySkillsSelection(sel, previous);
   } finally {
     sel.disabled = false;
   }
@@ -1908,7 +2047,7 @@ const TERM = {
   target: '',
   abort: null,
   connected: false,
-  inputQueue: '',
+  inputQueue: [],   // one entry per xterm onData datum (keystroke/sequence/paste)
   inputSending: false,
   resizeTimer: null,
   lastSelection: '',
@@ -1916,7 +2055,11 @@ const TERM = {
 
 function termTarget() {
   const el = document.getElementById('inp-interview-target');
-  return el ? el.value.trim() : '';
+  const v = el ? el.value.trim() : '';
+  // While the live stream is attached, keep sending keys to ITS pane even if a
+  // task-meta refresh momentarily rewrote or cleared the target input box —
+  // otherwise keystrokes are silently dropped ("terminal stops responding").
+  return v || (TERM.connected ? TERM.target : '');
 }
 
 // --- clipboard (works over plain http:// where navigator.clipboard is blocked) -
@@ -1967,6 +2110,16 @@ function termCopySelection() {
 function termKeyEvent(e, term) {
   if (e.type !== 'keydown') return true;
   const k = (e.key || '').toLowerCase();
+  // Own bare Escape explicitly. Page-level modal shortcuts and browser
+  // handlers otherwise sometimes consume it before xterm emits `\x1b`,
+  // making Cursor Agent's "Esc to go back" menus appear stuck.
+  if (k === 'escape' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+    termQueueInput('\x1b');
+    return false;
+  }
   // Copy: Cmd+C (mac), Ctrl+Shift+C, or Ctrl+C while text is selected.
   if ((e.metaKey && k === 'c')
       || (e.ctrlKey && e.shiftKey && k === 'c')
@@ -2206,19 +2359,44 @@ function termHandleResize() {
   }, 300);
 }
 
+// Forward input to the pane. Keystrokes queued while a request is in flight
+// are merged into one send for efficiency — EXCEPT a bare Esc keypress
+// ("\x1b" on its own). Glued to neighbouring bytes in a single write, the
+// TUI's input parser (Claude/Ink) reads ESC+<bytes> as an Alt-combo or a
+// half-finished escape sequence and the Esc keypress is silently swallowed
+// ("Esc sometimes doesn't work"). So a bare Esc is always sent as its own
+// request, followed by a short pause so the pane receives it as an isolated
+// read (and parses it as a real Escape).
 async function termQueueInput(data) {
-  TERM.inputQueue += data;
+  TERM.inputQueue.push(String(data));
   if (TERM.inputSending) return;
   TERM.inputSending = true;
   try {
-    while (TERM.inputQueue) {
-      const chunk = TERM.inputQueue;
-      TERM.inputQueue = '';
+    while (TERM.inputQueue.length) {
       const target = termTarget();
-      if (!target) break;
+      if (!target) { TERM.inputQueue.length = 0; break; }
+      let chunk = '';
+      let bareEsc = false;
+      while (TERM.inputQueue.length) {
+        const next = TERM.inputQueue[0];
+        if (next === '\x1b') {
+          if (chunk) break;          // flush what we already merged first
+          TERM.inputQueue.shift();
+          chunk = next;
+          bareEsc = true;
+          break;                     // send the Esc alone
+        }
+        if (chunk && chunk.length + next.length > 4000) break;
+        TERM.inputQueue.shift();
+        chunk += next;
+      }
+      if (!chunk) continue;
       try {
         await api('/api/tmux/send-literal', { method: 'POST', body: JSON.stringify({ target, text: chunk }) });
       } catch (err) { console.debug('input send failed', err); }
+      // Give the TUI a beat to see the lone ESC before any following bytes,
+      // so it can't be re-glued into a sequence at the pty read level.
+      if (bareEsc) await new Promise((resolve) => setTimeout(resolve, 40));
     }
   } finally {
     TERM.inputSending = false;
@@ -2362,7 +2540,7 @@ async function connectTerminal(target, force = false) {
         TERM.connected = false; TERM.abort = null;
         // Session not running (task not started, or the pane was stopped/died).
         // Show a friendly note instead of tmux's raw "can't find session: …".
-        setTmuxOutputText('tmux is not alive — click Start Claude to launch the pane.');
+        setTmuxOutputText(`tmux is not alive — click Start ${agentLabel(STATE.currentMeta?.agent)} to launch the pane.`);
       }
       return;
     }
@@ -2416,7 +2594,8 @@ document.addEventListener('visibilitychange', () => {
 async function startInterviewPane() {
   if (!STATE.slug) return;
   showPanel('claude');
-  setTmuxOutputText('Starting Claude Code pane…\nWhen Claude is ready, click Start Deep Interview to paste the prompt.');
+  const label = agentLabel(STATE.currentMeta?.agent);
+  setTmuxOutputText(`Starting ${label} pane…\nWhen it is ready, click Start Deep Interview to paste the prompt.`);
   revealInterviewTerminal();
   const r = await api('/api/tasks/' + encodeURIComponent(STATE.slug) + '/interview/start', {
     method: 'POST',
@@ -2440,7 +2619,7 @@ async function pasteInterviewPrompt() {
   if (!STATE.slug) return;
   const target = $('#inp-interview-target').value.trim();
   if (!target) {
-    toast('Start the Claude pane first.', { type: 'error' });
+    toast('Start the agent pane first.', { type: 'error' });
     return;
   }
   const btn = document.getElementById('btn-interview-paste');
@@ -2472,7 +2651,7 @@ function currentPlanPathForPrompt() {
 async function sendWorkflowPrompt(kind, text) {
   const target = $('#inp-interview-target').value.trim();
   if (!STATE.slug || !target) {
-    toast('Start the Claude pane first.', { type: 'error' });
+    toast('Start the agent pane first.', { type: 'error' });
     return;
   }
   try {
@@ -2550,17 +2729,48 @@ function closeCreateModal() {
 }
 
 const AGENT_HINTS = {
+  cursor: 'Cursor Agent pane (agent CLI). Resume a past chat by chat ID.',
   claude: 'Claude Code pane. Resume a past session by UUID.',
   codex: 'Codex CLI pane. Resume with codex resume <id>.',
-  kernel: 'TKCC kernel optimization. The task view becomes the Kernel Lab.',
+  kernel: 'Loom Kernel Hub optimization. The task view becomes the Kernel Lab.',
   aris: 'Autonomous research loop: the agent mines ideas from the base repo, runs a worktree experiment per idea, and folds results back into PLAN.md.',
 };
 
-function updateCreateAgentHint() {
+function effectiveCreateAgent() {
+  const type = document.getElementById('new-agent-select')?.value || 'cursor';
+  if (type === 'codex') return 'codex';
+  if (type === 'claude') return 'claude';
+  return 'cursor';
+}
+
+function populateModelPicker(input, list, agent, value) {
+  if (!input || !list) return;
+  agent = normalizeAgent(agent);
+  const options = (STATE.modelOptions && STATE.modelOptions[agent]) || [];
+  list.innerHTML = options.map((m) => `<option value="${escapeHtml(m)}"></option>`).join('');
+  input.placeholder = agent === 'cursor'
+    ? 'auto, gpt-5.6-sol-xhigh, claude-fable-5-thinking-xhigh…'
+    : (agent === 'codex'
+      ? 'e.g. gpt-5.5 (or leave blank for Codex config)'
+      : 'e.g. claude-fable-5');
+  input.value = value != null
+    ? value
+    : ((STATE.modelDefaults && STATE.modelDefaults[agent]) || '');
+}
+
+function updateCreateAgentHint(resetModel = false) {
   const sel = document.getElementById('new-agent-select');
   const hint = document.getElementById('new-agent-hint');
   if (!sel || !hint) return;
   hint.textContent = AGENT_HINTS[sel.value] || '';
+  const input = document.getElementById('new-model');
+  const list = document.getElementById('new-model-list');
+  populateModelPicker(
+    input,
+    list,
+    effectiveCreateAgent(),
+    resetModel ? null : (input?.value || null),
+  );
 }
 
 function resetCreateForm() {
@@ -2569,8 +2779,8 @@ function resetCreateForm() {
   $('#new-task-status').textContent = '';
   renderSkillsPicker();
   const sel = document.getElementById('new-agent-select');
-  if (sel) sel.value = 'claude';
-  updateCreateAgentHint();
+  if (sel) sel.value = 'cursor';
+  updateCreateAgentHint(true);
 }
 
 function isMobileViewport() {
@@ -2606,6 +2816,11 @@ document.getElementById('btn-add-project').addEventListener('click', openAddProj
 document.getElementById('btn-add-project-close').addEventListener('click', closeAddProjectModal);
 document.getElementById('btn-add-project-cancel').addEventListener('click', closeAddProjectModal);
 document.getElementById('btn-add-project-save').addEventListener('click', submitAddProject);
+document.getElementById('btn-code-root-open').addEventListener('click', openCodeRootModal);
+document.getElementById('btn-code-root-close').addEventListener('click', closeCodeRootModal);
+document.getElementById('btn-code-root-cancel').addEventListener('click', closeCodeRootModal);
+document.getElementById('btn-code-root-save').addEventListener('click', saveCodeRootPattern);
+document.getElementById('project-code-root-pattern').addEventListener('input', updateCodeRootPreview);
 (() => {
   const modesEl = document.getElementById('add-project-modes');
   if (!modesEl) return;
@@ -2621,6 +2836,9 @@ document.getElementById('btn-add-project-save').addEventListener('click', submit
 })();
 $('#add-project-modal').addEventListener('click', (event) => {
   if (event.target.id === 'add-project-modal') closeAddProjectModal();
+});
+$('#code-root-modal').addEventListener('click', (event) => {
+  if (event.target.id === 'code-root-modal') closeCodeRootModal();
 });
 
 document.getElementById('btn-tasks-refresh').addEventListener('click', loadTasks);
@@ -2714,7 +2932,9 @@ async function saveTaskMeta(patch) {
 })();
 document.getElementById('btn-create-open').addEventListener('click', openCreateModal);
 document.getElementById('btn-empty-create').addEventListener('click', openCreateModal);
-document.getElementById('new-agent-select').addEventListener('change', updateCreateAgentHint);
+document.getElementById('new-agent-select').addEventListener(
+  'change', () => updateCreateAgentHint(true)
+);
 document.getElementById('btn-create-close').addEventListener('click', closeCreateModal);
 document.getElementById('btn-create-cancel').addEventListener('click', closeCreateModal);
 document.getElementById('create-modal').addEventListener('click', (event) => {
@@ -2722,11 +2942,15 @@ document.getElementById('create-modal').addEventListener('click', (event) => {
 });
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
+  // The terminal owns Escape; it is a core navigation key in Cursor/Claude
+  // TUIs, not a request to close a Loom modal.
+  if (event.target && event.target.closest && event.target.closest('.xterm')) return;
   if (!$('#kernel-source-modal').hidden) closeKernelSourceModal();
   else if (!$('#preview-modal').hidden) closeFullscreenPreview();
   else if (!$('#notes-modal').hidden) closeNotesModal();
   else if (!$('#worktree-modal').hidden) closeWorktreeModal();
   else if (!$('#create-modal').hidden) closeCreateModal();
+  else if (!$('#code-root-modal').hidden) closeCodeRootModal();
   else if (!$('#add-project-modal').hidden) closeAddProjectModal();
 });
 
@@ -2911,7 +3135,7 @@ document.getElementById('notes-modal').addEventListener('click', (event) => {
   if (event.target.id === 'notes-modal') closeNotesModal();
 });
 
-// ===== Kernel Lab (TKCC integration) =====
+// ===== Kernel Lab (Loom Kernel Hub integration) =====
 
 function kernelSpeedupText(best) {
   if (best && typeof best.speedup === 'number') return best.speedup.toFixed(2) + '×';
@@ -2926,9 +3150,32 @@ function setKernelBadge(up) {
   else { b.dataset.state = 'unknown'; b.textContent = 'service: …'; }
 }
 
+// Human label for an opaque, machine-local cluster profile.
+function kernelClusterLabel(name) {
+  if (!name) return 'Default GPU cluster';
+  if (name === 'sm100') return 'Remote SM100 cluster';
+  return name;
+}
+
+function kernelSelectedCluster() {
+  return $('#kernel-cluster')?.value || '';
+}
+
+function kernelRunMode() {
+  return document.querySelector('input[name="kernel-run-mode"]:checked')?.value || 'scratch';
+}
+
+function setKernelRunMode(mode) {
+  const input = document.querySelector(
+    `input[name="kernel-run-mode"][value="${mode === 'optimize' ? 'optimize' : 'scratch'}"]`
+  );
+  if (input) input.checked = true;
+}
+
 async function refreshKernelService() {
   try {
-    const d = await api('/api/kernel/service');
+    const c = kernelSelectedCluster();
+    const d = await api('/api/kernel/service' + (c ? '?cluster=' + encodeURIComponent(c) : ''));
     setKernelBadge(!!d.up);
   } catch { setKernelBadge(null); }
 }
@@ -2943,7 +3190,7 @@ function applyKernelShapeTemplate() {
 }
 
 async function loadKernelPlugins() {
-  const d = await api('/api/kernel/plugins');
+  const d = await api('/api/kernel/plugins?task=' + encodeURIComponent(STATE.slug || ''));
   STATE.kernelShapeTemplates = d.shape_templates || {};
   STATE.kernelUnverified = d.unverified || [];
   const pluginOpt = (v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}${(STATE.kernelUnverified || []).includes(v) ? ' ⚠ unverified' : ''}</option>`;
@@ -2952,13 +3199,21 @@ async function loadKernelPlugins() {
   $('#kernel-plugin').innerHTML = (d.plugins || []).map(pluginOpt).join('');
   if (sel) $('#kernel-plugin').value = sel;
   $('#kernel-target').innerHTML = (d.targets || []).map(opt).join('');
-  $('#kernel-starter').innerHTML = (d.starter_modes || []).map(opt).join('');
+  const clusterSel = $('#kernel-cluster');
+  if (clusterSel) {
+    const cur = clusterSel.value;
+    clusterSel.innerHTML = (d.clusters || ['']).map(
+      (c) => `<option value="${escapeHtml(c)}">${escapeHtml(kernelClusterLabel(c))}</option>`
+    ).join('');
+    if (cur) clusterSel.value = cur;
+  }
   $('#kernel-model-list').innerHTML = (d.suggested_models || []).map((m) => `<option value="${escapeHtml(m)}"></option>`).join('');
   if (!$('#kernel-model').value && (d.suggested_models || []).length) {
     $('#kernel-model').value = d.suggested_models[0];
   }
   if (!STATE.kernelPluginListenerBound) {
     $('#kernel-plugin').addEventListener('change', applyKernelShapeTemplate);
+    $('#kernel-cluster')?.addEventListener('change', refreshKernelService);
     STATE.kernelPluginListenerBound = true;
   }
   restoreKernelLaunchPrefs();
@@ -2975,8 +3230,9 @@ function saveKernelLaunchPrefs() {
       plugin: $('#kernel-plugin')?.value || '',
       target: $('#kernel-target')?.value || '',
       model: $('#kernel-model')?.value || '',
+      cluster: kernelSelectedCluster(),
       n_agents: $('#kernel-nagents')?.value || '',
-      starter_mode: $('#kernel-starter')?.value || '',
+      run_mode: kernelRunMode(),
     }));
   } catch (_) { /* ignore */ }
 }
@@ -2993,21 +3249,34 @@ function restoreKernelLaunchPrefs() {
   };
   setIfOption('kernel-plugin', p.plugin);
   setIfOption('kernel-target', p.target);
-  setIfOption('kernel-starter', p.starter_mode);
+  setIfOption('kernel-cluster', p.cluster);
+  if (p.run_mode) setKernelRunMode(p.run_mode);
   if (p.model && $('#kernel-model')) $('#kernel-model').value = p.model;
   if (p.n_agents && $('#kernel-nagents')) $('#kernel-nagents').value = p.n_agents;
 }
 
 // Runs that change over time and so are worth re-fetching/re-rendering live.
-const KERNEL_LIVE_STATES = ['running', 'launching', 'resolving'];
+const KERNEL_LIVE_STATES = ['running', 'launching', 'resolving', 'documenting'];
 
 // Compact signature of a run's *visible* state, so polling can skip DOM work
 // when nothing changed (the main source of the "switching runs is laggy" jank).
 function kernelRunSig(r) {
   const st = r.status || {};
-  const best = (st.best && st.best.speedup) || '';
+  const best = (r.judge && r.judge.verdict === 'pass' && r.judge.speedup)
+    || (st.best && st.best.speedup)
+    || '';
   const plugin = r.plugin || (r.config || {}).plugin || '';
-  return [r.id, r.state || '', plugin, best, st.agents_running || 0, (st.archive || []).length, r.verified].join('|');
+  // Per-agent digest: rebuild the detail when any agent's liveness,
+  // submission count or latest job state changes.
+  const agents = (st.agents || []).map((a) => {
+    const act = a.activity || {};
+    return `${a.index}:${a.running ? 1 : 0}:${act.submissions || 0}:${act.last_state || ''}:${act.correct || 0}`;
+  }).join(',');
+  // Submission digest: one char per attempt (state initial, '+' when correct)
+  // so the leaderboard re-renders as jobs move through compile/benchmark.
+  const subs = (st.submissions || []).map((s) => (s.state || '?')[0] + (s.correct ? '+' : '')).join('');
+  const judge = r.judge ? `${r.judge.state || ''}:${r.judge.verdict || ''}` : '';
+  return [r.id, r.state || '', plugin, best, st.agents_running || 0, (st.archive || []).length, r.verified, agents, subs, judge].join('|');
 }
 
 function highlightSelectedKernelRun() {
@@ -3026,20 +3295,36 @@ function renderKernelRunsList(runs) {
   ul.innerHTML = '';
   runs.forEach((r) => {
     const cfg = r.config || {};
-    const best = (r.status && r.status.best) || null;
+    const status = r.status || {};
+    const judgedBest = r.judge && r.judge.verdict === 'pass'
+      ? (status.archive || []).find((entry) => entry.job_id === r.judge.job_id)
+      : null;
+    const best = judgedBest || status.best || null;
     const li = document.createElement('li');
     li.dataset.runId = r.id;
     li.className = 'kernel-run' + (r.id === STATE.kernelSelected ? ' is-active' : '');
     const agents = r.status ? ` · ${r.status.agents_running || 0}/${(r.status.agents || []).length} agents` : '';
+    const clusterTag = (r.config && r.config.cluster) ? ` · ${escapeHtml(r.config.cluster)}` : '';
     const plugin = r.plugin || cfg.plugin || '';
     const unv = !!plugin && ((STATE.kernelUnverified || []).includes(plugin) || r.verified === false);
     const unvBadge = unv ? ' <span class="kernel-unverified">⚠ unverified</span>' : '';
     const legacyBadge = r.legacy ? ' <span class="kernel-legacy-badge">legacy</span>' : '';
+    const canStop = ['launching', 'running'].includes(r.state);
     li.innerHTML =
       `<div class="kernel-run__head"><span class="kernel-run__plugin">${escapeHtml(cfg.plugin || plugin || '?')} · ${escapeHtml(cfg.target || (r.spec && r.spec.target) || '?')}</span>` +
-      `<span class="kernel-run__state" data-state="${escapeHtml(r.state || '')}">${escapeHtml(r.state || '')}</span></div>` +
-      `<div class="kernel-run__meta">best ${kernelSpeedupText(best)}${agents}${unvBadge}${legacyBadge}</div>`;
+      `<span class="kernel-run__actions"><span class="kernel-run__state" data-state="${escapeHtml(r.state || '')}">${escapeHtml(r.state || '')}</span>` +
+      (canStop ? `<button type="button" class="kernel-run__stop" aria-label="Stop run ${escapeHtml(r.id)}">Stop</button>` : '') +
+      `</span></div>` +
+      `<div class="kernel-run__meta">best ${kernelSpeedupText(best)}${agents}${clusterTag}${unvBadge}${legacyBadge}</div>`;
     li.addEventListener('click', () => selectKernelRun(r.id));
+    const stop = li.querySelector('.kernel-run__stop');
+    if (stop) {
+      stop.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        stopKernelRun(r.id);
+      });
+    }
     ul.appendChild(li);
   });
 }
@@ -3087,38 +3372,13 @@ function kernelFmtUs(v) {
   return (typeof v === 'number' && isFinite(v)) ? v.toFixed(1) : '—';
 }
 
-// Inline-SVG speedup-over-time chart from the run's archive (every accepted
-// kernel). The line is the running best; dots are individual accepted kernels
-// colored per agent. No chart dependency - keeps the vendored stack lean.
-function kernelTimelineSvg(entries) {
-  if (!entries || !entries.length) return '';
-  const W = 600, H = 130, padL = 8, padR = 8, padT = 12, padB = 16;
-  const n = entries.length;
-  const speeds = entries.map((e) => Number(e.speedup) || 0);
-  const maxS = Math.max(...speeds, 1);
-  const minS = Math.min(...speeds, 0);
-  const xAt = (i) => padL + (n <= 1 ? (W - padL - padR) / 2 : (i / (n - 1)) * (W - padL - padR));
-  const yAt = (s) => {
-    const t = maxS === minS ? 0.5 : (s - minS) / (maxS - minS);
-    return padT + (1 - t) * (H - padT - padB);
-  };
-  const palette = ['#6366f1', '#14b8a6', '#e0af68', '#e06c5a', '#c79bf0', '#79c7c7', '#9ec46a', '#f08a7a'];
-  let bestSoFar = -Infinity;
-  const linePts = entries.map((e, i) => {
-    bestSoFar = Math.max(bestSoFar, Number(e.speedup) || 0);
-    return `${xAt(i).toFixed(1)},${yAt(bestSoFar).toFixed(1)}`;
-  });
-  const dots = entries.map((e, i) => {
-    const c = palette[(Number(e.agent_index) || 0) % palette.length];
-    const title = escapeHtml(`agent ${e.agent_index} · ${(Number(e.speedup) || 0).toFixed(2)}× · ${e.achieved_at || ''}`);
-    return `<circle cx="${xAt(i).toFixed(1)}" cy="${yAt(Number(e.speedup) || 0).toFixed(1)}" r="3.2" fill="${c}"><title>${title}</title></circle>`;
-  }).join('');
-  return `<svg class="kernel-timeline__svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="speedup over time">`
-    + `<polyline class="kernel-timeline__line" fill="none" stroke="#6366f1" stroke-width="2" points="${linePts.join(' ')}"/>`
-    + dots
-    + `<text class="kernel-timeline__axis" x="${padL}" y="${padT}">${maxS.toFixed(2)}×</text>`
-    + `<text class="kernel-timeline__axis" x="${padL}" y="${H - padB + 12}">${minS.toFixed(2)}×</text>`
-    + `</svg>`;
+// One submission row's outcome, rendered as a compact status cell.
+function kernelSubResult(s) {
+  const state = String(s.state || '');
+  if (s.correct) return `<span class="kernel-sub--ok">✓ correct</span>`;
+  if (state === 'completed') return '<span class="kernel-sub--bad">✗ incorrect</span>';
+  if (state.endsWith('_failed')) return `<span class="kernel-sub--bad">✗ ${escapeHtml(state.replace(/_/g, ' '))}</span>`;
+  return `<span class="kernel-sub--busy">⏳ ${escapeHtml(state.replace(/_/g, ' ') || 'queued')}</span>`;
 }
 
 function renderKernelRunDetail(r) {
@@ -3126,9 +3386,12 @@ function renderKernelRunDetail(r) {
   if (!host) return;
   const cfg = r.config || {};
   const st = r.status || {};
-  const best = st.best || null;
-  const bests = (st.agent_bests || []).slice().sort((a, b) => (b.speedup || 0) - (a.speedup || 0));
-  const archive = (st.archive || []).slice().sort((a, b) => String(a.achieved_at).localeCompare(String(b.achieved_at)));
+  const archive = st.archive || [];
+  const judge = r.judge || null;
+  const judgedBest = judge && judge.verdict === 'pass'
+    ? archive.find((entry) => entry.job_id === judge.job_id)
+    : null;
+  const best = judgedBest || st.best || null;
   const plugin = r.plugin || cfg.plugin || '';
   const target = cfg.target || (r.spec && r.spec.target) || '?';
   const unverified = !!plugin && ((STATE.kernelUnverified || []).includes(plugin) || r.verified === false);
@@ -3144,7 +3407,9 @@ function renderKernelRunDetail(r) {
   let html = `<div class="kernel-detail__head"><h4>${escapeHtml(plugin || '?')} <span class="kernel-detail__target">${escapeHtml(target)}</span>${vbadge}${legacy}</h4>`;
   html += '<div class="kernel-detail__head-actions">';
   if (['launching', 'running'].includes(r.state)) {
-    html += `<button type="button" class="btn btn--danger btn--sm" id="btn-kernel-stop">Stop</button>`;
+    html += `<button type="button" class="btn btn--danger" id="btn-kernel-stop">■ Stop run</button>`;
+  } else if (r.state === 'stopping') {
+    html += '<button type="button" class="btn" disabled>Stopping…</button>';
   } else {
     // Finished/errored/stopped run: allow clearing its record from the list.
     html += `<button type="button" class="btn btn--sm" id="btn-kernel-delete">Delete run</button>`;
@@ -3157,8 +3422,9 @@ function renderKernelRunDetail(r) {
   html += '<div class="kernel-chips">';
   html += `<span class="kernel-chip kernel-chip--state" data-state="${escapeHtml(r.state || '')}">${escapeHtml(r.state || '—')}</span>`;
   if (agentsTotal || ['launching', 'running'].includes(r.state)) html += `<span class="kernel-chip">${agentsRunning}/${agentsTotal} agents</span>`;
+  if (st.total_submissions != null) html += `<span class="kernel-chip">${st.total_submissions} submissions</span>`;
   html += `<span class="kernel-chip">${st.improvements || archive.length || 0} improvements</span>`;
-  if (cfg.build_mode) html += '<span class="kernel-chip kernel-chip--mode">build mode</span>';
+  html += `<span class="kernel-chip kernel-chip--mode">${cfg.run_mode === 'optimize' ? 'optimize existing' : 'from scratch'}</span>`;
   html += '</div>';
 
   // Best-kernel card + target progress
@@ -3167,6 +3433,7 @@ function renderKernelRunDetail(r) {
     html += '<div class="kernel-best__main">';
     html += `<div class="kernel-best__speed">${bestSpeed != null ? bestSpeed.toFixed(2) + '×' : '—'}</div>`;
     html += `<div class="kernel-best__sub">${kernelFmtUs(best.kernel_us)} µs vs ${kernelFmtUs(best.baseline_us)} µs baseline${best.agent_index != null ? ` · agent ${escapeHtml(String(best.agent_index))}` : ''}</div>`;
+    if (judgedBest) html += '<div class="kernel-best__approved">✓ Judge-approved winner</div>';
     html += '</div>';
     html += '<div class="kernel-best__actions">';
     if (best.job_id) html += `<button type="button" class="btn btn--sm kernel-view-src" data-job="${escapeHtml(best.job_id)}" data-label="best kernel">View source</button>`;
@@ -3179,12 +3446,37 @@ function renderKernelRunDetail(r) {
         + `<span class="kernel-progress__label">${bestSpeed.toFixed(2)}× / target ${Number(targetSpeedup).toFixed(2)}×</span></div>`;
     }
   } else if (['running', 'launching'].includes(r.state)) {
-    html += `<div class="kernel-best kernel-best--empty">${cfg.build_mode ? 'No correct kernel yet…' : 'No improving kernel yet…'}</div>`;
+    html += '<div class="kernel-best kernel-best--empty">Waiting for a correct, target-quality kernel…</div>';
+  }
+
+  // Judge verdict: EVALUATION.md rubric + hard results + source review.
+  if (judge || (['finished', 'stopped'].includes(r.state) && r.run_id)) {
+    html += '<div class="kernel-section__title">Judge</div>';
+    html += '<div class="kernel-judge">';
+    if (judge && judge.state === 'judging') {
+      html += '<span class="kernel-judge__busy">⏳ judging — the judge agent is reviewing the kernel source…</span>';
+    } else if (judge && judge.state === 'done') {
+      const pass = judge.verdict === 'pass';
+      html += `<span class="kernel-judge__verdict ${pass ? 'is-pass' : 'is-fail'}">${pass ? '✓ PASS' : '✗ FAIL'}</span>`;
+      if (judge.score != null) html += `<span class="kernel-judge__score">score ${escapeHtml(String(judge.score))}/100</span>`;
+      html += `<button type="button" class="btn btn--sm" id="btn-kernel-judge">Re-judge</button>`;
+      if (judge.export_path) html += `<code class="kernel-judge__export">${escapeHtml(judge.export_path)}</code>`;
+      if (judge.reasoning) html += `<div class="kernel-judge__reason">${escapeHtml(judge.reasoning)}</div>`;
+    } else if (judge && judge.state === 'error') {
+      html += `<span class="kernel-judge__err">judge failed: ${escapeHtml(judge.error || 'unknown')}</span>`;
+      html += `<button type="button" class="btn btn--sm" id="btn-kernel-judge">Retry judge</button>`;
+    } else {
+      html += '<span class="kernel-judge__none">not judged yet</span>';
+      html += `<button type="button" class="btn btn--sm" id="btn-kernel-judge">Judge kernel</button>`;
+    }
+    html += '</div>';
   }
 
   // Meta grid
   html += '<div class="kernel-detail__grid">';
   html += `<span>Run ID</span><code>${escapeHtml(r.run_id || '—')}</code>`;
+  if (r.artifact_root) html += `<span>Task artifacts</span><code>${escapeHtml(r.artifact_root)}</code>`;
+  html += `<span>Cluster</span><span>${escapeHtml(kernelClusterLabel(cfg.cluster || ''))}</span>`;
   html += `<span>Model</span><span>${escapeHtml(cfg.model || '')}</span>`;
   html += `<span>Shape</span><span><code>${escapeHtml(shapeText)}</code>${shapeSrc}</span>`;
   if (targetSpeedup) html += `<span>Target</span><span>${Number(targetSpeedup).toFixed(2)}×</span>`;
@@ -3192,21 +3484,106 @@ function renderKernelRunDetail(r) {
 
   if (r.state === 'error' && r.error) html += `<p class="status-bad">${escapeHtml(r.error)}</p>`;
 
-  // Per-agent leaderboard
-  if (bests.length) {
-    html += '<div class="kernel-section__title">Agent leaderboard</div>';
-    html += '<table class="kernel-leaderboard"><thead><tr><th>#</th><th>Agent</th><th>Speedup</th><th>kernel µs</th><th>baseline µs</th><th></th></tr></thead><tbody>';
-    bests.forEach((e, i) => {
-      const src = e.job_id ? `<button type="button" class="kernel-view-src kernel-view-src--link" data-job="${escapeHtml(e.job_id)}" data-label="agent ${escapeHtml(String(e.agent_index))}">source</button>` : '';
-      html += `<tr><td>${i + 1}</td><td>${escapeHtml(String(e.agent_index))}</td><td class="kernel-speedup">${(e.speedup || 0).toFixed(2)}×</td><td>${kernelFmtUs(e.kernel_us)}</td><td>${kernelFmtUs(e.baseline_us)}</td><td>${src}</td></tr>`;
+  // Per-agent activity: liveness, submission counts, latest state/error and an
+  // expandable log tail (what the agent's CLI printed inside its container/Job).
+  const agentsList = st.agents || [];
+  if (agentsList.length) {
+    html += '<div class="kernel-section__title">Agents</div>';
+    html += '<div class="kernel-agents">';
+    const openLogs = STATE.kernelAgentLogsOpen || {};
+    const logCache = STATE.kernelAgentLogs || {};
+    agentsList.forEach((a) => {
+      const act = a.activity || null;
+      const idx = escapeHtml(String(a.index));
+      const key = `${r.id}:${a.index}`;
+      const logOpen = !!openLogs[key];
+      let stats;
+      if (act && act.submissions) {
+        const bits = [`${act.submissions} submission${act.submissions === 1 ? '' : 's'}`];
+        if (act.correct) bits.push(`<span class="kernel-agent__ok">${act.correct} correct</span>`);
+        if (act.failed) bits.push(`${act.failed} failed`);
+        if (act.in_flight) bits.push(`<span class="kernel-agent__busy">${escapeHtml(act.last_state || 'evaluating')}…</span>`);
+        if (act.best_speedup != null) bits.push(`best ${Number(act.best_speedup).toFixed(2)}×`);
+        stats = bits.join(' · ');
+      } else {
+        stats = a.running
+          ? '<span class="kernel-agent__busy">no submissions yet — agent is reading/coding…</span>'
+          : 'no submissions';
+      }
+      html += '<div class="kernel-agent">';
+      html += `<div class="kernel-agent__row"><span class="kernel-agent__dot${a.running ? ' is-running' : ''}"></span>` +
+        `<span class="kernel-agent__name" title="${escapeHtml(a.local_dir || '')}">agent ${idx}</span>` +
+        `<span class="kernel-agent__stats">${stats}</span>` +
+        `<button type="button" class="btn btn--sm kernel-agent-log-btn" data-agent="${idx}">${logOpen ? 'log ▾' : 'log ▸'}</button></div>`;
+      if (act && act.last_error) {
+        html += `<div class="kernel-agent__err" title="${escapeHtml(act.last_error)}">${escapeHtml(act.last_error.slice(0, 220))}</div>`;
+      }
+      html += `<pre id="kernel-agent-log-${idx}" class="kernel-agent__log"${logOpen ? '' : ' hidden'}>${escapeHtml(logCache[key] || '(loading log…)')}</pre>`;
+      html += '</div>';
     });
-    html += '</tbody></table>';
+    html += '</div>';
   }
 
-  // Improvement timeline
-  if (archive.length) {
-    html += '<div class="kernel-section__title">Improvement timeline</div>';
-    html += '<div class="kernel-timeline">' + kernelTimelineSvg(archive) + '</div>';
+  // Submissions leaderboard: every attempt with its outcome. Correct kernels
+  // ranked by speedup on top, then still-evaluating, then failed (newest first).
+  // The evaluator only remembers attempts for a while (in-memory TTL); the
+  // DB-backed per-agent bests are merged in so correct kernels never drop out.
+  const subsAll = (st.submissions || []).slice();
+  const subIds = new Set(subsAll.map((s) => s.job_id).filter(Boolean));
+  // archive = every correct kernel persisted in the DB; agent_bests as backup.
+  const persisted = (archive.length ? archive : (st.agent_bests || []));
+  persisted.forEach((e) => {
+    if (e.job_id && !subIds.has(e.job_id)) {
+      subsAll.push({
+        n: null, job_id: e.job_id, agent_index: e.agent_index, state: 'completed',
+        correct: true, speedup: e.speedup, candidate_us: e.kernel_us, baseline_us: e.baseline_us,
+      });
+    }
+  });
+  if (subsAll.length) {
+    const isFinal = (s) => s.correct || String(s.state || '') === 'completed' || String(s.state || '').endsWith('_failed');
+    const ranked = subsAll.filter((s) => s.correct).sort((a, b) => (b.speedup || 0) - (a.speedup || 0));
+    const pending = subsAll.filter((s) => !isFinal(s)).reverse();
+    const failed = subsAll.filter((s) => !s.correct && isFinal(s)).reverse();
+    const ordered = ranked.concat(pending, failed).slice(0, 60);
+    const judgeReviews = new Map(
+      ((judge && judge.candidate_reviews) || []).map((review) => [review.job_id, review])
+    );
+    html += `<div class="kernel-section__title">Submissions leaderboard <span class="kernel-section__count">${subsAll.length} total · ${ranked.length} correct</span></div>`;
+    html += '<div class="kernel-subs"><table class="kernel-leaderboard"><thead><tr>' +
+      '<th>raw rank</th><th>attempt</th><th>agent</th><th>hard result</th><th>speedup</th><th>kernel µs</th><th>review</th><th></th></tr></thead><tbody>';
+    ordered.forEach((s) => {
+      const rankIdx = s.correct ? ranked.indexOf(s) : -1;
+      const review = judgeReviews.get(s.job_id);
+      const selected = judge && judge.verdict === 'pass' && judge.job_id === s.job_id;
+      const rejected = review && review.verdict === 'fail';
+      const rank = selected
+        ? `🏆 ${rankIdx + 1}`
+        : (rankIdx >= 0 ? String(rankIdx + 1) : '—');
+      const speed = s.correct && typeof s.speedup === 'number'
+        ? `<span class="kernel-speedup">${s.speedup.toFixed(2)}×</span>` : '—';
+      const src = s.correct && s.job_id
+        ? `<button type="button" class="kernel-view-src kernel-view-src--link" data-job="${escapeHtml(s.job_id)}" data-label="attempt #${s.n}">source</button>` : '';
+      const reviewText = selected
+        ? '<span class="kernel-review--selected">✓ selected</span>'
+        : (rejected
+          ? '<span class="kernel-review--rejected">✗ rejected</span>'
+          : (review && review.verdict === 'pass'
+            ? '<span class="kernel-review--pass">✓ pass</span>'
+            : '—'));
+      const title = s.error || (review && (review.reasoning || review.error)) || '';
+      const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+      const rowClass = selected
+        ? 'kernel-sub-row--selected'
+        : (rejected ? 'kernel-sub-row--rejected' : (s.correct ? 'kernel-sub-row--ok' : ''));
+      html += `<tr class="${rowClass}"${titleAttr}>` +
+        `<td>${rank}</td><td class="kernel-sub__n">${s.n != null ? '#' + s.n : '—'}</td><td>${escapeHtml(String(s.agent_index != null ? s.agent_index : '?'))}</td>` +
+        `<td>${kernelSubResult(s)}</td><td>${speed}</td><td>${kernelFmtUs(s.candidate_us)}</td><td>${reviewText}</td><td>${src}</td></tr>`;
+      if (s.error && !s.correct) {
+        html += `<tr class="kernel-sub-errrow"><td></td><td colspan="7">${escapeHtml(s.error.slice(0, 160))}</td></tr>`;
+      }
+    });
+    html += '</tbody></table></div>';
   }
 
   // Build / run log
@@ -3237,6 +3614,60 @@ function renderKernelRunDetail(r) {
   host.querySelectorAll('.kernel-view-src').forEach((btn) => {
     btn.addEventListener('click', () => openKernelSourceModal(r.id, btn.dataset.job, btn.dataset.label || 'kernel'));
   });
+  host.querySelectorAll('.kernel-agent-log-btn').forEach((btn) => {
+    btn.addEventListener('click', () => toggleKernelAgentLog(r.id, btn.dataset.agent));
+  });
+  const judgeBtn = $('#btn-kernel-judge');
+  if (judgeBtn) judgeBtn.addEventListener('click', () => judgeKernelRun(r.id));
+}
+
+async function judgeKernelRun(id) {
+  try {
+    await api('/api/kernel/runs/' + encodeURIComponent(id) + '/judge', { method: 'POST', body: '{}' });
+    const cached = (STATE.kernelRuns || []).find((r) => r.id === id);
+    if (cached) { cached.judge = { state: 'judging' }; renderKernelRunDetail(cached); }
+    toast('Judge started — verdict appears here in ~1 minute.');
+  } catch (err) { toast(err.message || 'judge failed', { type: 'error' }); }
+}
+
+// ===== Per-agent log tails =====
+
+async function toggleKernelAgentLog(uid, idx) {
+  const key = `${uid}:${idx}`;
+  const open = (STATE.kernelAgentLogsOpen = STATE.kernelAgentLogsOpen || {});
+  open[key] = !open[key];
+  const pre = document.getElementById(`kernel-agent-log-${idx}`);
+  const btn = document.querySelector(`.kernel-agent-log-btn[data-agent="${idx}"]`);
+  if (btn) btn.textContent = open[key] ? 'log ▾' : 'log ▸';
+  if (pre) pre.hidden = !open[key];
+  if (open[key]) await refreshKernelAgentLogs(uid, idx);
+}
+
+// Fetch log tails for every expanded agent panel of the selected run (or just
+// one agent right after expanding). Same scroll-preserving update as the
+// build log so a growing log doesn't yank the user's position.
+async function refreshKernelAgentLogs(uid, onlyIdx) {
+  const open = STATE.kernelAgentLogsOpen || {};
+  const cache = (STATE.kernelAgentLogs = STATE.kernelAgentLogs || {});
+  const idxs = Object.keys(open)
+    .filter((k) => open[k] && k.startsWith(uid + ':'))
+    .map((k) => k.slice(uid.length + 1))
+    .filter((idx) => onlyIdx === undefined || String(onlyIdx) === String(idx));
+  for (const idx of idxs) {
+    try {
+      const d = await api(`/api/kernel/runs/${encodeURIComponent(uid)}/agents/${encodeURIComponent(idx)}/log`);
+      const text = (d && (d.log || d.error)) || '(no log)';
+      cache[`${uid}:${idx}`] = text;
+      if (STATE.kernelSelected !== uid) continue;
+      const pre = document.getElementById(`kernel-agent-log-${idx}`);
+      if (!pre || pre.textContent === text) continue;
+      const atBottom = pre.clientHeight === 0
+        || (pre.scrollHeight - pre.clientHeight - pre.scrollTop) < 60;
+      const prevTop = pre.scrollTop;
+      pre.textContent = text;
+      pre.scrollTop = atBottom ? pre.scrollHeight : prevTop;
+    } catch { /* keep last */ }
+  }
 }
 
 // ===== Kernel source viewer modal =====
@@ -3400,7 +3831,8 @@ async function refreshSelectedKernelDetail() {
   if (!id) return;
   const cached = (STATE.kernelRuns || []).find((r) => r.id === id) || null;
   if (!cached) return;
-  if (KERNEL_LIVE_STATES.includes(cached.state)) {
+  if (KERNEL_LIVE_STATES.includes(cached.state)
+      || (cached.judge && cached.judge.state === 'judging')) {
     try {
       const r = await api('/api/kernel/runs/' + encodeURIComponent(id));
       if (STATE.kernelSelected !== id) return;
@@ -3412,6 +3844,7 @@ async function refreshSelectedKernelDetail() {
         STATE.kernelDetailSig = sig;
       }
       refreshKernelBuildLog(id);
+      refreshKernelAgentLogs(id);
     } catch { /* keep last render */ }
   } else {
     const sig = kernelRunSig(cached);
@@ -3424,6 +3857,8 @@ async function refreshSelectedKernelDetail() {
 
 async function launchKernelRun() {
   const status = $('#kernel-launch-status');
+  const launchBtn = $('#btn-kernel-launch');
+  if (launchBtn?.disabled) return;
   // Shape is optional: blank => the agent proposes one at launch. Only parse and
   // validate when the user typed an explicit override.
   const rawShape = ($('#kernel-shape').value || '').trim();
@@ -3434,25 +3869,35 @@ async function launchKernelRun() {
   }
   const model = $('#kernel-model').value.trim();
   if (!model) { status.textContent = 'Model is required'; return; }
-  const buildMode = $('#kernel-build-mode') ? $('#kernel-build-mode').checked : false;
+  const runMode = kernelRunMode();
+  const targetRaw = ($('#kernel-target-speedup')?.value || '').trim();
+  const targetSpeedup = targetRaw ? Number(targetRaw) : null;
+  if (targetRaw && (!Number.isFinite(targetSpeedup) || targetSpeedup <= 0)) {
+    status.textContent = 'Success target must be a positive speedup.';
+    return;
+  }
   const body = {
     plugin: $('#kernel-plugin').value,
     target: $('#kernel-target').value,
     model,
+    cluster: kernelSelectedCluster(),
     slug: STATE.slug,
     n_agents: Number($('#kernel-nagents').value) || 1,
-    starter_mode: $('#kernel-starter').value,
-    auto_terminate: buildMode ? true : $('#kernel-auto-terminate').checked,
-    build: $('#kernel-build').checked,
-    build_mode: buildMode,
+    run_mode: runMode,
+    starter_mode: runMode === 'optimize' ? 'best-similar' : 'none',
+    auto_terminate: targetSpeedup != null,
+    build: false,
+    build_mode: false,
   };
   if (shape) body.shape = shape;
-  const ts = $('#kernel-target-speedup').value;
-  if (ts) body.target_speedup = Number(ts);
-  if (buildMode && body.target_speedup === undefined) body.target_speedup = 0;
+  if (targetSpeedup != null) body.target_speedup = targetSpeedup;
   status.textContent = shape
-    ? 'Launching… (first run builds the image — this can take a few minutes)'
-    : 'Launching… the agent is choosing a shape, then building (first run can take a few minutes)';
+    ? `Launching ${runMode === 'optimize' ? 'optimization' : 'scratch'} workers…`
+    : 'Choosing a benchmark shape, then launching workers…';
+  if (launchBtn) {
+    launchBtn.disabled = true;
+    launchBtn.classList.add('is-loading');
+  }
   try {
     const r = await api('/api/kernel/runs', { method: 'POST', body: JSON.stringify(body) });
     saveKernelLaunchPrefs();
@@ -3462,11 +3907,23 @@ async function launchKernelRun() {
     await selectKernelRun(r.id);
   } catch (err) {
     status.textContent = err.message || 'Launch failed';
+  } finally {
+    if (launchBtn) {
+      launchBtn.disabled = false;
+      launchBtn.classList.remove('is-loading');
+    }
   }
 }
 
 async function stopKernelRun(id) {
   if (!confirm('Stop this run? Agents are terminated and the best kernel is postprocessed.')) return;
+  const cached = (STATE.kernelRuns || []).find((r) => r.id === id);
+  if (cached) {
+    cached.state = 'stopping';
+    STATE.kernelRunsSig = null;
+    renderKernelRunsList(STATE.kernelRuns);
+    if (STATE.kernelSelected === id) renderKernelRunDetail(cached);
+  }
   try {
     await api('/api/kernel/runs/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
     await loadKernelRuns();
@@ -3505,7 +3962,7 @@ function startKernelPolling() {
       await loadKernelRuns();
       await refreshSelectedKernelDetail();
     } finally { STATE.kernelPolling = false; }
-  }, 4000);
+  }, 6000);
 }
 
 // Load the task's interview (messages + last spec) from disk so it survives
@@ -3561,8 +4018,13 @@ async function initKernelLab(meta) {
   STATE.kernelSelected = null;
   // Reset the runs/detail caches so this task's list renders fresh.
   STATE.kernelRuns = [];
-  STATE.kernelRunsSig = '';
+  // null deliberately differs from an empty run-list signature (""). Using ""
+  // here made a newly created task keep the previous task's run-list DOM:
+  // loadKernelRuns fetched [], computed "", then skipped the render as
+  // "unchanged".
+  STATE.kernelRunsSig = null;
   STATE.kernelDetailSig = '';
+  renderKernelRunsList([]);
   const det = $('#kernel-run-detail'); if (det) { det.hidden = true; det.innerHTML = ''; }
   refreshKernelService();
   loadKernelRuns();
@@ -3592,6 +4054,11 @@ function renderKernelChat() {
 
 function fillFormFromSpec(spec) {
   if (!spec) return;
+  if (spec.plugin && $('#kernel-plugin')) $('#kernel-plugin').value = spec.plugin;
+  if (spec.cluster != null && $('#kernel-cluster')) {
+    $('#kernel-cluster').value = spec.cluster;
+    refreshKernelService();
+  }
   if (spec.target && $('#kernel-target')) $('#kernel-target').value = spec.target;
   if (spec.shape && $('#kernel-shape')) {
     // The interview agent inferred a shape — show it in the (optional) override
@@ -3602,7 +4069,8 @@ function fillFormFromSpec(spec) {
   }
   if (spec.model && $('#kernel-model')) $('#kernel-model').value = spec.model;
   if (spec.n_agents && $('#kernel-nagents')) $('#kernel-nagents').value = spec.n_agents;
-  if (spec.starter_mode && $('#kernel-starter')) $('#kernel-starter').value = spec.starter_mode;
+  if (spec.run_mode) setKernelRunMode(spec.run_mode);
+  else if (spec.starter_mode) setKernelRunMode(spec.starter_mode === 'none' ? 'scratch' : 'optimize');
   if (spec.target_speedup && $('#kernel-target-speedup')) $('#kernel-target-speedup').value = spec.target_speedup;
   const st = $('#kernel-launch-status');
   if (st) st.textContent = 'Form pre-filled from the interview.';
@@ -3839,7 +4307,7 @@ function renderClaudeInfo(meta, claude, statuses) {
     document.getElementById('btn-worktree-push-all'),
     meta,
     statuses,
-    'Primary — the Claude pane opens in this worktree',
+    'Primary — the agent pane opens in this worktree',
   );
   if (tmuxEl) tmuxEl.textContent = claude.tmux_target || meta.tmux_interview_target || '(not started)';
   if (pillEl) {
@@ -3853,7 +4321,8 @@ function renderClaudeInfo(meta, claude, statuses) {
   if (!sessions.length) {
     const span = document.createElement('span');
     span.className = 'claude-info__hint';
-    span.textContent = 'No Claude sessions captured yet. Start Claude to bind one.';
+    const label = agentLabel(STATE.currentMeta?.agent);
+    span.textContent = `No ${label} sessions captured yet. Start ${label} to bind one.`;
     sessHost.appendChild(span);
     return;
   }
@@ -4250,9 +4719,10 @@ document.getElementById('btn-new-task').addEventListener('click', async () => {
   const title = $('#new-title').value.trim();
   const general_goal = $('#new-goal').value.trim();
   const skillsEl = document.getElementById('new-skills');
-  const skills_path = skillsEl ? skillsEl.value.trim() : '';
+  const skills_path = skillsEl ? selectedSkillsValue(skillsEl) : '';
   const agentSel = document.getElementById('new-agent-select');
-  const agent = agentSel ? agentSel.value : 'claude';
+  const agent = agentSel ? agentSel.value : 'cursor';
+  const interviewModel = (document.getElementById('new-model')?.value || '').trim();
   const btn = $('#btn-new-task');
   const status = $('#new-task-status');
   if (!title || !general_goal) {
@@ -4263,7 +4733,12 @@ document.getElementById('btn-new-task').addEventListener('click', async () => {
   status.textContent = 'Creating…';
   try {
     const special = agent === 'kernel' || agent === 'aris';
-    const body = { title, general_goal, agent: special ? 'claude' : agent };
+    const body = {
+      title,
+      general_goal,
+      agent: special ? 'cursor' : agent,
+      interview_model: interviewModel,
+    };
     if (agent === 'kernel') body.kind = 'kernel';
     else if (agent === 'aris') body.kind = 'aris';
     if (skills_path) body.skills_path = skills_path;

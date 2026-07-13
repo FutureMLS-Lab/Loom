@@ -23,6 +23,6 @@ loom = "loom.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["loom"]
-# Ship the vendored TKCC kernel stack (scripts, Dockerfiles, compose, plugins)
+# Ship the vendored Loom Kernel Hub stack (scripts, Dockerfiles, compose, plugins)
 # as package data even before it's committed / regardless of VCS-ignore.
 artifacts = ["loom/kernel_hub/**"]

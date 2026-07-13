@@ -102,7 +102,7 @@ static cutlass::KernelHardwareInfo get_hw_info() {
 }
 
 // ---------------------------------------------------------------------------
-// Host-side helpers for TKCC ExternalReplacementKernelSpec
+// Host-side helpers for Loom Kernel Hub ExternalReplacementKernelSpec
 // ---------------------------------------------------------------------------
 
 extern "C" int cutlass_gemm_abt_streamk_globals_size() {

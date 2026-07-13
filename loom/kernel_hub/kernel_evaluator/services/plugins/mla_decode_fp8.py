@@ -99,8 +99,42 @@ def make_reference_plugin(dtype: str, spec: dict) -> ReferencePlugin:
             o[batch_idx] = torch.einsum("qhk,kd->qhd", probs, v_b) * output_scale
         return {"o": o.to(fp8_dtype), "lse": lse}
 
+    def benchmark_reference(inputs: ExecutionInputs):
+        # Graph-safe baseline for timing (the default timing_mode is "graphed",
+        # which runs this inside torch.cuda.graph() capture): no host syncs
+        # (.cpu()/.item()) and no data-dependent control flow. Lengths are
+        # static because make_inputs always fills cache_seqs with
+        # max_sequence_kv. Same math as reference(), vectorized over batch.
+        # Correctness checks still use the eager reference() above.
+        q_latent = inputs.tensors["q_latent"]
+        q_rope = inputs.tensors["q_rope"]
+        c_latent = inputs.tensors["c_latent"]
+        c_rope = inputs.tensors["c_rope"]
+        page_table = inputs.tensors["page_table"]
+        o = inputs.tensors["o"]
+        lse = inputs.tensors["lse"]
+        length = min(max_sequence_kv, num_pages_per_seq * page_size)
+
+        def call():
+            q = torch.cat([q_latent.float(), q_rope.float()], dim=-1)
+            kv_paged = torch.cat([c_latent.float(), c_rope.float()], dim=-1)
+            flat_pages = page_table.long().reshape(-1)
+            k_all = kv_paged.index_select(0, flat_pages).reshape(
+                batch_size, -1, latent_dim + rope_dim)[:, :length]
+            v_all = c_latent.float().index_select(0, flat_pages).reshape(
+                batch_size, -1, latent_dim)[:, :length]
+            scores = torch.einsum("bqhd,bkd->bqhk", q, k_all) * softmax_scale
+            score_max = scores.amax(dim=-1, keepdim=True)
+            exp2_scores = torch.exp2((scores - score_max) * LOG2_E)
+            lse.copy_((score_max * LOG2_E
+                       + torch.log2(exp2_scores.sum(dim=-1, keepdim=True))).squeeze(-1))
+            probs = torch.softmax(scores, dim=-1)
+            o.copy_((torch.einsum("bqhk,bkd->bqhd", probs, v_all) * output_scale).to(o.dtype))
+
+        return call
+
     # 0.13 absolute tolerance matches the source kernel's own fp8 ref check.
-    return ReferencePlugin(make_inputs, reference, (1e-5, 0.13), ("o", "lse"))
+    return ReferencePlugin(make_inputs, reference, (1e-5, 0.13), ("o", "lse"), benchmark_reference)
 
 
 def make_operation_contract(shape: dict) -> OperationContract:

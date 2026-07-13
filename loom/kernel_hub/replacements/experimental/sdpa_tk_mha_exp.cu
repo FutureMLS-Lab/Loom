@@ -437,7 +437,7 @@ extern "C" void mha_fwd_strided_make_globals(
 }
 
 // mha_fwd_strided_grid_dims — accepts the full 16-scalar arg list produced by
-// the TKCC DriverLaunchExternalCubin codegen (4 shape ints + 12 stride long longs)
+// the Loom Kernel Hub DriverLaunchExternalCubin codegen (4 shape ints + 12 stride long longs)
 // and forwards only the shape ints to mha_fwd_grid_dims.  The stride args are
 // ignored here; grid dimensions depend only on batch/head/seq shape.
 extern "C" void mha_fwd_strided_grid_dims(

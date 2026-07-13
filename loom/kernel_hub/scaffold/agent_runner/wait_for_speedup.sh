@@ -60,11 +60,11 @@ while true; do
         BASELINE_US=$(echo "$BEST_KERNEL" | jq -r '.baseline_us // empty')
 
         if [ -n "$KERNEL_US" ] && [ -n "$BASELINE_US" ]; then
-            CURRENT_SPEEDUP=$(echo "scale=4; $BASELINE_US / $KERNEL_US" | bc)
+            # python3 instead of bc: bc is not installed on some hosts
+            CURRENT_SPEEDUP=$(python3 -c "print(round($BASELINE_US / $KERNEL_US, 4))")
             echo "[$(date '+%H:%M:%S')] Best speedup: ${CURRENT_SPEEDUP}x (target: ${TARGET_SPEEDUP}x)"
 
-            # Compare using bc (1 if current >= target, 0 otherwise)
-            if [ "$(echo "$CURRENT_SPEEDUP >= $TARGET_SPEEDUP" | bc)" -eq 1 ]; then
+            if python3 -c "import sys; sys.exit(0 if $CURRENT_SPEEDUP >= $TARGET_SPEEDUP else 1)"; then
                 echo ""
                 echo "Target speedup achieved! Finishing run..."
                 bash "$SCRIPT_DIR/finish_run.sh" "$RUN_ID"

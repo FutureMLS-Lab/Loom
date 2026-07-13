@@ -86,7 +86,7 @@ using Gemm   = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
 using Params = typename GemmKernel::Params;
 
 // ---------------------------------------------------------------------------
-// Host-side helpers for TKCC ExternalReplacementKernelSpec
+// Host-side helpers for Loom Kernel Hub ExternalReplacementKernelSpec
 // ---------------------------------------------------------------------------
 
 extern "C" int cutlass_gemm_abt_coop2_globals_size() {

@@ -228,9 +228,9 @@ def test_list_session_files_returns_jsonl_sorted(tmp_path: Path, monkeypatch) ->
     os.utime(older, (1000, 1000))
     os.utime(newer, (2000, 2000))
     enc.joinpath("ignored.txt").write_text("nope", encoding="utf-8")
-    files = list_session_files(cwd)
+    files = list_session_files(cwd, "claude")
     assert [p.name for p in files] == ["aaaa-bbbb.jsonl", "cccc-dddd.jsonl"]
-    assert session_id_from_path(files[-1]) == "cccc-dddd"
+    assert session_id_from_path(files[-1], "claude") == "cccc-dddd"
 
 
 # --- worktree helpers (real git) --------------------------------------------
@@ -550,10 +550,10 @@ def test_list_task_worktree_statuses(tmp_path: Path) -> None:
         assert s["clean"] is True
 
 
-def test_create_task_defaults_to_claude_agent(tmp_path: Path) -> None:
+def test_create_task_defaults_to_cursor_agent(tmp_path: Path) -> None:
     meta = create_task(tmp_path, "ag1", "g", skills_path=None, auto_worktree=False)
-    assert meta.agent == "claude"
-    assert read_meta(tmp_path, meta.slug).agent == "claude"
+    assert meta.agent == "cursor"
+    assert read_meta(tmp_path, meta.slug).agent == "cursor"
 
 
 def test_create_task_with_codex_agent(tmp_path: Path) -> None:
@@ -574,11 +574,12 @@ def test_normalize_and_label_agent() -> None:
 
     assert normalize_agent("claude") == "claude"
     assert normalize_agent("CODEX") == "codex"
-    assert normalize_agent("") == "claude"
-    assert normalize_agent("gpt-4") == "claude"  # unknown -> default
+    assert normalize_agent("") == "cursor"
+    assert normalize_agent("gpt-4") == "cursor"  # unknown -> default
+    assert agent_label("cursor") == "Agent"
     assert agent_label("claude") == "Claude"
     assert agent_label("codex") == "Codex"
-    assert agent_label("nonsense") == "Claude"
+    assert agent_label("nonsense") == "Agent"
 
 
 def test_build_agent_command_claude() -> None:
@@ -766,12 +767,12 @@ def test_create_task_aris_kind(tmp_path: Path) -> None:
 
 
 def test_read_meta_upgrades_legacy_default_model(tmp_path: Path) -> None:
-    """Tasks created when the default was claude-sonnet-4-6 should resume on the
-    current default (opus), since the model is never an explicit UI choice."""
+    """Legacy Claude tasks upgrade an obsolete default to today's Claude default."""
     import json as _json
     meta = create_task(tmp_path, "old task", "g", skills_path=None, auto_worktree=False)
     tj = task_root(tmp_path, meta.slug) / "task.json"
     data = _json.loads(tj.read_text())
+    data["agent"] = "claude"
     data["interview_model"] = "claude-sonnet-4-6"
     tj.write_text(_json.dumps(data, indent=2))
-    assert read_meta(tmp_path, meta.slug).interview_model == "claude-opus-4-8"
+    assert read_meta(tmp_path, meta.slug).interview_model == "claude-fable-5"

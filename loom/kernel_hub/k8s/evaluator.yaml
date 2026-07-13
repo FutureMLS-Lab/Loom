@@ -1,0 +1,123 @@
+# Phase-1 Kubernetes deployment of the kernel_evaluator service (no container
+# registry needed): the code is mounted from /shared and dependencies are
+# pip-installed at startup on top of the NGC PyTorch base image (which already
+# has torch + CUDA toolkit / nvcc). Postgres runs as a sidecar in the same pod so
+# the evaluator reaches it on localhost, mirroring docker-compose.
+#
+# Apply (as charlie, with kubectl on PATH):
+#   cp -r loom/kernel_hub /shared/charlie/loom-kernel-hub    # stage code on the shared PVC
+#   kubectl apply -f loom/kernel_hub/k8s/evaluator.yaml
+#   kubectl rollout status deploy/kernel-evaluator
+#   kubectl logs deploy/kernel-evaluator -c evaluator -f     # watch startup (pip install + migrate)
+#
+# Reach it from other pods (agents) at:  http://kernel-evaluator.charlie.svc.cluster.local:8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kernel-evaluator
+  labels: { app: kernel-evaluator }
+spec:
+  selector: { app: kernel-evaluator }
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kernel-evaluator
+  labels: { app: kernel-evaluator }
+spec:
+  replicas: 1
+  # One GPU + an emptyDir Postgres: never run two pods at once.
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: kernel-evaluator }
+  template:
+    metadata:
+      labels: { app: kernel-evaluator }
+    spec:
+      runtimeClassName: nvidia
+      nodeSelector:
+        node-group: default
+        node-pool: compute
+      tolerations:
+        - { key: node-group, value: nccl, effect: NoSchedule }
+      volumes:
+        - name: shared
+          persistentVolumeClaim: { claimName: shared-data }
+        - name: pgdata
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+        - name: dshm
+          emptyDir: { medium: Memory }
+      containers:
+        - name: postgres
+          image: postgres:16
+          env:
+            - { name: POSTGRES_USER, value: kernel_evaluator }
+            - { name: POSTGRES_PASSWORD, value: kernel_evaluator }
+            - { name: POSTGRES_DB, value: kernel_evaluator }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          volumeMounts:
+            - { name: pgdata, mountPath: /var/lib/postgresql/data }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "kernel_evaluator"] }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "500m", memory: 512Mi }
+            limits: { cpu: "2", memory: 2Gi }
+        - name: evaluator
+          image: nvcr.io/nvidia/pytorch:24.12-py3
+          workingDir: /shared/charlie/loom-kernel-hub
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              echo "[evaluator] installing python deps…"
+              pip install --no-cache-dir alembic fastapi "psycopg2-binary" pyyaml sqlmodel "uvicorn[standard]"
+              # CuTeDSL runtime for cutedsl candidates (matches Dockerfile).
+              # cuda-python 13.x lacks cuda.bindings.driver that cutlass 4.4.2
+              # imports, so pin 12.9.x alongside it.
+              pip install --no-cache-dir "cuda-python==12.9.4" "nvidia-cutlass-dsl==4.4.2"
+              pip install --no-cache-dir --no-deps -e /shared/charlie/loom-kernel-hub
+              echo "[evaluator] waiting for postgres…"
+              for i in $(seq 1 60); do
+                python -c "import os,psycopg2; psycopg2.connect(os.environ['DATABASE_URL']).close()" 2>/dev/null && break || sleep 2
+              done
+              echo "[evaluator] running migrations…"
+              # alembic.ini uses a relative script_location (db/migrations) and
+              # prepend_sys_path=. , so it must run from inside kernel_evaluator/.
+              ( cd /shared/charlie/loom-kernel-hub/kernel_evaluator && alembic -c alembic.ini upgrade head )
+              echo "[evaluator] starting uvicorn on :8000"
+              exec uvicorn kernel_evaluator.app:app --host 0.0.0.0 --port 8000
+          env:
+            - { name: DATABASE_URL, value: "postgresql://kernel_evaluator:kernel_evaluator@localhost:5432/kernel_evaluator" }
+            - { name: KERNEL_EVALUATOR_USER_SUBMIT_LIMIT, value: "10" }
+            - { name: KERNEL_EVALUATOR_USER_SUBMIT_WINDOW_S, value: "60" }
+            - { name: KERNEL_EVALUATOR_USER_IN_FLIGHT_SUBMIT_LIMIT, value: "2" }
+            - { name: KERNEL_EVALUATOR_COMPILE_TIMEOUT_S, value: "300" }
+            - { name: KERNEL_EVALUATOR_BENCHMARK_TIMEOUT_S, value: "600" }
+            - { name: PYTHONUNBUFFERED, value: "1" }
+            - { name: XDG_CACHE_HOME, value: "/tmp/cache" }
+            - { name: TORCHINDUCTOR_CACHE_DIR, value: "/tmp/cache/inductor" }
+            - { name: TRITON_CACHE_DIR, value: "/tmp/cache/triton" }
+            - { name: HF_HOME, value: "/shared/huggingface" }
+          volumeMounts:
+            - { name: shared, mountPath: /shared }
+            - { name: cache, mountPath: /tmp/cache }
+            - { name: dshm, mountPath: /dev/shm }
+          ports:
+            - containerPort: 8000
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+          readinessProbe:
+            httpGet: { path: /openapi.json, port: 8000 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 120

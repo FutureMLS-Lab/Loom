@@ -87,8 +87,7 @@ Examples:
     parser.add_argument(
         "--plugin",
         required=True,
-        choices=AVAILABLE_PLUGINS,
-        help="Plugin to use for the evaluation run",
+        help="Plugin to use for the evaluation run (bundled or task-local)",
     )
     parser.add_argument(
         "--target",

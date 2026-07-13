@@ -156,7 +156,7 @@ next runs and stops.)
 |------|------------|
 | **Claude / Codex** | The standard human-driven flow above. |
 | **ARIS** | Autonomous-research loop — mines ideas from the codebase, spins up a worktree per experiment, folds results into `PLAN.md` (skill: `loom/skills/aris/ARIS.md`). |
-| **Kernel Lab** | Dedicated panel driving the TKCC kernel evaluator (spec interview + build/run launcher with live log). Advanced / optional. |
+| **Kernel Lab** | Dedicated panel driving the Loom Kernel Hub evaluator (spec interview + build/run launcher with live log). Advanced / optional. |
 
 ## OpenClaw integration
 

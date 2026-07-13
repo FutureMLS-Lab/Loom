@@ -246,7 +246,7 @@ void gemm_allconsumer(const __grid_constant__ cluster_globals globals) {
 }
 
 // ---------------------------------------------------------------------------
-// Host-side helpers for TKCC launcher and standalone benchmark
+// Host-side helpers for Loom Kernel Hub launcher and standalone benchmark
 // ---------------------------------------------------------------------------
 
 extern "C" int tk_gemm_4608x27648x3072_globals_size() {

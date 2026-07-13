@@ -1,8 +1,11 @@
+import hashlib
+import re
+import types
 from typing import Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from kernel_evaluator.db.models import EvalRun
@@ -25,7 +28,11 @@ from kernel_evaluator.services.api_keys import (
 from kernel_evaluator.services.evaluation.types import CandidateKind
 from kernel_evaluator.services.jobs import EvaluationJob, EvaluationJobState
 from kernel_evaluator.services.queue_state import queue_state
-from kernel_evaluator.services.plugins import make_plugin_run
+from kernel_evaluator.services.plugins import (
+    _REFERENCE_FACTORIES,
+    make_plugin_run,
+    register_plugin,
+)
 from kernel_evaluator.services.run_contracts import BenchmarkPolicyModel, validate_run_contract
 from kernel_evaluator.services.workers import start_workers
 
@@ -58,6 +65,10 @@ class EvaluationSubmitRequest(BaseModel):
     source_text: str
     artifacts: list[str] = Field(default_factory=list)
     agent_index: Optional[int] = None
+
+
+class PluginRegisterRequest(BaseModel):
+    source_text: str = Field(min_length=1, max_length=1_000_000)
 
 
 def _job_or_404(job_id: str) -> EvaluationJob:
@@ -112,6 +123,37 @@ def _in_flight_jobs_for_key(key_id: str) -> int:
         for job in queue_state.jobs.values()
         if job.owner_key_id == key_id and not job.terminal()
     )
+
+
+@evaluation_router.post("/plugins/register")
+def register_task_plugin(
+    req: PluginRegisterRequest,
+    _principal: ApiPrincipal = Depends(require_admin_key),
+):
+    """Load one admin-supplied task contract into this evaluator process.
+
+    The endpoint is intentionally admin-only: plugin modules define trusted
+    reference code and therefore have the same privilege as evaluator source.
+    Re-registering an existing plugin is idempotent.
+    """
+    digest = hashlib.sha256(req.source_text.encode()).hexdigest()[:16]
+    module = types.ModuleType(f"_loom_task_plugin_{digest}")
+    module.__file__ = f"<task-plugin:{digest}>"
+    try:
+        exec(compile(req.source_text, module.__file__, "exec"), module.__dict__)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"plugin import failed: {exc}") from exc
+    plugin = getattr(module, "PLUGIN", None)
+    name = str(getattr(plugin, "name", "") or "")
+    if plugin is None or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+        raise HTTPException(status_code=400, detail="source must export PLUGIN with a valid name")
+    if name in _REFERENCE_FACTORIES:
+        return {"ok": True, "plugin": name, "registered": False, "digest": digest}
+    try:
+        register_plugin(plugin)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "plugin": name, "registered": True, "digest": digest}
 
 
 @evaluation_router.post("/runs")
@@ -244,6 +286,15 @@ def get_evaluation_job(job_id: str, principal: ApiPrincipal = Depends(require_ap
     job = _visible_job_or_404(job_id, principal)
     summary = job.summary()
     return _user_job_summary(summary, job.run_id) if principal.role == ApiRole.USER else summary
+
+
+@evaluation_router.get("/jobs/{job_id}/source", response_class=PlainTextResponse)
+def get_evaluation_job_source(
+    job_id: str,
+    principal: ApiPrincipal = Depends(require_api_key),
+):
+    job = _visible_job_or_404(job_id, principal)
+    return job.source_text
 
 
 @evaluation_router.get("/jobs/{job_id}/result")

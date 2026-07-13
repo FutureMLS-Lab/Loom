@@ -9,7 +9,10 @@ import re
 import subprocess
 from pathlib import Path
 
-ARTIFACT_CACHE_DIR = os.environ.get("TKCC_ARTIFACT_CACHE", "/tmp/tkcc_artifacts")
+ARTIFACT_CACHE_DIR = os.environ.get(
+    "LOOM_KERNEL_HUB_ARTIFACT_CACHE",
+    "/tmp/loom_kernel_hub_artifacts",
+)
 
 NVCC_FLAGS = [
     "-std=c++20", "-O3", "--use_fast_math",

@@ -106,7 +106,7 @@ def inject_timing_into_ptx(ptx_text: str) -> str:
                         if not prev.endswith(','):
                             out[rev_idx] = prev + ','
                         break
-                out.append(f"{indent}\t.param .u64 tkcc_timing_buf_param")
+                out.append(f"{indent}\t.param .u64 loom_kh_timing_buf_param")
                 out.append(line)   # the ')' line
                 continue
 
@@ -134,27 +134,27 @@ def inject_timing_into_ptx(ptx_text: str) -> str:
         if not regs_injected: # Inject register declarations + start-write before first instruction
             if not _is_ptx_declaration(stripped):
                 out.extend([
-                    f"{indent}.reg .pred  %tkcc_is_tid0;",
-                    f"{indent}.reg .u32   %tkcc_tid0, %tkcc_smid;",
-                    f"{indent}.reg .u64   %tkcc_tb, %tkcc_gt, %tkcc_slot_addr, %tkcc_discard;",
+                    f"{indent}.reg .pred  %loom_kh_is_tid0;",
+                    f"{indent}.reg .u32   %loom_kh_tid0, %loom_kh_smid;",
+                    f"{indent}.reg .u64   %loom_kh_tb, %loom_kh_gt, %loom_kh_slot_addr, %loom_kh_discard;",
                 ])
                 regs_injected = True
 
                 out.extend([
-                    f"{indent}mov.u32        %tkcc_tid0, %tid.x;",
-                    f"{indent}setp.eq.u32    %tkcc_is_tid0, %tkcc_tid0, 0;",
-                    f"@%tkcc_is_tid0 mov.u32        %tkcc_smid, %smid;",
-                    f"@%tkcc_is_tid0 ld.param.u64   %tkcc_tb, [tkcc_timing_buf_param];",
-                    f"@%tkcc_is_tid0 mul.wide.u32   %tkcc_slot_addr, %tkcc_smid, 16;",
-                    f"@%tkcc_is_tid0 add.u64        %tkcc_slot_addr, %tkcc_slot_addr, %tkcc_tb;",
-                    f"@%tkcc_is_tid0 mov.u64        %tkcc_gt, %globaltimer;",
-                    f"@%tkcc_is_tid0 atom.global.cas.b64 %tkcc_discard, [%tkcc_slot_addr], 0, %tkcc_gt;",
+                    f"{indent}mov.u32        %loom_kh_tid0, %tid.x;",
+                    f"{indent}setp.eq.u32    %loom_kh_is_tid0, %loom_kh_tid0, 0;",
+                    f"@%loom_kh_is_tid0 mov.u32        %loom_kh_smid, %smid;",
+                    f"@%loom_kh_is_tid0 ld.param.u64   %loom_kh_tb, [loom_kh_timing_buf_param];",
+                    f"@%loom_kh_is_tid0 mul.wide.u32   %loom_kh_slot_addr, %loom_kh_smid, 16;",
+                    f"@%loom_kh_is_tid0 add.u64        %loom_kh_slot_addr, %loom_kh_slot_addr, %loom_kh_tb;",
+                    f"@%loom_kh_is_tid0 mov.u64        %loom_kh_gt, %globaltimer;",
+                    f"@%loom_kh_is_tid0 atom.global.cas.b64 %loom_kh_discard, [%loom_kh_slot_addr], 0, %loom_kh_gt;",
                 ])
 
         if stripped == 'ret;':
             out.extend([
-                f"@%tkcc_is_tid0 mov.u64        %tkcc_gt, %globaltimer;",
-                f"@%tkcc_is_tid0 red.global.max.u64 [%tkcc_slot_addr+8], %tkcc_gt;",
+                f"@%loom_kh_is_tid0 mov.u64        %loom_kh_gt, %globaltimer;",
+                f"@%loom_kh_is_tid0 red.global.max.u64 [%loom_kh_slot_addr+8], %loom_kh_gt;",
             ])
 
         out.append(line)

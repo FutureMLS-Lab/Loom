@@ -39,7 +39,7 @@ def _mm_tk_stub(
     tl.store(c_ptr, tl.load(a_ptr))
 
 
-@triton_op("tkcc::mm_tk", mutates_args=("c",))
+@triton_op("loom_kernel_hub::mm_tk", mutates_args=("c",))
 def tk_mm(a: torch.Tensor, bt: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
     M, K = a.shape
     N, _ = bt.shape

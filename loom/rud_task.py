@@ -36,45 +36,122 @@ RUD_DIR = ".RUD"
 WORK_SUBDIR = "work"
 
 PLAN = "PLAN.md"
+WIKI = "WIKI.md"
 NOTES = "NOTES.md"
 META = "task.json"
 TASK_ORDER = "task-order.json"
 
-# Only PLAN.md is editable through the per-task template API now.  NOTES.md
-# lives at the project root and has its own dedicated endpoint.
-ALLOWED_TEMPLATE_NAMES = frozenset({PLAN})
+# PLAN.md is the normal task ledger; kernel tasks use WIKI.md as their shared
+# evaluator/worker knowledge base. NOTES.md remains project-scoped.
+ALLOWED_TEMPLATE_NAMES = frozenset({PLAN, WIKI})
 
 # Supported agent CLIs that can drive a task's tmux pane.
+AGENT_CURSOR = "cursor"
 AGENT_CLAUDE = "claude"
 AGENT_CODEX = "codex"
-SUPPORTED_AGENTS = frozenset({AGENT_CLAUDE, AGENT_CODEX})
+SUPPORTED_AGENTS = frozenset({AGENT_CURSOR, AGENT_CLAUDE, AGENT_CODEX})
+
+# Models currently available to this installation. These feed the web pickers;
+# the fields remain editable, so an API/CLI model added later can be typed
+# without waiting for a Loom release.
+CLAUDE_MODEL_OPTIONS = (
+    "claude-fable-5",
+    "claude-sonnet-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6",
+    "claude-opus-4-5-20251101",
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-4-5-20250929",
+    "claude-opus-4-1-20250805",
+)
+CODEX_MODEL_OPTIONS = (
+    "gpt-5.5",
+    "gpt-5.4",
+)
+_CURSOR_MODEL_OPTIONS: tuple[str, ...] | None = None
+
+
+def _cursor_model_options() -> tuple[str, ...]:
+    """Models advertised by the installed Cursor Agent CLI (cached).
+
+    Keep a short fallback so task creation still works when the CLI is absent
+    or temporarily unable to query the account.
+    """
+    global _CURSOR_MODEL_OPTIONS
+    if _CURSOR_MODEL_OPTIONS is not None:
+        return _CURSOR_MODEL_OPTIONS
+    fallback = (
+        "auto",
+        "gpt-5.6-sol-xhigh",
+        "claude-fable-5-thinking-xhigh",
+        "claude-opus-4-8-thinking-high",
+        "composer-2.5",
+    )
+    import shutil
+
+    binary = shutil.which("agent") or shutil.which("cursor-agent")
+    if not binary:
+        _CURSOR_MODEL_OPTIONS = fallback
+        return fallback
+    try:
+        proc = subprocess.run(
+            [binary, "--list-models"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        _CURSOR_MODEL_OPTIONS = fallback
+        return fallback
+    models: list[str] = []
+    for line in (proc.stdout or "").splitlines():
+        match = re.match(r"^(\S+)\s+-\s+.+$", line.strip())
+        if match:
+            models.append(match.group(1))
+    _CURSOR_MODEL_OPTIONS = tuple(models) if models else fallback
+    return _CURSOR_MODEL_OPTIONS
 
 
 def normalize_agent(name: str | None) -> str:
-    """Return a valid agent name, defaulting to ``claude``."""
+    """Return a valid agent name, defaulting to Cursor Agent."""
     s = (name or "").strip().lower()
-    return s if s in SUPPORTED_AGENTS else AGENT_CLAUDE
+    return s if s in SUPPORTED_AGENTS else AGENT_CURSOR
 
 
 def agent_label(name: str) -> str:
-    """Display label for an agent name (e.g. ``"Claude"`` / ``"Codex"``)."""
-    return {AGENT_CLAUDE: "Claude", AGENT_CODEX: "Codex"}.get(
-        normalize_agent(name), "Claude"
+    """Display label for an agent backend."""
+    return {
+        AGENT_CURSOR: "Agent",
+        AGENT_CLAUDE: "Claude",
+        AGENT_CODEX: "Codex",
+    }.get(
+        normalize_agent(name), "Agent"
     )
 
 
 def agent_default_model(name: str) -> str:
     """Default model string to pass to the CLI for a given agent."""
     return {
-        AGENT_CLAUDE: "claude-opus-4-8",
+        AGENT_CURSOR: "gpt-5.6-sol-max",
+        AGENT_CLAUDE: "claude-fable-5",
         AGENT_CODEX: "",  # codex falls back to its own ~/.codex/config.toml default
     }.get(normalize_agent(name), "")
+
+
+def agent_model_options(name: str) -> tuple[str, ...]:
+    return {
+        AGENT_CURSOR: _cursor_model_options(),
+        AGENT_CLAUDE: CLAUDE_MODEL_OPTIONS,
+        AGENT_CODEX: CODEX_MODEL_OPTIONS,
+    }.get(normalize_agent(name), _cursor_model_options())
 
 
 # Model strings that were a previous global default and are not selectable via
 # any UI - so they are vestigial, never an intentional per-task choice. Treat
 # them as "use the current default" so old tasks start/resume on the new model.
-_LEGACY_DEFAULT_MODELS = {"claude-sonnet-4-6"}
+_LEGACY_DEFAULT_MODELS = {"claude-sonnet-4-6", "claude-opus-4-8"}
 
 
 def _upgrade_legacy_model(model: str, agent: str = AGENT_CLAUDE) -> str:
@@ -91,10 +168,19 @@ def build_agent_command(
 ) -> list[str]:
     """Build the CLI argv that should be exec'd in the tmux pane for *agent*.
 
+    - Cursor:  ``agent --model M --force [--resume ID]``
     - Claude:  ``claude --model M --dangerously-skip-permissions --effort max [--resume ID]``
     - Codex:   ``codex resume ID`` (resume) or ``codex`` (fresh), optionally with ``-c model=…``
     """
     agent = normalize_agent(agent)
+    if agent == AGENT_CURSOR:
+        cmd = ["agent"]
+        if model.strip():
+            cmd += ["--model", model.strip()]
+        cmd += ["--force"]
+        if resume_session_id:
+            cmd += ["--resume", resume_session_id]
+        return cmd
     if agent == AGENT_CODEX:
         if resume_session_id:
             cmd: list[str] = ["codex", "resume", resume_session_id]
@@ -297,6 +383,58 @@ def load_default_skills(skills_path: Path) -> str:
     return skills_path.read_text(encoding="utf-8", errors="replace")
 
 
+# A task can use SEVERAL skills files together: meta.skills_path holds one or
+# more ;-joined markdown paths (single path = the original format, so existing
+# task.json files keep working unchanged).
+SKILLS_PATH_SEP = ";"
+
+
+def split_skills_paths(raw: str) -> list[Path]:
+    out: list[Path] = []
+    for part in (raw or "").split(SKILLS_PATH_SEP):
+        p = part.strip()
+        if p:
+            out.append(Path(p).expanduser())
+    return out
+
+
+def join_skills_paths(paths: list[Path]) -> str:
+    return SKILLS_PATH_SEP.join(str(p) for p in paths)
+
+
+def load_skills_text(
+    raw: str,
+    fallback: Path | None = None,
+    *,
+    limit_each: int = 12000,
+    limit_total: int = 30000,
+) -> str:
+    """Concatenated content of every existing skills file in ``raw``
+    (;-joined). Falls back to *fallback*, then the bundled skills. Each file
+    gets a heading when there is more than one, so the agent can tell the
+    skills apart."""
+    paths = [p for p in split_skills_paths(raw) if p.is_file()]
+    if not paths:
+        for cand in (fallback, bundled_skills_path()):
+            if cand is not None and cand.is_file():
+                paths = [cand]
+                break
+    parts: list[str] = []
+    total = 0
+    for p in paths:
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")[:limit_each]
+        except OSError:
+            continue
+        if len(paths) > 1:
+            text = f"## Skill: {p.name}\n\n{text}"
+        if total + len(text) > limit_total:
+            break
+        parts.append(text)
+        total += len(text)
+    return "\n\n---\n\n".join(parts)
+
+
 def package_templates_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "templates"
 
@@ -322,11 +460,11 @@ class TaskMeta:
     created_at: str
     updated_at: str
     skills_path: str = ""
-    interview_model: str = "claude-opus-4-8"
+    interview_model: str = "gpt-5.6-sol-max"
     tmux_interview_target: str = ""
-    # Which CLI drives this task's tmux pane.  Defaults to claude so
-    # legacy task.json files (no `agent` key) keep working unchanged.
-    agent: str = AGENT_CLAUDE
+    # New tasks default to Cursor Agent. from_dict preserves Claude for legacy
+    # task.json files that predate the `agent` field.
+    agent: str = AGENT_CURSOR
     # Task kind: "agent" (Claude/Codex deep-interview task, default) or
     # "kernel" (Kernel Lab task — the task view renders the Kernel Lab UI).
     kind: str = "agent"
@@ -417,6 +555,7 @@ class TaskMeta:
             brs = brs[: len(wts)]
         primary_wt = wts[0] if wts else legacy_wt
         primary_br = brs[0] if brs else legacy_br
+        stored_agent = normalize_agent(data.get("agent", AGENT_CLAUDE))
         return cls(
             slug=str(data["slug"]),
             title=str(data.get("title", "")),
@@ -425,11 +564,11 @@ class TaskMeta:
             updated_at=str(data.get("updated_at", "")),
             skills_path=str(data.get("skills_path", "")),
             interview_model=_upgrade_legacy_model(
-                str(data.get("interview_model", "claude-opus-4-8")),
-                normalize_agent(data.get("agent")),
+                str(data.get("interview_model", agent_default_model(stored_agent))),
+                stored_agent,
             ),
             tmux_interview_target=str(data.get("tmux_interview_target", "")),
-            agent=normalize_agent(data.get("agent")),
+            agent=stored_agent,
             kind=str(data.get("kind", "agent") or "agent"),
             worktree_path=primary_wt,
             branch=primary_br,
@@ -508,9 +647,9 @@ def create_task(
     project_root: Path,
     title: str,
     general_goal: str,
-    skills_path: Path | None = None,
-    interview_model: str = "claude-opus-4-8",
-    agent: str = AGENT_CLAUDE,
+    skills_path: Path | str | None = None,
+    interview_model: str = "gpt-5.6-sol-max",
+    agent: str = AGENT_CURSOR,
     kind: str = "agent",
     *,
     auto_worktree: bool = True,
@@ -521,9 +660,12 @@ def create_task(
     root = task_root(project_root, slug)
     root.mkdir(parents=True, exist_ok=True)
     copy_default_plan(root, overwrite=False)
-    sk = (skills_path or bundled_skills_path()).expanduser().resolve()
-    if not sk.is_file():
-        sk = bundled_skills_path().resolve()
+    # skills_path may name several ;-joined files; keep the ones that exist.
+    valid_skills = [
+        p.resolve() for p in split_skills_paths(str(skills_path or "")) if p.is_file()
+    ]
+    if not valid_skills:
+        valid_skills = [bundled_skills_path().resolve()]
     now = _now_iso()
     meta = TaskMeta(
         slug=slug,
@@ -531,7 +673,7 @@ def create_task(
         general_goal=general_goal.strip(),
         created_at=now,
         updated_at=now,
-        skills_path=str(sk),
+        skills_path=join_skills_paths(valid_skills),
         interview_model=interview_model,
         agent=normalize_agent(agent),
         kind=kind,
@@ -1168,26 +1310,57 @@ def _list_codex_session_files(cwd: Path) -> list[Path]:
     return out
 
 
-def list_session_files(cwd: Path, agent: str = AGENT_CLAUDE) -> list[Path]:
+def _list_cursor_session_files(cwd: Path) -> list[Path]:
+    """Cursor Agent chat metadata files whose ``cwd`` matches *cwd*.
+
+    Cursor stores chats at ``~/.cursor/chats/<workspace>/<chat-id>/meta.json``;
+    the chat-id directory name is accepted by ``agent --resume <chat-id>``.
+    """
+    base = (Path.home() / ".cursor" / "chats").resolve()
+    if not base.is_dir():
+        return []
+    try:
+        target = str(cwd.resolve())
+    except OSError:
+        return []
+    out: list[Path] = []
+    for p in base.glob("*/*/meta.json"):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict) and str(data.get("cwd") or "") == target:
+            out.append(p)
+    out.sort(key=lambda p: p.stat().st_mtime)
+    return out
+
+
+def list_session_files(cwd: Path, agent: str = AGENT_CURSOR) -> list[Path]:
     """Agent-aware session file lookup.
 
+    - ``cursor`` -> ``~/.cursor/chats/*/<chat-id>/meta.json`` matched by ``cwd``
     - ``claude`` -> ``~/.claude/projects/<encoded-cwd>/<uuid>.jsonl``
     - ``codex``  -> ``~/.codex/sessions/**/rollout-*.jsonl`` matched by ``payload.cwd``
     """
     agent = normalize_agent(agent)
+    if agent == AGENT_CURSOR:
+        return _list_cursor_session_files(cwd)
     if agent == AGENT_CODEX:
         return _list_codex_session_files(cwd)
     return _list_claude_session_files(cwd)
 
 
-def session_id_from_path(path: Path, agent: str = AGENT_CLAUDE) -> str:
+def session_id_from_path(path: Path, agent: str = AGENT_CURSOR) -> str:
     """Extract a resumable session id from one session file.
 
+    Cursor: the parent directory name is the chat id.
     Claude: the file is named ``<uuid>.jsonl`` so the stem *is* the id.
     Codex:  the file is named ``rollout-<timestamp>-<uuid>.jsonl`` but
             the canonical id lives in ``payload.id`` of the first line.
     """
     agent = normalize_agent(agent)
+    if agent == AGENT_CURSOR:
+        return path.parent.name if path.name == "meta.json" else ""
     if agent == AGENT_CODEX:
         meta = _read_codex_session_meta(path)
         if meta:
@@ -1331,7 +1504,10 @@ def direct_child_git_repos(parent: Path) -> list[Path]:
     return out
 
 
-def list_worktree_candidates(project_root: Path) -> list[dict[str, Any]]:
+def list_worktree_candidates(
+    project_root: Path,
+    preferred_paths: list[Path] | None = None,
+) -> list[dict[str, Any]]:
     """Git repos a task can branch a worktree from.
 
     - If *project_root* is itself a git repo root, returns just that one with
@@ -1352,21 +1528,48 @@ def list_worktree_candidates(project_root: Path) -> list[dict[str, Any]]:
         project_root = project_root.resolve()
     except OSError:
         return []
+    def merge_candidates(discovered: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in [*preferred, *discovered]:
+            if item["path"] not in seen:
+                seen.add(item["path"])
+                out.append(item)
+        return out
+
+    preferred: list[dict[str, Any]] = []
+    for raw in preferred_paths or []:
+        try:
+            path = raw.resolve()
+            path.relative_to(project_root)
+        except (OSError, ValueError):
+            continue
+        top = git_toplevel(path)
+        if top is not None and top.resolve() == path:
+            preferred.append({
+                "path": str(path),
+                "name": path.name,
+                "kind": "preferred",
+            })
+
     git_root = git_toplevel(project_root)
     git_root = git_root.resolve() if git_root is not None else None
     # 1) project_root is exactly a git repo root -> that repo.
     if git_root is not None and git_root == project_root:
-        return [{"path": str(git_root), "name": git_root.name, "kind": "self"}]
+        discovered = [{"path": str(git_root), "name": git_root.name, "kind": "self"}]
+        return merge_candidates(discovered)
     # 2) Container dir holding side-by-side repos -> those child repos. Prefer
     #    this over the enclosing repo so a project nested inside an outer repo
     #    branches its own repos, not the parent.
     children = direct_child_git_repos(project_root)
     if children:
-        return [{"path": str(p), "name": p.name, "kind": "child"} for p in children]
+        discovered = [{"path": str(p), "name": p.name, "kind": "child"} for p in children]
+        return merge_candidates(discovered)
     # 3) No child repos and project_root sits inside a repo -> the enclosing repo.
     if git_root is not None:
-        return [{"path": str(git_root), "name": git_root.name, "kind": "self"}]
-    return []
+        discovered = [{"path": str(git_root), "name": git_root.name, "kind": "self"}]
+        return merge_candidates(discovered)
+    return preferred
 
 
 def _record_worktree_base(

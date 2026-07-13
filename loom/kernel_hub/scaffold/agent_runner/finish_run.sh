@@ -26,14 +26,30 @@ json_escape_file() {
 
 echo "Finishing run: $RUN_ID"
 
-# Stop and remove containers
-containers=$(docker ps -aq --filter "name=kernel-agent-${RUN_ID}-" 2>/dev/null || true)
-if [ -n "$containers" ]; then
-    docker rm -f $containers 2>/dev/null || true
-    echo "Containers stopped."
+# Stop the agents: docker containers on docker hosts, k8s Jobs otherwise.
+export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
+if command -v docker >/dev/null 2>&1; then
+    containers=$(docker ps -aq --filter "name=kernel-agent-${RUN_ID}-" 2>/dev/null || true)
+    if [ -n "$containers" ]; then
+        docker rm -f $containers 2>/dev/null || true
+        echo "Containers stopped."
+    else
+        echo "No containers to stop."
+    fi
+elif command -v kubectl >/dev/null 2>&1; then
+    KUBECTL=(kubectl --request-timeout=20s)
+    [ -n "${LOOM_K8S_KUBECONFIG:-}" ] && KUBECTL+=(--kubeconfig "$LOOM_K8S_KUBECONFIG")
+    [ -n "${LOOM_K8S_CONTEXT:-}" ] && KUBECTL+=(--context "$LOOM_K8S_CONTEXT")
+    RUN_LABEL=$(echo "$RUN_ID" | tr '_' '-' | cut -c1-50)
+    "${KUBECTL[@]}" -n "${LOOM_K8S_NAMESPACE:-charlie}" delete jobs \
+        -l "app=kernel-agent,run=$RUN_LABEL" --ignore-not-found=true 2>/dev/null || true
+    echo "k8s agent jobs deleted."
 else
-    echo "No containers to stop."
+    echo "No docker or kubectl found; skipping agent cleanup."
 fi
+
+# Stop the auto-terminate watcher for this run, if one is still polling.
+pkill -f "wait_for_speedup.sh $RUN_ID" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Postprocess best kernel (TMA descriptors + Python registration)
@@ -119,12 +135,17 @@ else
     echo "  No best kernel found (API unavailable or no kernels)"
 fi
 
-# Remove run working directory
-RUN_DIR="$SCRIPT_DIR/runs/$RUN_ID"
-if [ -d "$RUN_DIR" ]; then
-    rm -rf "$RUN_DIR"
-    echo "Working directory cleared: $RUN_DIR"
-else
+# Remove run working directory (docker runs live under scaffold/agent_runner/runs,
+# k8s runs under the shared PVC)
+removed=false
+for RUN_DIR in "$SCRIPT_DIR/runs/$RUN_ID" "${LOOM_K8S_RUNS_DIR:-/shared/charlie/loom-kernel-runs}/$RUN_ID"; do
+    if [ -n "$RUN_ID" ] && [ -d "$RUN_DIR" ]; then
+        rm -rf "$RUN_DIR"
+        echo "Working directory cleared: $RUN_DIR"
+        removed=true
+    fi
+done
+if [ "$removed" = false ]; then
     echo "No working directory found for run."
 fi
 
