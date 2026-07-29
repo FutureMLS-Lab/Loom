@@ -2013,14 +2013,16 @@ async function setMonitor(enabled) {
 }
 
 // ===== Real terminal (xterm.js) bound to the tmux pane via a live PTY stream.
-// Output: GET /api/tmux/stream chunks the actual terminal bytes (a `tmux attach`
-// PTY), rendered by xterm with true colors/cursor/TUI. Input: xterm.onData ->
-// /api/tmux/send-literal sends the raw byte sequences, so typing, arrows, Enter,
-// Esc, Ctrl-C, paste and IME all reach Claude exactly like a real terminal. =====
+// Output: GET /api/tmux/stream chunks the actual terminal bytes from a
+// `tmux attach` PTY. Input is written back to THAT SAME PTY via stream-input.
+// This matters because xterm also emits automatic terminal capability/color
+// replies through onData; sending those directly to the pane makes Cursor show
+// them as literal `^[[?1;2c...` prompt text instead of tmux consuming them. =====
 const TERM = {
   term: null,
   fit: null,
   target: '',
+  streamId: '',
   abort: null,
   connected: false,
   inputQueue: [],   // one entry per xterm onData datum (keystroke/sequence/paste)
@@ -2368,7 +2370,18 @@ async function termQueueInput(data) {
       }
       if (!chunk) continue;
       try {
-        await api('/api/tmux/send-literal', { method: 'POST', body: JSON.stringify({ target, text: chunk }) });
+        if (TERM.streamId) {
+          await api('/api/tmux/stream-input', {
+            method: 'POST',
+            body: JSON.stringify({ stream_id: TERM.streamId, text: chunk }),
+          });
+        } else if (!TERM.connected) {
+          // Legacy/fallback path when there is no live attach stream.
+          await api('/api/tmux/send-literal', {
+            method: 'POST',
+            body: JSON.stringify({ target, text: chunk }),
+          });
+        }
       } catch (err) { console.debug('input send failed', err); }
       // Give the TUI a beat to see the lone ESC before any following bytes,
       // so it can't be re-glued into a sequence at the pty read level.
@@ -2435,6 +2448,7 @@ function disconnectTerminal() {
   if (TERM.abort) { try { TERM.abort.abort(); } catch (e) {} TERM.abort = null; }
   TERM.connected = false;
   TERM.target = '';
+  TERM.streamId = '';
 }
 
 // Strip the app's MOUSE-mode enable/disable sequences from the PTY byte stream so
@@ -2497,6 +2511,7 @@ async function connectTerminal(target, force = false) {
     }
   }
   TERM._sizeWaits = 0;
+  const preserveScreen = TERM.target === target;
   disconnectTerminal();
   TERM.target = target;
   TERM.connected = true;
@@ -2505,7 +2520,11 @@ async function connectTerminal(target, force = false) {
   try { if (TERM.fit) TERM.fit.fit(); } catch (e) {}
   const cols = term.cols || 80;
   const rows = term.rows || 24;
-  try { term.reset(); } catch (e) {}
+  // A same-pane resize needs a new PTY attachment, but clearing xterm first
+  // makes Cursor's full-screen UI visibly disappear until tmux redraws.
+  if (!preserveScreen) {
+    try { term.reset(); } catch (e) {}
+  }
   try {
     const resp = await fetch(
       '/api/tmux/stream?target=' + encodeURIComponent(target) + '&cols=' + cols + '&rows=' + rows,
@@ -2520,16 +2539,24 @@ async function connectTerminal(target, force = false) {
       }
       return;
     }
+    if (TERM.abort !== ctrl) return;
+    TERM.streamId = resp.headers.get('X-Loom-Terminal-Stream') || '';
     const reader = resp.body.getReader();
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      if (value && TERM.term && TERM.target === target) TERM.term.write(stripMouseModeBytes(value));
+      if (value && TERM.abort === ctrl && TERM.term && TERM.target === target) {
+        TERM.term.write(stripMouseModeBytes(value));
+      }
     }
   } catch (err) {
     if (err && err.name !== 'AbortError') console.debug('terminal stream error', err);
   } finally {
-    if (TERM.abort === ctrl) { TERM.connected = false; TERM.abort = null; }
+    if (TERM.abort === ctrl) {
+      TERM.connected = false;
+      TERM.streamId = '';
+      TERM.abort = null;
+    }
   }
 }
 

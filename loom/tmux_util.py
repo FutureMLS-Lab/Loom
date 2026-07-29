@@ -6,6 +6,7 @@ import re
 import os
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -130,32 +131,8 @@ def validate_tmux_target(t: str) -> bool:
     return bool(_TARGET_RE.match(s))
 
 
-def resize_window_for_capture(target: str, columns: int = 240, rows: int = 64) -> None:
-    """Best-effort resize so newly rendered terminal output has enough columns."""
-    import shutil
-
-    if not shutil.which("tmux"):
-        return
-    t = target.strip()
-    if not _TARGET_RE.match(t):
-        return
-    window_target = t.rsplit(".", 1)[0]
-    cols = max(120, min(columns, 360))
-    height = max(32, min(rows, 120))
-    try:
-        subprocess.run(
-            ["tmux", "resize-window", "-t", window_target, "-x", str(cols), "-y", str(height)],
-            capture_output=True,
-            text=True,
-            env=tmux_subprocess_env(),
-            timeout=3,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return
-
-
 def capture_pane(target: str, lines: int = 80) -> tuple[bool, str]:
-    """``tmux capture-pane`` for *target* ``session:win.pane``."""
+    """``tmux capture-pane`` without changing the live browser pane size."""
     import shutil
 
     if not shutil.which("tmux"):
@@ -164,7 +141,6 @@ def capture_pane(target: str, lines: int = 80) -> tuple[bool, str]:
     if not _TARGET_RE.match(t):
         return False, "invalid pane target (expected session:window.pane)"
     n = max(1, min(lines, 500))
-    resize_window_for_capture(t)
     try:
         r = subprocess.run(
             ["tmux", "capture-pane", "-t", t, "-p", "-S", f"-{n}"],
@@ -267,13 +243,40 @@ def send_pane_literal(target: str, text: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _ensure_tmux_sync_output(env: dict[str, str]) -> None:
+    """Enable atomic redraws for xterm clients without duplicating the option."""
+    try:
+        current = subprocess.run(
+            ["tmux", "show-options", "-gv", "terminal-features"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=5,
+        )
+        if current.returncode != 0:
+            return
+        for entry in (current.stdout or "").splitlines():
+            parts = entry.strip().split(":")
+            if parts and parts[0].startswith("xterm") and "sync" in parts[1:]:
+                return
+        subprocess.run(
+            ["tmux", "set-option", "-as", "terminal-features", ",xterm*:sync"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+
+
 def open_pane_attach(target: str, cols: int = 80, rows: int = 24):
     """Open a PTY running ``tmux attach-session`` to *target*, sized cols x rows.
 
     Returns ``(proc, master_fd)`` on success or ``(None, None)`` on failure. The
     caller reads ``master_fd`` (the live terminal byte stream for xterm.js),
-    then must ``proc.terminate()`` and ``os.close(master_fd)`` when done. Input
-    is delivered separately via ``send_pane_literal`` / ``send_pane_key``.
+    writes browser terminal input back to that same fd, then must
+    ``proc.terminate()`` and ``os.close(master_fd)`` when done.
     """
     import pty
     import struct
@@ -293,6 +296,7 @@ def open_pane_attach(target: str, cols: int = 80, rows: int = 24):
         cols, rows = 80, 24
     env = tmux_subprocess_env()
     env["TERM"] = "xterm-256color"
+    _ensure_tmux_sync_output(env)
     # If the session doesn't exist, don't spawn a doomed `tmux attach` - it would
     # just print "can't find session: ..." into the stream. Signal "not alive" so
     # the caller can show a friendly message instead.
@@ -305,14 +309,14 @@ def open_pane_attach(target: str, cols: int = 80, rows: int = 24):
             return None, None
     except (OSError, subprocess.TimeoutExpired):
         return None, None
-    # Make the tmux window track the LATEST (this) client so the pane follows the
-    # browser's xterm size: the PTY below is sized to cols x rows, and the window
-    # resizes to match. We use "latest" (NOT "manual") on purpose — it always
-    # re-follows when the browser refits, so the window can't get stuck at a
-    # transient narrow size the way an explicit resize-window/manual pin could.
+    # Fit the smallest attached client. The web xterm and a native tmux client
+    # often have different dimensions: "latest" lets them fight over the size,
+    # while "largest" forces the smaller client to pan around the larger pane as
+    # the cursor moves. "smallest" gives every client one stable, fully visible
+    # Agent screen.
     try:
         subprocess.run(
-            ["tmux", "set-option", "-t", t.split(":")[0], "window-size", "latest"],
+            ["tmux", "set-option", "-t", t.split(":")[0], "window-size", "smallest"],
             capture_output=True, text=True, env=env, timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -442,7 +446,7 @@ def scroll_pane(target: str, direction: str = "up", lines: int = 3) -> tuple[boo
 
 
 def send_pane_text(target: str, text: str, submit: bool = False) -> tuple[bool, str]:
-    """Paste text into a tmux pane via buffer; optionally submit with Enter."""
+    """Paste text into a tmux pane; optionally submit after paste mode settles."""
     import shutil
 
     if not shutil.which("tmux"):
@@ -479,6 +483,11 @@ def send_pane_text(target: str, text: str, submit: bool = False) -> tuple[bool, 
         if paste.returncode != 0:
             return False, (paste.stderr or paste.stdout or "paste-buffer failed").strip()
         if submit:
+            # Cursor Agent processes bracketed-paste input asynchronously. If
+            # Enter follows the paste-end bytes in the same PTY read, Cursor can
+            # render the text but leave it sitting in the composer. Separate the
+            # submit key into a later read so it is reliably treated as Send.
+            time.sleep(0.1)
             return send_pane_key(t, "Enter")
         return True, ""
     except (OSError, subprocess.TimeoutExpired) as e:

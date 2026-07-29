@@ -45,6 +45,7 @@ from loom.rud_task import (
     AGENT_CURSOR,
     AGENT_CLAUDE,
     AGENT_CODEX,
+    CURSOR_DEFAULT_MODEL,
     DEFAULT_MONITOR_PATTERN,
     PLAN,
     SKILLS_PATH_SEP,
@@ -57,6 +58,7 @@ from loom.rud_task import (
     create_task,
     delete_task,
     detect_and_persist_worktree,
+    ensure_cursor_default_model_config,
     join_skills_paths,
     list_session_files,
     list_task_markdown_files,
@@ -383,6 +385,612 @@ def _safe_static_path(static_root: Path, url_path: str) -> Path | None:
     except ValueError:
         return None
     return candidate if candidate.is_file() else None
+
+
+# --- structured agent conversations ---------------------------------------
+
+_CONVERSATION_CACHE_LOCK = threading.Lock()
+_CONVERSATION_CACHE: dict[str, tuple[int, int, list[dict[str, Any]]]] = {}
+_CONVERSATION_PREVIEW_LIMIT = 4000
+
+
+def _conversation_redact(text: str) -> str:
+    """Keep credentials from being surfaced by the mobile transcript view."""
+    value = re.sub(
+        r"(?i)(authorization\s*:\s*bearer\s+)[^\s\"']+",
+        r"\1‹redacted›",
+        text,
+    )
+    value = re.sub(
+        r"(?i)((?:token|password|secret|api[_-]?key)[A-Za-z0-9_-]*\s*[=:]\s*)[^\s\"']+",
+        r"\1‹redacted›",
+        value,
+    )
+    return re.sub(r"\b[0-9a-fA-F]{40,}\b", "‹redacted›", value)
+
+
+def _conversation_clip(value: Any, limit: int = _CONVERSATION_PREVIEW_LIMIT) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError):
+            text = str(value)
+    text = _conversation_redact(text.strip())
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}\n…"
+
+
+def _conversation_user_text(text: str) -> str:
+    """Extract the actual prompt from Cursor's context-wrapped user event."""
+    matches = re.findall(r"<user_query>\s*(.*?)\s*</user_query>", text, re.DOTALL)
+    if matches:
+        return _conversation_clip(matches[-1], 24000)
+    value = re.sub(
+        r"<(?:system_reminder|open_and_recently_viewed_files|timestamp)>.*?</(?:system_reminder|open_and_recently_viewed_files|timestamp)>",
+        "",
+        text,
+        flags=re.DOTALL,
+    )
+    return _conversation_clip(value, 24000)
+
+
+def _conversation_timestamp(value: Any) -> int | None:
+    if isinstance(value, (int, float)):
+        return int(value * 1000 if value < 10_000_000_000 else value)
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def _conversation_tool_summary(name: str, payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return name
+    for key in (
+        "description",
+        "path",
+        "file_path",
+        "target_file",
+        "query",
+        "pattern",
+        "url",
+        "command",
+        "prompt",
+    ):
+        candidate = payload.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            line = _conversation_redact(candidate.strip().splitlines()[0])
+            return line[:180] + ("…" if len(line) > 180 else "")
+    return name
+
+
+def _conversation_question_tool(name: str, payload: Any) -> dict[str, Any] | None:
+    if name not in {"AskQuestion", "AskUserQuestion"} or not isinstance(payload, dict):
+        return None
+    raw_questions = payload.get("questions")
+    if not isinstance(raw_questions, list):
+        return None
+    questions: list[dict[str, Any]] = []
+    for index, raw_question in enumerate(raw_questions):
+        if not isinstance(raw_question, dict):
+            continue
+        prompt = str(
+            raw_question.get("prompt") or raw_question.get("question") or ""
+        ).strip()
+        raw_options = raw_question.get("options")
+        if not prompt or not isinstance(raw_options, list):
+            continue
+        options: list[dict[str, str]] = []
+        for option_index, raw_option in enumerate(raw_options):
+            if not isinstance(raw_option, dict):
+                continue
+            label = str(raw_option.get("label") or "").strip()
+            if not label:
+                continue
+            option_id = str(raw_option.get("id") or option_index + 1)
+            options.append(
+                {
+                    "id": option_id,
+                    "label": _conversation_clip(label, 500),
+                    "description": _conversation_clip(
+                        raw_option.get("description"), 1000
+                    ),
+                    # Cursor/Claude's terminal prompt accepts the visible answer.
+                    "value": _conversation_clip(label, 500),
+                }
+            )
+        if len(options) < 2:
+            continue
+        questions.append(
+            {
+                "id": str(raw_question.get("id") or index + 1),
+                "header": _conversation_clip(raw_question.get("header"), 120),
+                "prompt": _conversation_clip(prompt, 2000),
+                "allow_multiple": bool(
+                    raw_question.get("allow_multiple")
+                    or raw_question.get("multiSelect")
+                ),
+                "options": options,
+            }
+        )
+    if not questions:
+        return None
+    return {
+        "title": _conversation_clip(payload.get("title"), 160) or "Input needed",
+        "source": "transcript",
+        "status": "pending",
+        "questions": questions,
+    }
+
+
+def _conversation_numbered_question(text: str) -> dict[str, Any] | None:
+    """Recognize a final plain-text 1/2/3 choice without parsing normal lists."""
+    lowered = text.lower()
+    if not (
+        "?" in text
+        or "？" in text
+        or any(
+            cue in lowered
+            for cue in (
+                "choose",
+                "select",
+                "pick one",
+                "which option",
+                "reply with",
+                "请选择",
+                "选择一个",
+                "回复数字",
+                "选哪",
+            )
+        )
+    ):
+        return None
+    matches = list(
+        re.finditer(
+            r"(?m)^\s*(\d{1,2})[\.\)、:：]\s+(.+?)\s*$",
+            text,
+        )
+    )
+    if not 2 <= len(matches) <= 8:
+        return None
+    numbers = [int(match.group(1)) for match in matches]
+    if numbers != list(range(1, len(matches) + 1)):
+        return None
+    options = []
+    for match in matches:
+        label = re.sub(r"^\*\*(.*?)\*\*$", r"\1", match.group(2).strip())
+        options.append(
+            {
+                "id": match.group(1),
+                "label": _conversation_clip(label, 500),
+                "description": "",
+                "value": match.group(1),
+            }
+        )
+    prompt = text[: matches[0].start()].strip()
+    prompt_lines = [line.strip() for line in prompt.splitlines() if line.strip()]
+    return {
+        "title": "Choose an option",
+        "source": "numbered",
+        "status": "pending",
+        "questions": [
+            {
+                "id": "choice",
+                "header": "",
+                "prompt": _conversation_clip(
+                    prompt_lines[-1] if prompt_lines else "What should the agent do?",
+                    1000,
+                ),
+                "allow_multiple": False,
+                "options": options,
+            }
+        ],
+    }
+
+
+def _conversation_terminal_question(text: str) -> dict[str, Any] | None:
+    """Parse the active Cursor/Claude checkbox prompt from a tmux snapshot."""
+    raw_lines = text.splitlines()
+    marker_index = next(
+        (
+            index
+            for index, line in enumerate(raw_lines)
+            if re.search(r"\bQuestion\s+\d+\s+of\s+\d+\b", line, re.IGNORECASE)
+        ),
+        None,
+    )
+    if marker_index is None:
+        return None
+
+    marker_match = re.search(
+        r"\bQuestion\s+(\d+)\s+of\s+(\d+)\b",
+        raw_lines[marker_index],
+        re.IGNORECASE,
+    )
+    if marker_match is None:
+        return None
+
+    def clean(line: str) -> str:
+        value = re.sub(r"^[\s│┃┆┊╎╏┌└├┬┴┼─━╭╰]+", "", line)
+        return re.sub(r"[\s│┃┆┊╎╏─━╮╯]+$", "", value).strip()
+
+    prompt = ""
+    options: list[dict[str, Any]] = []
+    footer = ""
+    for raw_line in raw_lines[marker_index + 1 :]:
+        line = clean(raw_line)
+        if not line:
+            continue
+        if re.search(r"(?:Space\s+select|Enter\s+(?:next|submit)|Esc\s+to\s+skip)", line, re.I):
+            footer = line
+            break
+        question_match = re.match(r"\d+[\.\)、:：]\s*(.+)", line)
+        if question_match and not prompt:
+            prompt = question_match.group(1).strip()
+            continue
+        option_match = re.match(
+            r"(?:[›❯>]\s*)?[\[(]([ xX✓✔●○]?)[\])]\s*(.*)",
+            line,
+        )
+        if option_match:
+            label = option_match.group(2).strip()
+            focused = bool(re.match(r"[›❯>]\s*", line))
+            options.append(
+                {
+                    "id": str(len(options)),
+                    "label": label,
+                    "description": "",
+                    "value": str(len(options)),
+                    "terminal_index": len(options),
+                    "selected": option_match.group(1).strip().lower()
+                    in {"x", "✓", "✔", "●"},
+                    "focused": focused,
+                }
+            )
+            continue
+        if options and not re.search(r"[↑↓←→].*(?:option|question)", line, re.I):
+            options[-1]["label"] = f"{options[-1]['label']} {line}".strip()
+
+    if not prompt or len(options) < 2 or not footer:
+        return None
+    title = f"Question {marker_match.group(1)} of {marker_match.group(2)}"
+    fingerprint_payload = json.dumps(
+        {
+            "title": title,
+            "prompt": prompt,
+            "options": [option["label"] for option in options],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    question_id = str(uuid.uuid5(uuid.NAMESPACE_URL, fingerprint_payload))
+    return {
+        "id": question_id,
+        "title": title,
+        "source": "terminal",
+        "status": "pending",
+        "questions": [
+            {
+                "id": "current",
+                "header": "",
+                "prompt": _conversation_clip(prompt, 2000),
+                "allow_multiple": bool(re.search(r"Space\s+select", footer, re.I)),
+                "options": options,
+            }
+        ],
+    }
+
+
+def _conversation_terminal_answer_keys(
+    question: dict[str, Any],
+    selected_ids: list[str],
+    *,
+    submit: bool = True,
+) -> list[str]:
+    prompts = question.get("questions") or []
+    if len(prompts) != 1 or not isinstance(prompts[0], dict):
+        return []
+    prompt = prompts[0]
+    options = prompt.get("options") or []
+    if not options:
+        return []
+    selected = set(selected_ids)
+    valid_ids = {str(option.get("id")) for option in options}
+    if not selected or not selected.issubset(valid_ids):
+        return []
+    focused_index = next(
+        (
+            index
+            for index, option in enumerate(options)
+            if bool(option.get("focused"))
+        ),
+        0,
+    )
+    keys: list[str] = []
+    cursor_index = focused_index
+
+    def move_to(index: int) -> None:
+        nonlocal cursor_index
+        difference = index - cursor_index
+        keys.extend(["Down"] * max(0, difference))
+        keys.extend(["Up"] * max(0, -difference))
+        cursor_index = index
+
+    if bool(prompt.get("allow_multiple")):
+        for index, option in enumerate(options):
+            currently_selected = bool(option.get("selected"))
+            should_select = str(option.get("id")) in selected
+            if currently_selected != should_select:
+                move_to(index)
+                keys.append("Space")
+    else:
+        selected_id = next(iter(selected))
+        selected_index = next(
+            index
+            for index, option in enumerate(options)
+            if str(option.get("id")) == selected_id
+        )
+        move_to(selected_index)
+    if submit:
+        keys.append("Enter")
+    return keys
+
+
+def _conversation_block_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    if isinstance(value, dict):
+        text = value.get("text") or value.get("content")
+        if isinstance(text, str):
+            return text
+    return _conversation_clip(value)
+
+
+def _cursor_transcript_path(session_id: str, metadata_path: Path) -> Path | None:
+    if not _SESSION_ID_RE.match(session_id):
+        return None
+    cursor_root = Path.home() / ".cursor" / "projects"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        metadata = {}
+    cwd = str(metadata.get("cwd") or "").strip()
+    if cwd:
+        encoded = cwd.lstrip("/").replace("/", "-")
+        candidate = (
+            cursor_root
+            / encoded
+            / "agent-transcripts"
+            / session_id
+            / f"{session_id}.jsonl"
+        )
+        if candidate.is_file() and _path_within(candidate, cursor_root):
+            return candidate
+    try:
+        for candidate in cursor_root.glob(
+            f"*/agent-transcripts/{session_id}/{session_id}.jsonl"
+        ):
+            if candidate.is_file() and _path_within(candidate, cursor_root):
+                return candidate
+    except OSError:
+        pass
+    return None
+
+
+def _conversation_transcript_path(
+    session: dict[str, Any], agent: str
+) -> Path | None:
+    session_id = str(session.get("id") or "").strip()
+    if not _SESSION_ID_RE.match(session_id):
+        return None
+    raw_path = str(session.get("path") or "").strip()
+    path = Path(raw_path).expanduser() if raw_path else None
+    if agent == AGENT_CURSOR and path is not None:
+        return _cursor_transcript_path(session_id, path)
+    if path is not None and path.is_file() and path.suffix.lower() == ".jsonl":
+        return path
+    if agent == AGENT_CODEX:
+        codex_root = Path.home() / ".codex" / "sessions"
+        try:
+            for candidate in codex_root.rglob(f"*{session_id}*.jsonl"):
+                if candidate.is_file() and _path_within(candidate, codex_root):
+                    return candidate
+        except OSError:
+            pass
+    return None
+
+
+def _parse_conversation_transcript(path: Path, agent: str) -> list[dict[str, Any]]:
+    """Normalize Claude/Cursor JSONL into a small Happy-style message protocol."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return []
+    key = str(path)
+    signature = (stat.st_mtime_ns, stat.st_size)
+    with _CONVERSATION_CACHE_LOCK:
+        cached = _CONVERSATION_CACHE.get(key)
+        if cached and cached[:2] == signature:
+            return cached[2]
+
+    messages: list[dict[str, Any]] = []
+    tools_by_external_id: dict[str, dict[str, Any]] = {}
+    questions_by_external_id: dict[str, dict[str, Any]] = {}
+    question_messages: list[dict[str, Any]] = []
+    cursor_running_tools: list[dict[str, Any]] = []
+    session_id = path.stem
+
+    def add_text(kind: str, text: str, line_number: int, index: int, created_at: int | None) -> None:
+        normalized = (
+            _conversation_user_text(text)
+            if kind == "user"
+            else _conversation_clip(text, 24000)
+        )
+        if not normalized:
+            return
+        if kind == "user":
+            for question_message in question_messages:
+                question = question_message.get("question") or {}
+                if question.get("status") == "pending":
+                    question["status"] = "answered"
+                    question["answer"] = normalized
+        messages.append(
+            {
+                "id": f"{session_id}:{line_number}:{index}",
+                "kind": kind,
+                "text": normalized,
+                "created_at": created_at,
+            }
+        )
+
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line_number, line in enumerate(handle, 1):
+                try:
+                    row = json.loads(line)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(row, dict):
+                    continue
+
+                if agent == AGENT_CURSOR and cursor_running_tools:
+                    for tool_message in cursor_running_tools:
+                        tool_message["tool"]["status"] = "completed"
+                    cursor_running_tools = []
+
+                role = str(row.get("role") or row.get("type") or "")
+                message = row.get("message")
+                content = message.get("content") if isinstance(message, dict) else None
+                created_at = _conversation_timestamp(row.get("timestamp"))
+                if isinstance(content, str):
+                    content = [{"type": "text", "text": content}]
+                if not isinstance(content, list):
+                    if agent == AGENT_CURSOR and row.get("type") == "turn_ended":
+                        for tool_message in cursor_running_tools:
+                            tool_message["tool"]["status"] = "completed"
+                        cursor_running_tools = []
+                    continue
+
+                for index, block in enumerate(content):
+                    if not isinstance(block, dict):
+                        continue
+                    block_type = str(block.get("type") or "")
+                    if role == "user" and block_type == "text":
+                        add_text("user", str(block.get("text") or ""), line_number, index, created_at)
+                        continue
+                    if role == "assistant" and block_type == "text":
+                        add_text(
+                            "assistant",
+                            str(block.get("text") or ""),
+                            line_number,
+                            index,
+                            created_at,
+                        )
+                        continue
+                    if role == "assistant" and block_type == "tool_use":
+                        name = str(block.get("name") or "Tool")
+                        payload = block.get("input")
+                        external_id = str(block.get("id") or f"{line_number}:{index}")
+                        question = _conversation_question_tool(name, payload)
+                        if question is not None:
+                            question_message = {
+                                "id": f"{session_id}:{line_number}:{index}",
+                                "kind": "question",
+                                "created_at": created_at,
+                                "question": question,
+                            }
+                            messages.append(question_message)
+                            question_messages.append(question_message)
+                            questions_by_external_id[external_id] = question_message
+                            continue
+                        tool_message = {
+                            "id": f"{session_id}:{line_number}:{index}",
+                            "kind": "tool",
+                            "created_at": created_at,
+                            "tool": {
+                                "name": name,
+                                "summary": _conversation_tool_summary(name, payload),
+                                "status": "running",
+                                "input": _conversation_clip(payload),
+                                "output": "",
+                            },
+                        }
+                        messages.append(tool_message)
+                        tools_by_external_id[external_id] = tool_message
+                        if agent == AGENT_CURSOR:
+                            cursor_running_tools.append(tool_message)
+                        continue
+                    if role == "user" and block_type == "tool_result":
+                        external_id = str(block.get("tool_use_id") or "")
+                        question_message = questions_by_external_id.get(external_id)
+                        if question_message is not None:
+                            question = question_message["question"]
+                            question["status"] = (
+                                "error" if bool(block.get("is_error")) else "answered"
+                            )
+                            question["answer"] = _conversation_clip(
+                                _conversation_block_text(block.get("content"))
+                            )
+                            continue
+                        tool_message = tools_by_external_id.get(external_id)
+                        if tool_message is not None:
+                            tool_message["tool"]["status"] = (
+                                "error" if bool(block.get("is_error")) else "completed"
+                            )
+                            tool_message["tool"]["output"] = _conversation_clip(
+                                _conversation_block_text(block.get("content"))
+                            )
+    except OSError:
+        return []
+
+    for message_index, question_message in enumerate(messages):
+        if question_message.get("kind") != "question":
+            continue
+        question = question_message.get("question") or {}
+        if question.get("status") != "pending":
+            continue
+        if any(
+            later.get("kind") in {"user", "assistant"}
+            for later in messages[message_index + 1 :]
+        ):
+            question["status"] = "answered"
+
+    if messages and messages[-1].get("kind") == "assistant":
+        question = _conversation_numbered_question(str(messages[-1].get("text") or ""))
+        if question is not None:
+            messages.append(
+                {
+                    "id": f"{messages[-1]['id']}:choices",
+                    "kind": "question",
+                    "created_at": messages[-1].get("created_at"),
+                    "question": question,
+                }
+            )
+
+    with _CONVERSATION_CACHE_LOCK:
+        _CONVERSATION_CACHE[key] = (*signature, messages)
+        if len(_CONVERSATION_CACHE) > 64:
+            oldest = next(iter(_CONVERSATION_CACHE))
+            if oldest != key:
+                _CONVERSATION_CACHE.pop(oldest, None)
+    return messages
 
 
 # --- Kernel Lab (vendored kernel hub) ---------------------------------------
@@ -2158,29 +2766,72 @@ def _task_pane_cwd(project_root: Path, slug: str, meta=None) -> Path:
 
 
 class ClaudeRegistry:
-    """Manage tmux + claude CLI panes per (project, task).
+    """Manage tmux + agent CLI panes per (project, task).
 
     A pane's lifecycle:
-    1. ``start`` opens a tmux session, launches ``claude``, sends the
-       deep-interview prompt as a bracketed paste, and kicks off a
-       background watcher.
-    2. The watcher polls ``~/.claude/projects/<encoded-cwd>/`` for a new
-       ``<uuid>.jsonl`` and, when one appears, records the UUID via
-       ``add_claude_session``.  This is what lets us offer a Resume button.
+    1. ``start`` opens a tmux session and runs the selected agent in the task
+       worktree; exiting the agent returns the pane to a login shell.
+    2. A background watcher records the new CLI session ID so the UI can
+       offer Resume.
     3. ``stop`` kills the tmux session but leaves the session UUIDs in
        metadata so they remain resumable from the CLI.
-    4. ``resume`` re-launches ``claude --resume <uuid>`` in a fresh tmux
+    4. ``resume`` re-launches the agent with ``--resume <uuid>`` in a tmux
        pane.  Useful when the original tmux was killed but the session
        transcript on disk is still good.
     """
 
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._runs: dict[str, subprocess.Popen[Any]] = {}
-
     @staticmethod
-    def _registry_key(project_id: str, slug: str) -> str:
-        return f"{project_id}::{slug}"
+    def _launch_agent_in_pane(target: str, cwd: Path, argv: list[str]) -> tuple[bool, str]:
+        """Run the agent in the pane, returning to a login shell when it exits."""
+        env = tmux_subprocess_env()
+        executable = shutil.which(argv[0], path=env.get("PATH"))
+        if not executable:
+            return False, f"{argv[0]} not on PATH"
+        direct_argv = [executable, *argv[1:]]
+        login_shell = (env.get("SHELL") or "/bin/bash").strip()
+        if not Path(login_shell).is_absolute():
+            login_shell = shutil.which(login_shell, path=env.get("PATH")) or "/bin/bash"
+        pane_command = (
+            f"{shlex.join(direct_argv)}; agent_status=$?; "
+            "stty sane 2>/dev/null || true; "
+            "printf '\\nAgent exited (%s). Returned to shell.\\n' \"$agent_status\"; "
+            f"exec {shlex.quote(login_shell)} -l"
+        )
+        try:
+            keep = subprocess.run(
+                ["tmux", "set-option", "-w", "-t", target, "remain-on-exit", "on"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=5,
+            )
+            if keep.returncode != 0:
+                return False, (keep.stderr or keep.stdout or "could not configure tmux pane").strip()
+            launched = subprocess.run(
+                [
+                    "tmux",
+                    "respawn-pane",
+                    "-k",
+                    "-t",
+                    target,
+                    "-c",
+                    str(cwd),
+                    "-e",
+                    f"PATH={env.get('PATH', '')}",
+                    pane_command,
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=8,
+            )
+        except FileNotFoundError:
+            return False, "tmux not on PATH"
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return False, str(exc)
+        if launched.returncode != 0:
+            return False, (launched.stderr or launched.stdout or "could not launch agent").strip()
+        return True, ""
 
     def start(
         self,
@@ -2203,17 +2854,14 @@ class ClaudeRegistry:
         cwd = _task_pane_cwd(project_root, slug, meta)
 
         agent = normalize_agent(meta.agent)
-
-        def launch_line(argv: list[str]) -> str:
-            line = shlex.join(argv)
-            if agent == AGENT_CURSOR:
-                # Cursor asks the terminal for capabilities/colors during
-                # startup. Because web input is injected through tmux, those
-                # response bytes can arrive before Cursor enables raw mode and
-                # get echoed as `^[[?1;2c...`. Disable tty echo around the
-                # process and restore it when Cursor exits.
-                return f"stty -echo; {line}; stty echo"
-            return line
+        selected_model = meta.interview_model or agent_default_model(agent)
+        if agent == AGENT_CURSOR and selected_model == CURSOR_DEFAULT_MODEL:
+            configured, config_error = ensure_cursor_default_model_config()
+            if not configured:
+                return {
+                    "ok": False,
+                    "error": f"Could not configure Cursor 1M Max default: {config_error}",
+                }
 
         def watch_cursor_ready() -> None:
             if agent == AGENT_CURSOR:
@@ -2233,9 +2881,10 @@ class ClaudeRegistry:
             if (sid := session_id_from_path(p, agent))
         }
         if self._tmux_session_exists(session_name):
+            pane_command = self._pane_current_command(target)
+            pane_dead = self._pane_is_dead(target)
             if resume_session_id:
-                pane_command = self._pane_current_command(target)
-                if not self._pane_is_idle_shell(pane_command):
+                if not pane_dead and not self._pane_is_idle_shell(pane_command):
                     return {
                         "ok": False,
                         "error": (
@@ -2248,22 +2897,12 @@ class ClaudeRegistry:
                     }
                 agent_cmd = build_agent_command(
                     agent,
-                    model=meta.interview_model or agent_default_model(agent),
+                    model=selected_model,
                     resume_session_id=resume_session_id,
                 )
-                try:
-                    proc = subprocess.Popen(
-                        ["tmux", "send-keys", "-t", target, launch_line(agent_cmd), "Enter"],
-                        cwd=str(cwd),
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        env=tmux_subprocess_env(),
-                        start_new_session=True,
-                    )
-                except OSError as e:
-                    return {"ok": False, "error": str(e)}
-                with self._lock:
-                    self._runs[self._registry_key(project_id, slug)] = proc
+                ok, error = self._launch_agent_in_pane(target, cwd, agent_cmd)
+                if not ok:
+                    return {"ok": False, "error": error, "target": target}
                 watch_cursor_ready()
                 update_meta(project_root, slug, tmux_interview_target=target)
                 add_claude_session(project_root, slug, resume_session_id)
@@ -2284,28 +2923,16 @@ class ClaudeRegistry:
                     "prompt_pending": False,
                     "pane_command": pane_command,
                 }
-            pane_command = self._pane_current_command(target)
-            if self._pane_is_idle_shell(pane_command):
-                # The tmux session survived but the previous agent exited back
-                # to its shell. "Start Agent" should relaunch it rather than
-                # incorrectly reporting an already-running pane.
+            if pane_dead or self._pane_is_idle_shell(pane_command):
+                # Reuse old shell-backed sessions and new retained dead panes
+                # by replacing the pane process directly with the agent.
                 agent_cmd = build_agent_command(
                     agent,
-                    model=meta.interview_model or agent_default_model(agent),
+                    model=selected_model,
                 )
-                try:
-                    proc = subprocess.Popen(
-                        ["tmux", "send-keys", "-t", target, launch_line(agent_cmd), "Enter"],
-                        cwd=str(cwd),
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        env=tmux_subprocess_env(),
-                        start_new_session=True,
-                    )
-                except OSError as e:
-                    return {"ok": False, "error": str(e)}
-                with self._lock:
-                    self._runs[self._registry_key(project_id, slug)] = proc
+                ok, error = self._launch_agent_in_pane(target, cwd, agent_cmd)
+                if not ok:
+                    return {"ok": False, "error": error, "target": target}
                 watch_cursor_ready()
                 threading.Thread(
                     target=self._watch_for_session_id,
@@ -2337,8 +2964,19 @@ class ClaudeRegistry:
 
         try:
             subprocess.run(
-                ["tmux", "new-session", "-d", "-s", session_name, "-x", "240", "-y", "64"],
-                cwd=str(cwd),
+                [
+                    "tmux",
+                    "new-session",
+                    "-d",
+                    "-s",
+                    session_name,
+                    "-x",
+                    "240",
+                    "-y",
+                    "64",
+                    "-c",
+                    str(cwd),
+                ],
                 capture_output=True,
                 text=True,
                 env=tmux_subprocess_env(),
@@ -2352,38 +2990,23 @@ class ClaudeRegistry:
 
         agent_cmd = build_agent_command(
             agent,
-            model=meta.interview_model or agent_default_model(agent),
+            model=selected_model,
             resume_session_id=resume_session_id,
         )
-        try:
-            proc = subprocess.Popen(
-                ["tmux", "send-keys", "-t", target, launch_line(agent_cmd), "Enter"],
-                cwd=str(cwd),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=tmux_subprocess_env(),
-                start_new_session=True,
-            )
-        except OSError as e:
-            return {"ok": False, "error": str(e)}
-        with self._lock:
-            self._runs[self._registry_key(project_id, slug)] = proc
+        ok, error = self._launch_agent_in_pane(target, cwd, agent_cmd)
+        if not ok:
+            self._kill_tmux_session(session_name)
+            return {"ok": False, "error": error}
         watch_cursor_ready()
 
         update_meta(project_root, slug, tmux_interview_target=target)
         if resume_session_id:
             add_claude_session(project_root, slug, resume_session_id)
-            threading.Thread(
-                target=self._watch_for_session_id,
-                args=(project_root, slug, cwd, agent, existing_ids),
-                daemon=True,
-            ).start()
-        else:
-            threading.Thread(
-                target=self._watch_for_session_id,
-                args=(project_root, slug, cwd, agent, existing_ids),
-                daemon=True,
-            ).start()
+        threading.Thread(
+            target=self._watch_for_session_id,
+            args=(project_root, slug, cwd, agent, existing_ids),
+            daemon=True,
+        ).start()
         return {
             "ok": True,
             "target": target,
@@ -2418,6 +3041,8 @@ class ClaudeRegistry:
         # exists under another name), paste into the live one instead.
         if not self._tmux_session_exists(_session_name_from_tmux_target(target)):
             target = f"{session_name}:0.0"
+        if self._pane_is_dead(target):
+            return {"ok": False, "error": "Agent has exited; start the pane again", "target": target}
         if agent == AGENT_CURSOR:
             self._wait_for_claude_ready(target, timeout=15.0)
         update_meta(project_root, slug, tmux_interview_target=target)
@@ -2436,8 +3061,6 @@ class ClaudeRegistry:
             if alias != session_name:
                 self._kill_tmux_session(alias)
         update_meta(project_root, slug, tmux_interview_target="")
-        with self._lock:
-            self._runs.pop(self._registry_key(project_id, slug), None)
         return {
             "ok": True,
             "tmux_stopped": stopped,
@@ -2495,10 +3118,70 @@ class ClaudeRegistry:
             return ""
         return (r.stdout or "").strip()
 
+    def _pane_is_dead(self, target: str) -> bool:
+        try:
+            r = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", target, "#{pane_dead}"],
+                capture_output=True,
+                text=True,
+                env=tmux_subprocess_env(),
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return r.returncode == 0 and (r.stdout or "").strip() == "1"
+
     @staticmethod
     def _pane_is_idle_shell(command: str) -> bool:
         cmd = Path((command or "").strip()).name.lower()
         return cmd in {"", "bash", "dash", "fish", "sh", "tmux", "zsh"}
+
+    def _pane_has_agent_process(self, target: str, agent: str) -> bool:
+        try:
+            result = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", target, "#{pane_pid}"],
+                capture_output=True,
+                text=True,
+                env=tmux_subprocess_env(),
+                timeout=5,
+            )
+            pane_pid = int((result.stdout or "").strip()) if result.returncode == 0 else 0
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return False
+        expected = {
+            AGENT_CURSOR: {"agent", "cursor-agent"},
+            AGENT_CLAUDE: {"claude"},
+            AGENT_CODEX: {"codex"},
+        }.get(normalize_agent(agent), {normalize_agent(agent)})
+        pending = [pane_pid] if pane_pid > 0 else []
+        seen: set[int] = set()
+        while pending and len(seen) < 256:
+            pid = pending.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            try:
+                raw = (Path("/proc") / str(pid) / "cmdline").read_bytes()
+                argv = [
+                    part.decode("utf-8", errors="replace")
+                    for part in raw.split(b"\0")
+                    if part
+                ]
+                executable = Path(argv[0]).name.lower() if argv else ""
+                if executable in expected:
+                    return True
+                children_path = (
+                    Path("/proc") / str(pid) / "task" / str(pid) / "children"
+                )
+                if children_path.is_file():
+                    pending.extend(
+                        int(child)
+                        for child in children_path.read_text().split()
+                        if child.isdigit()
+                    )
+            except OSError:
+                continue
+        return False
 
     def session_status(
         self, project_id: str, slug: str, agent: str = AGENT_CURSOR, meta_target: str = ""
@@ -2507,12 +3190,26 @@ class ClaudeRegistry:
         target = f"{session_name}:0.0"
         tmux_alive = self._tmux_session_exists(session_name)
         pane_command = self._pane_current_command(target) if tmux_alive else ""
+        pane_dead = self._pane_is_dead(target) if tmux_alive else False
+        agent_process = (
+            self._pane_has_agent_process(target, agent)
+            if tmux_alive and not pane_dead and self._pane_is_idle_shell(pane_command)
+            else False
+        )
         return {
             "session": session_name,
             "target": target,
             "tmux_alive": tmux_alive,
             "pane_command": pane_command,
-            "agent_running": tmux_alive and not self._pane_is_idle_shell(pane_command),
+            "pane_dead": pane_dead,
+            "agent_running": (
+                tmux_alive
+                and not pane_dead
+                and (
+                    not self._pane_is_idle_shell(pane_command)
+                    or agent_process
+                )
+            ),
             "agent": normalize_agent(agent),
         }
 
@@ -2607,11 +3304,6 @@ class ClaudeRegistry:
             return {"ok": False, "error": "empty prompt", "target": target}
         ok, err = send_pane_text(target, prompt, submit=True)
         if ok:
-            # Some agent CLIs render bracketed paste but require one more Enter
-            # after the paste block; for CLIs that already submitted, this is
-            # harmless.
-            time.sleep(0.1)
-            send_pane_key(target, "Enter")
             return {
                 "ok": True,
                 "target": target,
@@ -2638,7 +3330,10 @@ _MONITOR_STOP_CONFIRM_POLLS = 3
 # Interactive agent CLIs (Claude Code / Codex) show an interrupt hint while
 # actively working. When it disappears, the agent has stopped and is waiting
 # for input - that running -> stopped edge is what the monitor fires on.
-_AGENT_WORKING_RE = re.compile(r"esc to interrupt", re.IGNORECASE)
+_AGENT_WORKING_RE = re.compile(
+    r"(?:esc\s+to\s+interrupt|ctrl\s*\+\s*c\s+to\s+stop)",
+    re.IGNORECASE,
+)
 
 
 def _iso_now() -> str:
@@ -2866,6 +3561,47 @@ class TaskMonitorManager:
 # --- HTTP handler factory ---------------------------------------------------
 
 
+class _TerminalStreamRegistry:
+    """Route browser terminal input back through its own tmux attach PTY."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._masters: dict[str, int] = {}
+
+    def register(self, master: int) -> str:
+        stream_id = uuid.uuid4().hex
+        with self._lock:
+            self._masters[stream_id] = master
+        return stream_id
+
+    def unregister(self, stream_id: str, master: int) -> None:
+        with self._lock:
+            if self._masters.get(stream_id) == master:
+                self._masters.pop(stream_id, None)
+
+    def write(self, stream_id: str, text: str) -> tuple[bool, str]:
+        if not re.fullmatch(r"[0-9a-f]{32}", stream_id):
+            return False, "invalid terminal stream"
+        data = text.encode("utf-8", errors="surrogatepass")
+        if len(data) > 64 * 1024:
+            return False, "terminal input too large"
+        with self._lock:
+            master = self._masters.get(stream_id)
+            if master is None:
+                return False, "terminal stream is not active"
+            try:
+                view = memoryview(data)
+                while view:
+                    written = os.write(master, view)
+                    if written <= 0:
+                        return False, "terminal stream closed"
+                    view = view[written:]
+            except OSError as exc:
+                self._masters.pop(stream_id, None)
+                return False, str(exc)
+        return True, ""
+
+
 def make_handler(
     project_registry: WebProjectRegistry,
     launch_root: Path,
@@ -2883,6 +3619,7 @@ def make_handler(
     launch_root_resolved = launch_root.resolve()
     multi_ws = multi_project_workspace
     monitor_manager = monitor_manager or TaskMonitorManager(openclaw_client)
+    terminal_streams = _TerminalStreamRegistry()
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -3188,15 +3925,18 @@ def make_handler(
                     )
                     self._send(st, b, h)
                     return
+                stream_id = terminal_streams.register(master)
                 self.close_connection = True
                 try:
                     self.send_response(200)
                     self.send_header("Content-Type", "application/octet-stream")
                     self.send_header("Cache-Control", "no-store")
                     self.send_header("X-Accel-Buffering", "no")
+                    self.send_header("X-Loom-Terminal-Stream", stream_id)
                     self.send_header("Connection", "close")
                     self.end_headers()
                 except OSError:
+                    terminal_streams.unregister(stream_id, master)
                     self._kill_pty(proc, master)
                     return
                 conn = self.connection
@@ -3232,6 +3972,7 @@ def make_handler(
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     pass
                 finally:
+                    terminal_streams.unregister(stream_id, master)
                     self._kill_pty(proc, master)
                 return
 
@@ -3597,6 +4338,140 @@ def make_handler(
                     self._send(st, b, h)
                     return
                 st, b, h = _json_bytes(monitor_manager.status(root, project_id, slug))
+                self._send(st, b, h)
+                return
+
+            m_conversation = re.match(r"^/api/tasks/([^/]+)/conversation$", path)
+            if m_conversation:
+                root, project_id = self._resolve_scope(parsed)
+                if root is None or project_id is None:
+                    self._bad_project()
+                    return
+                slug = m_conversation.group(1)
+                if not _SLUG_RE.match(slug):
+                    st, b, h = _json_bytes({"error": "invalid slug"}, 400)
+                    self._send(st, b, h)
+                    return
+                meta = read_meta(root, slug)
+                if not meta:
+                    st, b, h = _json_bytes({"error": "not found"}, 404)
+                    self._send(st, b, h)
+                    return
+                meta = detect_and_persist_worktree(root, slug) or meta
+                summary = self._claude_session_summary(project_id, slug, meta)
+                qs = parse_qs(parsed.query or "")
+                requested_id = (qs.get("session") or [""])[0].strip()
+                try:
+                    limit = int((qs.get("limit") or ["160"])[0] or 160)
+                except ValueError:
+                    limit = 160
+                limit = max(20, min(500, limit))
+                selected_session: dict[str, Any] | None = None
+                transcript_path: Path | None = None
+                for candidate in summary.get("sessions") or []:
+                    if requested_id and candidate.get("id") != requested_id:
+                        continue
+                    candidate_path = _conversation_transcript_path(
+                        candidate, str(summary.get("agent") or "")
+                    )
+                    if candidate_path is not None:
+                        selected_session = candidate
+                        transcript_path = candidate_path
+                        break
+
+                active = bool(summary.get("agent_running"))
+                working = False
+                terminal_question: dict[str, Any] | None = None
+                target = str(summary.get("tmux_target") or "").strip()
+                if active and validate_tmux_target(target):
+                    capture_ok, capture_text = capture_pane(target, 100)
+                    if capture_ok:
+                        working = bool(_AGENT_WORKING_RE.search(capture_text or ""))
+                        terminal_question = _conversation_terminal_question(capture_text)
+
+                if selected_session is None or transcript_path is None:
+                    terminal_message = (
+                        {
+                            "id": f"terminal-question:{terminal_question['id']}",
+                            "kind": "question",
+                            "created_at": None,
+                            "question": terminal_question,
+                        }
+                        if terminal_question is not None
+                        else None
+                    )
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": True,
+                            "available": terminal_message is not None,
+                            "agent": summary.get("agent"),
+                            "online": active,
+                            "working": working,
+                            "session_id": requested_id or None,
+                            "updated_at": int(time.time() * 1000)
+                            if terminal_message is not None
+                            else None,
+                            "messages": [terminal_message] if terminal_message is not None else [],
+                            "total": 1 if terminal_message is not None else 0,
+                            "has_more": False,
+                        }
+                    )
+                    self._send(st, b, h)
+                    return
+
+                all_messages = _parse_conversation_transcript(
+                    transcript_path, str(summary.get("agent") or "")
+                )
+                visible_messages: list[dict[str, Any]] = []
+                terminal_appended = False
+                for original in all_messages[-limit:]:
+                    message = dict(original)
+                    if message.get("kind") == "tool":
+                        tool = dict(message.get("tool") or {})
+                        if not active and tool.get("status") == "running":
+                            tool["status"] = "canceled"
+                        message["tool"] = tool
+                    elif message.get("kind") == "question":
+                        question = dict(message.get("question") or {})
+                        if not active and question.get("status") == "pending":
+                            question["status"] = "canceled"
+                        message["question"] = question
+                    visible_messages.append(message)
+                if terminal_question is not None and not any(
+                    message.get("kind") == "question"
+                    and (message.get("question") or {}).get("status") == "pending"
+                    for message in all_messages
+                ):
+                    visible_messages.append(
+                        {
+                            "id": f"terminal-question:{terminal_question['id']}",
+                            "kind": "question",
+                            "created_at": None,
+                            "question": terminal_question,
+                        }
+                    )
+                    terminal_appended = True
+                try:
+                    transcript_stat = transcript_path.stat()
+                    updated_at = int(transcript_stat.st_mtime * 1000)
+                except OSError:
+                    updated_at = None
+                st, b, h = _json_bytes(
+                    {
+                        "ok": True,
+                        "available": True,
+                        "agent": summary.get("agent"),
+                        "online": active,
+                        "working": working,
+                        "session_id": selected_session.get("id"),
+                        "updated_at": int(time.time() * 1000)
+                        if terminal_appended
+                        else updated_at,
+                        "messages": visible_messages,
+                        "total": len(all_messages) + (1 if terminal_appended else 0),
+                        "has_more": len(all_messages) > min(limit, len(all_messages)),
+                    }
+                )
                 self._send(st, b, h)
                 return
 
@@ -3991,6 +4866,24 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
+            if path == "/api/tmux/stream-input":
+                stream_id = str(body.get("stream_id", "")).strip()
+                text = body.get("text", "")
+                if not isinstance(text, str):
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "text must be string"}, 400
+                    )
+                    self._send(st, b, h)
+                    return
+                ok, msg = terminal_streams.write(stream_id, text)
+                st, b, h = (
+                    _json_bytes({"ok": True})
+                    if ok
+                    else _json_bytes({"ok": False, "error": msg}, 409)
+                )
+                self._send(st, b, h)
+                return
+
             if path == "/api/tmux/send-text":
                 target = str(body.get("target", "")).strip()
                 text = body.get("text", "")
@@ -4312,6 +5205,277 @@ def make_handler(
                     flush=True,
                 )
                 st, b, h = _json_bytes(result)
+                self._send(st, b, h)
+                return
+
+            m_conversation_answer = re.match(
+                r"^/api/tasks/([^/]+)/conversation/answer$", path
+            )
+            if m_conversation_answer:
+                root, project_id = self._resolve_scope(parsed)
+                if root is None or project_id is None:
+                    self._bad_project()
+                    return
+                slug = m_conversation_answer.group(1)
+                if not _SLUG_RE.match(slug):
+                    st, b, h = _json_bytes({"error": "invalid slug"}, 400)
+                    self._send(st, b, h)
+                    return
+                meta = read_meta(root, slug)
+                if not meta:
+                    st, b, h = _json_bytes({"error": "not found"}, 404)
+                    self._send(st, b, h)
+                    return
+                target = (meta.tmux_interview_target or "").strip()
+                if not validate_tmux_target(target):
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "no active agent pane for this task"},
+                        409,
+                    )
+                    self._send(st, b, h)
+                    return
+                capture_ok, capture_text = capture_pane(target, 100)
+                question = (
+                    _conversation_terminal_question(capture_text)
+                    if capture_ok
+                    else None
+                )
+                question_id = str(body.get("question_id") or "").strip()
+                selected_ids = body.get("selected_ids")
+                custom_text = body.get("custom_text", "")
+                if (
+                    question is None
+                    or not question_id
+                    or question.get("id") != question_id
+                ):
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": False,
+                            "error": "the active terminal question has changed",
+                        },
+                        409,
+                    )
+                    self._send(st, b, h)
+                    return
+                if not isinstance(selected_ids, list) or not all(
+                    isinstance(item, str) for item in selected_ids
+                ):
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "selected_ids must be a string list"},
+                        400,
+                    )
+                    self._send(st, b, h)
+                    return
+                if not isinstance(custom_text, str) or len(custom_text) > 12000:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "custom_text must be at most 12000 characters"},
+                        400,
+                    )
+                    self._send(st, b, h)
+                    return
+                prompt = (question.get("questions") or [{}])[0]
+                options_by_id = {
+                    str(option.get("id")): option
+                    for option in (prompt.get("options") or [])
+                    if isinstance(option, dict)
+                }
+                other_selected = any(
+                    option_id in options_by_id
+                    and re.match(
+                        r"^other\b",
+                        str(options_by_id[option_id].get("label") or "").strip(),
+                        re.IGNORECASE,
+                    )
+                    for option_id in selected_ids
+                )
+                if other_selected and not custom_text.strip():
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": False,
+                            "error": "type a custom answer before submitting Other",
+                        },
+                        400,
+                    )
+                    self._send(st, b, h)
+                    return
+                if other_selected and len(selected_ids) != 1:
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": False,
+                            "error": "Other cannot be combined with another option",
+                        },
+                        400,
+                    )
+                    self._send(st, b, h)
+                    return
+                keys = _conversation_terminal_answer_keys(
+                    question,
+                    selected_ids,
+                    submit=not other_selected,
+                )
+                if not keys and not other_selected:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "select at least one valid option"},
+                        400,
+                    )
+                    self._send(st, b, h)
+                    return
+                for key in keys:
+                    # Ink-based agent menus can drop Enter while processing the
+                    # preceding cursor/checkbox render. Keep navigation snappy,
+                    # but give selection and submit events time to settle.
+                    if key == "Enter":
+                        time.sleep(0.3)
+                    ok, error = send_pane_key(target, key)
+                    if not ok:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": error or "could not answer question"},
+                            400,
+                        )
+                        self._send(st, b, h)
+                        return
+                    time.sleep(0.14 if key == "Space" else 0.08)
+                if other_selected:
+                    # Selecting Other changes the menu into an inline text field.
+                    # Typing must happen before Enter; an empty Enter is ignored.
+                    time.sleep(0.3)
+                    staged_ok, staged_text = capture_pane(target, 100)
+                    staged_question = (
+                        _conversation_terminal_question(staged_text)
+                        if staged_ok
+                        else None
+                    )
+                    staged_options = (
+                        (staged_question.get("questions") or [{}])[0].get("options")
+                        if staged_question is not None
+                        else []
+                    ) or []
+                    other_ready = any(
+                        str(option.get("id")) in selected_ids
+                        and bool(option.get("selected"))
+                        for option in staged_options
+                        if re.match(
+                            r"^other\b",
+                            str(option.get("label") or "").strip(),
+                            re.IGNORECASE,
+                        )
+                    )
+                    if not other_ready:
+                        st, b, h = _json_bytes(
+                            {
+                                "ok": False,
+                                "error": "could not activate the Other text field",
+                            },
+                            409,
+                        )
+                        self._send(st, b, h)
+                        return
+                    ok, error = send_pane_text(
+                        target,
+                        custom_text.strip(),
+                        submit=True,
+                    )
+                    if not ok:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": error or "could not send custom answer"},
+                            400,
+                        )
+                        self._send(st, b, h)
+                        return
+                    time.sleep(0.5)
+                else:
+                    time.sleep(0.25)
+                after_ok, after_text = capture_pane(target, 100)
+                after_question = (
+                    _conversation_terminal_question(after_text) if after_ok else None
+                )
+                still_pending = bool(
+                    after_question is not None
+                    and after_question.get("id") == question.get("id")
+                )
+                print(
+                    f"[web] conversation answer slug={slug} options={selected_ids!r} "
+                    f"custom_chars={len(custom_text.strip())} pending={still_pending}",
+                    flush=True,
+                )
+                st, b, h = _json_bytes(
+                    {
+                        "ok": True,
+                        "target": target,
+                        "pending": still_pending,
+                    }
+                )
+                self._send(st, b, h)
+                return
+
+            m_force_send = re.match(
+                r"^/api/tasks/([^/]+)/claude/force-send$", path
+            )
+            if m_force_send:
+                root, project_id = self._resolve_scope(parsed)
+                if root is None or project_id is None:
+                    self._bad_project()
+                    return
+                slug = m_force_send.group(1)
+                if not _SLUG_RE.match(slug):
+                    st, b, h = _json_bytes({"error": "invalid slug"}, 400)
+                    self._send(st, b, h)
+                    return
+                meta = read_meta(root, slug)
+                if not meta:
+                    st, b, h = _json_bytes({"error": "not found"}, 404)
+                    self._send(st, b, h)
+                    return
+                if normalize_agent(meta.agent) != AGENT_CURSOR:
+                    st, b, h = _json_bytes(
+                        {"error": "force send is supported only for Cursor Agent"},
+                        400,
+                    )
+                    self._send(st, b, h)
+                    return
+                live = claude_registry.session_status(
+                    project_id,
+                    slug,
+                    meta.agent,
+                    meta.tmux_interview_target or "",
+                )
+                target = (meta.tmux_interview_target or live.get("target") or "").strip()
+                if not live.get("agent_running") or not validate_tmux_target(target):
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "no active Cursor Agent pane"},
+                        409,
+                    )
+                    self._send(st, b, h)
+                    return
+                before_ok, before_text = capture_pane(target, 35)
+                before_working = bool(
+                    before_ok and _AGENT_WORKING_RE.search(before_text or "")
+                )
+                ok, error = send_pane_key(target, "Enter")
+                if not ok:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": error or "force send failed"},
+                        400,
+                    )
+                    self._send(st, b, h)
+                    return
+                time.sleep(0.35)
+                after_ok, after_text = capture_pane(target, 35)
+                after_working = bool(
+                    after_ok and _AGENT_WORKING_RE.search(after_text or "")
+                )
+                print(
+                    f"[web] force-send slug={slug} before_working={before_working} "
+                    f"after_working={after_working}",
+                    flush=True,
+                )
+                st, b, h = _json_bytes(
+                    {
+                        "ok": True,
+                        "target": target,
+                        "working": after_working,
+                    }
+                )
                 self._send(st, b, h)
                 return
 

@@ -582,6 +582,69 @@ def test_normalize_and_label_agent() -> None:
     assert agent_label("nonsense") == "Agent"
 
 
+def test_cursor_defaults_to_one_million_context_max_model(tmp_path: Path) -> None:
+    expected = "gpt-5.6-sol-max"
+    assert rud_task.agent_default_model("cursor") == expected
+    meta = create_task(
+        tmp_path,
+        "max context",
+        "g",
+        skills_path=None,
+        agent="cursor",
+        auto_worktree=False,
+    )
+    assert meta.interview_model == expected
+
+
+def test_build_agent_command_cursor() -> None:
+    from loom.rud_task import agent_default_model, build_agent_command
+
+    assert build_agent_command("cursor") == ["agent", "-f"]
+    assert build_agent_command(
+        "cursor", model=agent_default_model("cursor")
+    ) == ["agent", "-f"]
+    assert build_agent_command("cursor", model="m1") == ["agent", "-f", "--model", "m1"]
+    assert build_agent_command("cursor", resume_session_id="abc-123") == [
+        "agent",
+        "-f",
+        "--resume",
+        "abc-123",
+    ]
+
+
+def test_ensure_cursor_default_model_config_sets_1m_max(tmp_path: Path) -> None:
+    import json as _json
+
+    config_dir = tmp_path / ".cursor"
+    config_dir.mkdir()
+    config_path = config_dir / "cli-config.json"
+    config_path.write_text(
+        _json.dumps(
+            {
+                "version": 1,
+                "authInfo": {"email": "kept@example.com"},
+                "modelParameters": {
+                    "gpt-5.6-sol": [{"id": "context", "value": "272k"}]
+                },
+            }
+        )
+    )
+
+    ok, error = rud_task.ensure_cursor_default_model_config(tmp_path)
+
+    assert ok is True
+    assert error == ""
+    updated = _json.loads(config_path.read_text())
+    assert updated["authInfo"] == {"email": "kept@example.com"}
+    assert updated["model"]["displayName"] == "GPT-5.6 Sol 1M Max"
+    assert updated["maxMode"] is True
+    assert updated["selectedModel"]["parameters"] == [
+        {"id": "context", "value": "1m"},
+        {"id": "reasoning", "value": "max"},
+        {"id": "fast", "value": "false"},
+    ]
+
+
 def test_build_agent_command_claude() -> None:
     from loom.rud_task import build_agent_command
 
@@ -776,3 +839,16 @@ def test_read_meta_upgrades_legacy_default_model(tmp_path: Path) -> None:
     data["interview_model"] = "claude-sonnet-4-6"
     tj.write_text(_json.dumps(data, indent=2))
     assert read_meta(tmp_path, meta.slug).interview_model == "claude-fable-5"
+
+
+def test_read_meta_repairs_invalid_parameterized_cursor_default(tmp_path: Path) -> None:
+    """Repair the briefly shipped model ID that Cursor CLI rejects."""
+    import json as _json
+
+    meta = create_task(tmp_path, "bad cursor default", "g", skills_path=None, auto_worktree=False)
+    tj = task_root(tmp_path, meta.slug) / "task.json"
+    data = _json.loads(tj.read_text())
+    data["agent"] = "cursor"
+    data["interview_model"] = "gpt-5.6-sol-max[context=1m]"
+    tj.write_text(_json.dumps(data, indent=2))
+    assert read_meta(tmp_path, meta.slug).interview_model == "gpt-5.6-sol-max"

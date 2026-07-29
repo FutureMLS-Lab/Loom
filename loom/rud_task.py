@@ -50,6 +50,8 @@ AGENT_CURSOR = "cursor"
 AGENT_CLAUDE = "claude"
 AGENT_CODEX = "codex"
 SUPPORTED_AGENTS = frozenset({AGENT_CURSOR, AGENT_CLAUDE, AGENT_CODEX})
+CURSOR_DEFAULT_MODEL = "gpt-5.6-sol-max"
+CURSOR_DEFAULT_MODEL_FAMILY = "gpt-5.6-sol"
 
 # Models currently available to this installation. These feed the web pickers;
 # the fields remain editable, so an API/CLI model added later can be typed
@@ -83,6 +85,7 @@ def _cursor_model_options() -> tuple[str, ...]:
     if _CURSOR_MODEL_OPTIONS is not None:
         return _CURSOR_MODEL_OPTIONS
     fallback = (
+        CURSOR_DEFAULT_MODEL,
         "auto",
         "gpt-5.6-sol-xhigh",
         "claude-fable-5-thinking-xhigh",
@@ -110,7 +113,12 @@ def _cursor_model_options() -> tuple[str, ...]:
         match = re.match(r"^(\S+)\s+-\s+.+$", line.strip())
         if match:
             models.append(match.group(1))
-    _CURSOR_MODEL_OPTIONS = tuple(models) if models else fallback
+    advertised = tuple(models) if models else fallback
+    _CURSOR_MODEL_OPTIONS = (
+        advertised
+        if CURSOR_DEFAULT_MODEL in advertised
+        else (CURSOR_DEFAULT_MODEL, *advertised)
+    )
     return _CURSOR_MODEL_OPTIONS
 
 
@@ -134,10 +142,70 @@ def agent_label(name: str) -> str:
 def agent_default_model(name: str) -> str:
     """Default model string to pass to the CLI for a given agent."""
     return {
-        AGENT_CURSOR: "gpt-5.6-sol-max",
+        AGENT_CURSOR: CURSOR_DEFAULT_MODEL,
         AGENT_CLAUDE: "claude-fable-5",
         AGENT_CODEX: "",  # codex falls back to its own ~/.codex/config.toml default
     }.get(normalize_agent(name), "")
+
+
+def ensure_cursor_default_model_config(home: Path | None = None) -> tuple[bool, str]:
+    """Persist Cursor's 1M/Max parameters before a default-model launch.
+
+    Cursor CLI currently treats ``--model gpt-5.6-sol-max`` as a 272K request,
+    despite advertising that slug as 1M. Omitting ``--model`` preserves the
+    parameterized selection in ``cli-config.json``, so Loom writes that
+    selection atomically and then starts the default Agent without a model flag.
+    """
+    config_path = (home or Path.home()) / ".cursor" / "cli-config.json"
+    try:
+        if config_path.is_file():
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return False, "Cursor CLI config is not a JSON object"
+            mode = config_path.stat().st_mode & 0o777
+        else:
+            data = {"version": 1}
+            mode = 0o600
+
+        parameters = [
+            {"id": "context", "value": "1m"},
+            {"id": "reasoning", "value": "max"},
+            {"id": "fast", "value": "false"},
+        ]
+        model = data.get("model")
+        if not isinstance(model, dict):
+            model = {}
+        data["model"] = {
+            **model,
+            "modelId": CURSOR_DEFAULT_MODEL_FAMILY,
+            "displayModelId": CURSOR_DEFAULT_MODEL_FAMILY,
+            "displayName": "GPT-5.6 Sol 1M Max",
+            "displayNameShort": "GPT-5.6 Sol 1M Max",
+            "maxMode": True,
+        }
+        model_parameters = data.get("modelParameters")
+        if not isinstance(model_parameters, dict):
+            model_parameters = {}
+        model_parameters[CURSOR_DEFAULT_MODEL_FAMILY] = parameters
+        data["modelParameters"] = model_parameters
+        data["selectedModel"] = {
+            "modelId": CURSOR_DEFAULT_MODEL_FAMILY,
+            "parameters": parameters,
+        }
+        data["hasChangedDefaultModel"] = True
+        data["maxMode"] = True
+
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = config_path.with_name(f".{config_path.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            os.chmod(tmp, mode)
+            tmp.replace(config_path)
+        finally:
+            tmp.unlink(missing_ok=True)
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, str(exc)
+    return True, ""
 
 
 def agent_model_options(name: str) -> tuple[str, ...]:
@@ -152,11 +220,14 @@ def agent_model_options(name: str) -> tuple[str, ...]:
 # any UI - so they are vestigial, never an intentional per-task choice. Treat
 # them as "use the current default" so old tasks start/resume on the new model.
 _LEGACY_DEFAULT_MODELS = {"claude-sonnet-4-6", "claude-opus-4-8"}
+_INVALID_CURSOR_DEFAULT_MODELS = {"gpt-5.6-sol-max[context=1m]"}
 
 
 def _upgrade_legacy_model(model: str, agent: str = AGENT_CLAUDE) -> str:
     m = (model or "").strip()
-    if m in _LEGACY_DEFAULT_MODELS:
+    if m in _LEGACY_DEFAULT_MODELS or (
+        normalize_agent(agent) == AGENT_CURSOR and m in _INVALID_CURSOR_DEFAULT_MODELS
+    ):
         return agent_default_model(agent) or m
     return m
 
@@ -168,16 +239,16 @@ def build_agent_command(
 ) -> list[str]:
     """Build the CLI argv that should be exec'd in the tmux pane for *agent*.
 
-    - Cursor:  ``agent --model M --force [--resume ID]``
+    - Cursor:  ``agent -f [--model M] [--resume ID]``
     - Claude:  ``claude --model M --dangerously-skip-permissions --effort max [--resume ID]``
     - Codex:   ``codex resume ID`` (resume) or ``codex`` (fresh), optionally with ``-c model=…``
     """
     agent = normalize_agent(agent)
     if agent == AGENT_CURSOR:
-        cmd = ["agent"]
-        if model.strip():
-            cmd += ["--model", model.strip()]
-        cmd += ["--force"]
+        cmd = ["agent", "-f"]
+        selected_model = model.strip()
+        if selected_model and selected_model != CURSOR_DEFAULT_MODEL:
+            cmd += ["--model", selected_model]
         if resume_session_id:
             cmd += ["--resume", resume_session_id]
         return cmd
@@ -460,7 +531,7 @@ class TaskMeta:
     created_at: str
     updated_at: str
     skills_path: str = ""
-    interview_model: str = "gpt-5.6-sol-max"
+    interview_model: str = CURSOR_DEFAULT_MODEL
     tmux_interview_target: str = ""
     # New tasks default to Cursor Agent. from_dict preserves Claude for legacy
     # task.json files that predate the `agent` field.
@@ -648,7 +719,7 @@ def create_task(
     title: str,
     general_goal: str,
     skills_path: Path | str | None = None,
-    interview_model: str = "gpt-5.6-sol-max",
+    interview_model: str = CURSOR_DEFAULT_MODEL,
     agent: str = AGENT_CURSOR,
     kind: str = "agent",
     *,
