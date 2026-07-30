@@ -40,7 +40,12 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from loom.openclaw import OpenClawClient, OpenClawConfig, openclaw_status
-from loom.paths import bundled_skills_path, kernel_hub_dir, web_static_dir
+from loom.paths import (
+    KERNEL_HUB_ENV,
+    bundled_skills_path,
+    kernel_hub_dir,
+    web_static_dir,
+)
 from loom.rud_task import (
     AGENT_CURSOR,
     AGENT_CLAUDE,
@@ -1315,17 +1320,19 @@ def _kernel_helper_cmd(script_name: str) -> tuple[list[str] | None, str]:
     """Resolve how to invoke the bundled kernel helper, returning
     ``(base_cmd, error)``.
 
-    The kernel stack is vendored in-tree under
-    ``loom/kernel_hub/scaffold/agent_runner/``; the helper's own
-    ``REPO_ROOT`` resolves to ``kernel_hub/`` so docker-compose and the
-    kernel_evaluator service are found right beside it.
+    The kernel stack lives under ``loom/kernel_hub/scaffold/agent_runner/``;
+    the helper's own ``REPO_ROOT`` resolves to ``kernel_hub/`` so
+    docker-compose and the kernel_evaluator service are found right beside it.
+    It is not shipped in the wheel, so an installed Loom needs
+    ``LOOM_KERNEL_HUB_DIR`` pointed at a source checkout.
     """
     bundled = kernel_hub_dir() / "scaffold" / "agent_runner" / script_name
     if bundled.is_file():
         return [sys.executable, str(bundled)], ""
     return None, (
-        f"kernel helper '{script_name}' not found at {bundled}; the vendored "
-        f"kernel stack (loom/kernel_hub/) appears to be missing."
+        f"Kernel Lab helper '{script_name}' not found at {bundled}. The Kernel "
+        f"Hub bundle is not shipped in the Loom wheel; clone "
+        f"https://github.com/FutureMLS-Lab/Loom and set {KERNEL_HUB_ENV}=<checkout>/loom/kernel_hub"
     )
 
 

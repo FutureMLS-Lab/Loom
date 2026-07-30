@@ -12,19 +12,50 @@ goal into a `PLAN.md`, manages git worktrees, shows the diff, and pings you when
 the agent needs input. There's no autonomous loop — **you drive the agent**;
 Loom just keeps the bookkeeping tidy.
 
-## Quickstart
+## Install
+
+Loom needs **Python 3.10+**, **git**, **tmux**, and at least one agent CLI
+(`claude`, `codex`, or Cursor's `agent`) that you have already logged into.
+
+The package is `loom-console`; the command it installs is `loom`.
+
+**With [pipx](https://pipx.pypa.io)** — recommended, gets its own isolated
+environment and works on Debian/Ubuntu where a plain `pip install` is blocked
+by [PEP 668](https://peps.python.org/pep-0668/):
+
+```bash
+pipx install git+https://github.com/FutureMLS-Lab/Loom.git
+```
+
+**With a virtualenv**, if you would rather manage it yourself:
+
+```bash
+python3 -m venv ~/.venvs/loom
+~/.venvs/loom/bin/pip install git+https://github.com/FutureMLS-Lab/Loom.git
+~/.venvs/loom/bin/loom --version
+```
+
+**From a source checkout**, for hacking on Loom itself:
 
 ```bash
 git clone https://github.com/FutureMLS-Lab/Loom.git && cd Loom
-pip install -e .
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e '.[dev]'    # [dev] adds pytest, so `pytest tests` works
+```
 
+## Quickstart
+
+```bash
+loom doctor                                 # check tmux / git / agent CLI
 claude                                      # log in to the agent CLI once
 loom web --project /path/to/your/project    # start the console
 # → open http://127.0.0.1:8765
 ```
 
-You also need **git** and **tmux** on your PATH. That's it — you're running.
-(`loom` is the command; the old `loom` name still works as an alias.)
+`loom doctor` is the first thing to run when something misbehaves: it reports
+every external tool Loom depends on and tells you how to fix what is missing.
+`loom web` refuses to start if tmux or git is absent, rather than handing you a
+broken terminal.
 
 ## The basic flow
 
@@ -97,8 +128,10 @@ When you're happy, **Push** the worktree or **Merge ↩** it from the Changes ta
 | `--openclaw …` | Optional [OpenClaw](#openclaw-integration) notifications + reply-back (full flags in `loom/cli.py`). |
 
 ```bash
-loom init    # writes a minimal PLAN.md + NOTES.md in $PWD
-loom --help  # all commands
+loom doctor    # check prerequisites and report what's missing
+loom init      # writes a minimal PLAN.md + NOTES.md in $PWD
+loom --version # installed version
+loom --help    # all commands
 ```
 
 ## Layout on disk
@@ -157,6 +190,18 @@ next runs and stops.)
 | **Claude / Codex** | The standard human-driven flow above. |
 | **ARIS** | Autonomous-research loop — mines ideas from the codebase, spins up a worktree per experiment, folds results into `PLAN.md` (skill: `loom/skills/aris/ARIS.md`). |
 | **Kernel Lab** | Dedicated panel driving the Loom Kernel Hub evaluator (spec interview + build/run launcher with live log). Advanced / optional. |
+
+**Kernel Lab needs a separate bundle.** The Kernel Hub stack (Dockerfiles,
+compose files, the `kernel_evaluator` service and its CUDA reference docs) is
+~800 files, so it ships in the source tree but *not* in the installed package.
+It works out of the box from a git checkout; a pipx/venv install needs to be
+pointed at one:
+
+```bash
+export LOOM_KERNEL_HUB_DIR=/path/to/Loom-checkout/loom/kernel_hub
+```
+
+`loom doctor` reports whether the bundle was found.
 
 ## OpenClaw integration
 

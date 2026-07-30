@@ -1,12 +1,10 @@
 """CLI entry point for Loom.
 
-Only two commands now that the agent-loop machinery is gone:
+- ``loom doctor`` checks the external tools Loom drives (tmux, git, agent CLI).
 - ``loom init`` writes the minimal PLAN.md / NOTES.md templates
   into the current directory.
 - ``loom web`` runs the local web UI for browsing / editing tasks
   and launching the deep-interview pane.
-
-(``loom`` remains as a legacy alias for ``loom``.)
 """
 
 from __future__ import annotations
@@ -20,15 +18,37 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
+from loom import __version__
 from loom.openclaw import build_openclaw_config, openclaw_status
 from loom.paths import bundled_skills_path
 
-app = typer.Typer(
-    name="loom",
-    help="Loom - a lightweight task console for Claude Code / Codex (deep interview + PLAN.md + worktrees + diffs + notes).",
-    add_completion=False,
+HELP = (
+    "Loom - a lightweight task console for Claude Code / Codex "
+    "(deep interview + PLAN.md + worktrees + diffs + notes)."
 )
+
+app = typer.Typer(name="loom", help=HELP, add_completion=False)
 console = Console()
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        console.print(f"loom {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the Loom version and exit",
+    ),
+) -> None:
+    """Loom - a lightweight task console for Claude Code / Codex."""
 
 _TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 
@@ -55,6 +75,30 @@ Not started
 Free-form scratch space for future work, ideas, things to come back to.
 """,
 }
+
+
+_STATUS_MARK = {"ok": "[green]OK  [/green]", "warn": "[yellow]WARN[/yellow]", "fail": "[red]FAIL[/red]"}
+
+
+@app.command()
+def doctor(
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address to test"),
+    port: int = typer.Option(8765, "--port", help="HTTP port to test"),
+) -> None:
+    """Check that tmux, git, an agent CLI and the bundled assets are usable."""
+    from loom.doctor import run_checks
+
+    report = run_checks(host, port)
+    console.print(f"[bold]loom {__version__}[/bold]  ({sys.executable})\n")
+    for check in report.checks:
+        console.print(f"{_STATUS_MARK[check.status]}  {check.name:<15} {check.detail}")
+        if check.hint and check.status != "ok":
+            console.print(f"      [dim]{check.hint}[/dim]")
+    if report.ok:
+        console.print("\n[green]Ready.[/green] Start with: loom web --project /path/to/repo")
+        return
+    console.print(f"\n[red]{len(report.failures)} check(s) failed.[/red]")
+    raise typer.Exit(1)
 
 
 @app.command()
@@ -186,7 +230,18 @@ def web_cmd(
     ),
 ) -> None:
     """Start local web UI for `.RUD` tasks (interview, PLAN.md, NOTES.md)."""
+    from loom.doctor import required_failures
     from loom.web import serve
+
+    blocking = required_failures()
+    if blocking:
+        console.print("[red]Loom cannot start - missing prerequisites:[/red]")
+        for check in blocking:
+            console.print(f"  [red]x[/red] {check.name}: {check.detail}")
+            if check.hint:
+                console.print(f"    [dim]{check.hint}[/dim]")
+        console.print("\nRun [bold]loom doctor[/bold] for the full report.")
+        raise typer.Exit(1)
 
     root = (project or Path.cwd()).resolve()
     web_auth_token = (auth_token or os.environ.get("LOOM_WEB_AUTH_TOKEN", "")).strip()

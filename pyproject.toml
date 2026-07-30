@@ -3,26 +3,42 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "loom"
-version = "0.3.0"
+name = "loom-console"
+dynamic = ["version"]
 description = "Loom - a lightweight task console for Claude Code / Codex (deep interview -> PLAN.md -> /goal, git worktrees, diffs, notes, run-monitor)"
+readme = "README.md"
 requires-python = ">=3.10"
+keywords = ["claude-code", "codex", "cursor", "agent", "tmux", "git-worktree"]
 dependencies = [
-    "typer[all]>=0.9.0",
+    "typer>=0.9.0",
     "rich>=13.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/FutureMLS-Lab/Loom"
+Repository = "https://github.com/FutureMLS-Lab/Loom"
+Issues = "https://github.com/FutureMLS-Lab/Loom/issues"
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
     "pytest-mock>=3.0",
+    "build>=1.0",
 ]
 
 [project.scripts]
 loom = "loom.cli:app"
 
+[tool.hatch.version]
+path = "loom/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["loom"]
-# Ship the vendored Loom Kernel Hub stack (scripts, Dockerfiles, compose, plugins)
-# as package data even before it's committed / regardless of VCS-ignore.
-artifacts = ["loom/kernel_hub/**"]
+# The Kernel Hub stack (Dockerfiles, compose, kernel_evaluator service, CUDA
+# reference docs) is ~800 files / 6 MB and only used by the optional Kernel Lab
+# task type, so it stays out of the wheel. It ships in the sdist, and an
+# installed Loom can point at a source checkout via LOOM_KERNEL_HUB_DIR.
+exclude = ["loom/kernel_hub/**"]
+
+[tool.hatch.build.targets.sdist]
+include = ["loom", "tests", "README.md", "pyproject.toml"]
