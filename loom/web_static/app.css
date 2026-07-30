@@ -1327,39 +1327,69 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
 .tab-action-row .btn,
 .tab-action-row .tab-panel__hint { flex: 0 0 auto; margin: 0; }
 .action-hint { color: var(--text-dim); font-size: 0.85rem; white-space: pre-line; }
-.rud-flow-row {
-  margin: -2px 0 12px;
+/* One control bar for the agent tab. The workflow prose that used to sit above
+   it lives in the "?" disclosure, so the terminal starts near the top of the
+   panel instead of below three stacked strips. */
+.agent-bar {
+  position: relative;
+  margin: 0 0 12px;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 16px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.88), rgba(248,247,243,0.78));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(248, 247, 243, 0.78));
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
-.rud-flow-row__label {
+.agent-bar__label {
   color: var(--text-faint);
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  margin-right: 2px;
 }
-.rud-flow-row__step { flex: 0 0 auto; }
-.rud-flow-row__arrow {
+.agent-bar__sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 4px;
+  background: var(--border-strong);
+}
+.agent-bar__help { margin-left: auto; }
+.agent-bar__help summary {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev-1);
   color: var(--text-faint);
-  font-size: 0.95rem;
-  font-weight: 700;
-  line-height: 1;
-  flex: 0 0 auto;
-  user-select: none;
-  opacity: 0.7;
+  font-size: 0.76rem;
+  font-weight: 800;
+  cursor: pointer;
+  list-style: none;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
-.rud-flow-row__hint {
+.agent-bar__help summary::-webkit-details-marker { display: none; }
+.agent-bar__help summary:hover,
+.agent-bar__help[open] summary { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+/* Absolute so opening the note never reflows the bar or shifts the terminal. */
+.agent-bar__help p {
+  position: absolute;
+  right: 8px;
+  top: calc(100% - 2px);
+  z-index: 12;
+  width: min(420px, calc(100vw - 48px));
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-elev-1);
+  box-shadow: var(--shadow-md);
   color: var(--text-dim);
-  font-size: 0.82rem;
-  flex: 1 1 220px;
+  font-size: 0.84rem;
+  line-height: 1.5;
 }
 
 /* ===== Changes (read-only git diff) tab ===== */
@@ -2594,13 +2624,16 @@ textarea.editable__input {
 
 
   .tab-action-row,
-  .task-actions {
+  .task-actions,
+  .agent-bar {
     border-radius: 16px;
     padding: 8px 10px;
   }
   .tab-action-row .btn,
-  .task-actions .btn { min-height: 40px; padding: 8px 14px; }
+  .task-actions .btn,
+  .agent-bar .btn { min-height: 40px; padding: 8px 14px; }
   .action-hint { display: none; }
+  .agent-bar__sep { display: none; }
 
   .worker-controls { grid-template-columns: 1fr; padding: 12px; border-radius: 16px; }
   .worker-buttons { justify-content: flex-start; flex-wrap: wrap; gap: 6px; }
