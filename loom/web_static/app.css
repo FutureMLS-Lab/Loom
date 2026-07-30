@@ -2220,6 +2220,7 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  max-width: 100%;
   min-height: 28px;
   padding: 3px 13px 3px 7px;
   border-radius: 999px;
@@ -2246,6 +2247,9 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.14);
 }
 .skill-chip:disabled { opacity: 0.5; cursor: progress; transform: none; }
+/* Last-resort guard: an unusually long skill name truncates instead of
+   running past the card. The full path stays in the chip's tooltip. */
+.skill-chip__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .skill-chip__mark {
   display: inline-grid;
   place-items: center;
@@ -2647,6 +2651,8 @@ textarea.editable__input {
   .claude-info__value { flex: 1 1 auto; min-width: 0; }
   .claude-info__monitor,
   .claude-info__sessions,
+  .claude-info__skill-chips,
+  .skill-chips,
   .claude-info__worktrees { width: 100%; flex: 1 1 100%; }
   .claude-info__wt-actions { margin-left: 0; width: 100%; }
   .claude-info__wt-actions .btn { flex: 1 1 auto; }
@@ -2658,6 +2664,10 @@ textarea.editable__input {
   .wt-picker, .session-picker { flex-wrap: wrap; }
   .wt-select, .session-select { flex: 1 1 100%; }
   .wt-picker__push, .session-picker__resume { flex: 1 1 auto; }
+  /* A long status ("11 modified, 11 untracked · no remote") must wrap here
+     rather than run off the side of the phone. */
+  .wt-picker__status { flex: 1 1 auto; min-width: 0; }
+  .wt-picker__status .wt-status { white-space: normal; }
   .wt-list-row__push { margin-left: auto; }
   .claude-session { flex-wrap: wrap; gap: 6px 8px; }
   .claude-session__meta { flex: 1 1 100%; }

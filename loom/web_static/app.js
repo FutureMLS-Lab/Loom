@@ -676,13 +676,19 @@ function skillsDisplayLabel(joined) {
 }
 
 // Chip labels drop the directory and the .md suffix ("aris/ARIS.md" -> "ARIS"),
-// falling back to the fuller path only where that would collide.
+// widening to the parent directory only as far as needed to tell two
+// same-named skills apart. Never the whole path: a task can carry an absolute
+// one, and a chip that long blows out the row.
 function skillChipLabels(options) {
-  const full = options.map((o) => (o.textContent || o.value).replace(/\.md$/i, ''));
-  const short = full.map((f) => f.split('/').pop());
-  const seen = {};
-  for (const s of short) seen[s] = (seen[s] || 0) + 1;
-  return short.map((s, i) => (seen[s] > 1 ? full[i] : s));
+  const parts = options.map(
+    (o) => (o.textContent || o.value).replace(/\.md$/i, '').split('/').filter(Boolean),
+  );
+  const at = (i, depth) => parts[i].slice(-depth).join('/');
+  return parts.map((_, i) => {
+    let depth = 1;
+    while (depth < 3 && parts.some((__, j) => j !== i && at(j, depth) === at(i, depth))) depth++;
+    return at(i, depth);
+  });
 }
 
 // A <select multiple> is a poor fit for this: Cmd/Ctrl-click is undiscoverable
