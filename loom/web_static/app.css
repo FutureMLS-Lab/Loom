@@ -1892,6 +1892,10 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   align-items: center;
   flex-wrap: wrap;
 }
+/* Chips wrap onto several lines, so the label reads better pinned to the top. */
+.claude-info__row--skills { align-items: flex-start; }
+.claude-info__row--skills .claude-info__label,
+.claude-info__row--skills .claude-info__hint { padding-top: 6px; }
 .claude-info__label {
   flex: 0 0 78px;
   color: var(--text-faint);
@@ -2195,17 +2199,94 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   color: var(--text);
 }
 
-.claude-info__skills {
+/* Skills are picked as toggle chips; the underlying <select multiple> is kept
+   in the DOM as the value holder but never shown. */
+.skill-select-native { display: none; }
+.skill-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
   flex: 1 1 auto;
-  min-width: 180px;
-  max-width: min(560px, 100%);
-  font: inherit;
-  font-size: 0.8rem;
-  padding: 4px 9px;
-  border-radius: 8px;
+  min-width: 0;
+}
+.skill-chips--block { margin-top: 8px; }
+.skill-chips__empty {
+  color: var(--text-faint);
+  font-size: 0.82rem;
+  font-style: italic;
+}
+.skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 3px 13px 3px 7px;
+  border-radius: 999px;
   border: 1px solid var(--border-strong);
   background: var(--bg-elev-1);
+  color: var(--text-dim);
+  font: inherit;
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s, color 0.14s, box-shadow 0.14s, transform 0.12s;
+}
+.skill-chip:hover:not(:disabled) {
+  border-color: var(--border-focus);
   color: var(--text);
+  background: #fff;
+  transform: translateY(-1px);
+}
+.skill-chip:focus-visible {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.14);
+}
+.skill-chip:disabled { opacity: 0.5; cursor: progress; transform: none; }
+.skill-chip__mark {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev-2);
+  transition: background 0.14s, border-color 0.14s;
+}
+.skill-chip__mark::before {
+  content: "";
+  width: 8px;
+  height: 5px;
+  border-left: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  transform: translateY(-1px) rotate(-45deg) scale(0.6);
+  opacity: 0;
+  transition: opacity 0.14s, transform 0.14s;
+}
+.skill-chip.is-on {
+  border-color: rgba(79, 70, 229, 0.42);
+  background: linear-gradient(180deg, #fff, var(--accent-soft));
+  color: var(--text);
+  box-shadow: 0 0 0 1px rgba(79, 70, 229, 0.1), 0 4px 12px rgba(79, 70, 229, 0.12);
+}
+.skill-chip.is-on .skill-chip__mark {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.skill-chip.is-on .skill-chip__mark::before { opacity: 1; transform: translateY(-1px) rotate(-45deg) scale(1); }
+/* Refusing to clear the last skill: a nudge instead of a silent no-op. */
+.skill-chip.is-refused { animation: skill-chip-refuse 0.4s ease; }
+@keyframes skill-chip-refuse {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skill-chip.is-refused { animation: none; box-shadow: 0 0 0 3px rgba(190, 18, 60, 0.18); }
 }
 
 .claude-info__model {

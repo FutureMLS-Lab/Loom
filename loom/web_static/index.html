@@ -110,9 +110,10 @@
               <datalist id="task-model-list"></datalist>
               <span class="claude-info__hint" id="claude-info-model-hint">used on next start</span>
             </div>
-            <div class="claude-info__row">
-              <span class="claude-info__label">Skills</span>
-              <select id="claude-info-skills" class="claude-info__skills" multiple title="Skills used by Start Deep Interview (Cmd/Ctrl-click to combine several)"></select>
+            <div class="claude-info__row claude-info__row--skills">
+              <span class="claude-info__label" id="claude-info-skills-label">Skills</span>
+              <select id="claude-info-skills" class="skill-select-native" multiple data-chips="claude-info-skill-chips" data-require-one="1" tabindex="-1" aria-hidden="true"></select>
+              <div class="skill-chips" id="claude-info-skill-chips" role="group" aria-labelledby="claude-info-skills-label"></div>
               <span class="claude-info__hint" id="claude-info-skills-hint">used when starting deep interview</span>
             </div>
             <div class="claude-info__row claude-info__row--worktrees">
@@ -321,9 +322,10 @@
       </div>
 
       <div class="modal-card__body">
-        <label for="new-skills">Skills</label>
-        <select id="new-skills" class="modal-input-wide" multiple></select>
-        <p class="skills-note">Injected into the deep interview and worker prompt. Hold Cmd/Ctrl to pick several — they're combined.</p>
+        <label id="new-skills-label">Skills</label>
+        <select id="new-skills" class="skill-select-native" multiple data-chips="new-skill-chips" tabindex="-1" aria-hidden="true"></select>
+        <div class="skill-chips skill-chips--block" id="new-skill-chips" role="group" aria-labelledby="new-skills-label"></div>
+        <p class="skills-note">Injected into the deep interview and worker prompt. Pick as many as you need — they're combined.</p>
         <label for="new-title">Title</label>
         <input type="text" id="new-title" placeholder="Example: xorl1" />
         <label for="new-agent-select">Task type</label>

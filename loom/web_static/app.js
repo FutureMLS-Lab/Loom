@@ -675,11 +675,68 @@ function skillsDisplayLabel(joined) {
   return parts.length ? parts.join(' + ') : '—';
 }
 
+// Chip labels drop the directory and the .md suffix ("aris/ARIS.md" -> "ARIS"),
+// falling back to the fuller path only where that would collide.
+function skillChipLabels(options) {
+  const full = options.map((o) => (o.textContent || o.value).replace(/\.md$/i, ''));
+  const short = full.map((f) => f.split('/').pop());
+  const seen = {};
+  for (const s of short) seen[s] = (seen[s] || 0) + 1;
+  return short.map((s, i) => (seen[s] > 1 ? full[i] : s));
+}
+
+// A <select multiple> is a poor fit for this: Cmd/Ctrl-click is undiscoverable
+// and the native list box can't be styled. The select stays in the DOM as the
+// source of truth and this mirrors it as toggle chips.
+function renderSkillChips(sel) {
+  const host = document.getElementById(sel.dataset.chips || '');
+  if (!host) return;
+  const options = [...sel.options];
+  host.innerHTML = '';
+  if (!options.length) {
+    const empty = document.createElement('span');
+    empty.className = 'skill-chips__empty';
+    empty.textContent = 'No skills found for this project.';
+    host.appendChild(empty);
+    return;
+  }
+  const labels = skillChipLabels(options);
+  const requireOne = sel.dataset.requireOne === '1';
+  options.forEach((opt, i) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'skill-chip' + (opt.selected ? ' is-on' : '');
+    chip.setAttribute('role', 'checkbox');
+    chip.setAttribute('aria-checked', opt.selected ? 'true' : 'false');
+    chip.title = opt.title || opt.value;
+    chip.disabled = sel.disabled;
+    const mark = document.createElement('span');
+    mark.className = 'skill-chip__mark';
+    mark.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('span');
+    label.className = 'skill-chip__label';
+    label.textContent = labels[i];
+    chip.append(mark, label);
+    chip.addEventListener('click', () => {
+      const lastOne = requireOne && opt.selected
+        && options.filter((o) => o.selected).length === 1;
+      if (lastOne) {
+        chip.classList.add('is-refused');
+        setTimeout(() => chip.classList.remove('is-refused'), 400);
+        return;
+      }
+      opt.selected = !opt.selected;
+      renderSkillChips(sel);
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    host.appendChild(chip);
+  });
+}
+
 function renderSkillsPicker() {
   const sel = document.getElementById('new-skills');
   if (!sel) return;
   sel.multiple = true;
-  sel.size = Math.min(6, Math.max(3, STATE.skillsOptions.length || 3));
   const current = selectedSkillsValue(sel) || STATE.skillsPath || '';
   sel.innerHTML = '';
   const options = STATE.skillsOptions.length
@@ -696,6 +753,7 @@ function renderSkillsPicker() {
   }
   applySkillsSelection(sel, current);
   if (!sel.selectedOptions.length && STATE.skillsPath) applySkillsSelection(sel, STATE.skillsPath);
+  renderSkillChips(sel);
 }
 
 async function loadTmuxSessions() {
@@ -1569,9 +1627,9 @@ function renderTaskSkillsPicker(meta = STATE.currentMeta || {}) {
     }
     sel.dataset.options = wanted;
   }
-  sel.size = Math.min(5, Math.max(2, sel.options.length));
   sel.disabled = !STATE.slug || sel.options.length === 0;
   applySkillsSelection(sel, current);
+  renderSkillChips(sel);
   const hdr = document.getElementById('hdr-skills');
   if (hdr && current) { hdr.textContent = skillsDisplayLabel(current); hdr.title = current; }
   if (!sel.dataset.bound) {
@@ -1586,6 +1644,7 @@ async function onTaskSkillsChange(ev) {
   if (!STATE.slug || !skillsPath) return;  // keep at least one skill selected
   const previous = STATE.currentMeta?.skills_path || STATE.skillsPath || '';
   sel.disabled = true;
+  renderSkillChips(sel);
   try {
     const r = await saveTaskMeta({ skills_path: skillsPath });
     if (r?.meta) {
@@ -1603,6 +1662,7 @@ async function onTaskSkillsChange(ev) {
     if (previous) applySkillsSelection(sel, previous);
   } finally {
     sel.disabled = false;
+    renderSkillChips(sel);
   }
 }
 
