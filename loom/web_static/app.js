@@ -2530,6 +2530,30 @@ function disconnectTerminal() {
   TERM.streamId = '';
 }
 
+// Put the keyboard back in the pane. Skipped on touch devices, where focusing
+// xterm raises the soft keyboard over the screen the user wants to read.
+function focusTerminalSoon() {
+  if (!TERM.term) return;
+  if (window.matchMedia && window.matchMedia('(hover: none), (pointer: coarse)').matches) return;
+  setTimeout(() => { try { TERM.term.focus(); } catch (e) {} }, 0);
+}
+
+// Escape is how you back out of an agent TUI menu, but it only reaches the pane
+// when xterm holds focus — and after clicking a button such as Run /goal, focus
+// sits on that button, so the keypress died in the page. With the pane visible,
+// no modal open and no text field in use, nothing else wants Escape: send it on
+// and hand focus back so the keys that follow land there too.
+function forwardEscapeToPane(target) {
+  if (!TERM.connected || !termTarget()) return false;
+  const panel = document.querySelector('.tab-panel.active');
+  if (!panel || panel.dataset.panel !== 'claude') return false;
+  if (target && target.closest
+      && target.closest('input, textarea, select, [contenteditable="true"]')) return false;
+  termQueueInput('\x1b');
+  focusTerminalSoon();
+  return true;
+}
+
 // Strip the app's MOUSE-mode enable/disable sequences from the PTY byte stream so
 // xterm never enters application-mouse mode — then a plain drag does native text
 // selection (-> copy-on-select -> browser clipboard) instead of being forwarded
@@ -3034,6 +3058,7 @@ document.addEventListener('keydown', (event) => {
   else if (!$('#create-modal').hidden) closeCreateModal();
   else if (!$('#code-root-modal').hidden) closeCodeRootModal();
   else if (!$('#add-project-modal').hidden) closeAddProjectModal();
+  else if (forwardEscapeToPane(event.target)) event.preventDefault();
 });
 
 document.getElementById('btn-preview-close').addEventListener('click', closeFullscreenPreview);
@@ -4679,10 +4704,17 @@ async function resumeClaudeSession(sessionId) {
   }
 }
 
-document.getElementById('btn-interview-start').addEventListener('click', startInterviewPane);
-document.getElementById('btn-interview-paste').addEventListener('click', pasteInterviewPrompt);
-document.getElementById('btn-run-goal').addEventListener('click', runGoalFromPlan);
-document.getElementById('btn-write-result').addEventListener('click', writeResultToPlan);
+// These four hand control to the agent, so the keyboard belongs in the pane
+// once they finish — otherwise the next keystroke dies on the button.
+function clickThenFocusPane(handler) {
+  return async (event) => {
+    try { await handler(event); } finally { focusTerminalSoon(); }
+  };
+}
+document.getElementById('btn-interview-start').addEventListener('click', clickThenFocusPane(startInterviewPane));
+document.getElementById('btn-interview-paste').addEventListener('click', clickThenFocusPane(pasteInterviewPrompt));
+document.getElementById('btn-run-goal').addEventListener('click', clickThenFocusPane(runGoalFromPlan));
+document.getElementById('btn-write-result').addEventListener('click', clickThenFocusPane(writeResultToPlan));
 document.getElementById('btn-changes-refresh').addEventListener('click', () => refreshChangesView(true));
 
 // Mobile/touch terminal keys: phone keyboards have no Esc/Ctrl-C/arrows/Tab, so
