@@ -29,6 +29,10 @@
   --terminal-border: #22304a;
   --font-sans: "Inter", "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", "Noto Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "SFMono-Regular", "Cascadia Code", "Roboto Mono", ui-monospace, Menlo, Consolas, monospace;
+  /* Reading face for rendered prose: screen-drawn serifs first (ui-serif is
+     New York on Apple), print serifs only as fallback, then CJK serifs so
+     mixed 中文 paragraphs stay in the same voice. */
+  --font-serif: ui-serif, "New York", "Iowan Old Style", Charter, "Source Serif 4", "Palatino Linotype", Palatino, Georgia, "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", serif;
 }
 
 * { box-sizing: border-box; }
@@ -215,7 +219,15 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
   overflow-x: auto;
   padding: 2px 0 4px;
   scrollbar-width: thin;
+  /* Fade only the edge that actually has more chips behind it, so a clipped
+     chip reads as "scroll for more" instead of a broken layout. */
+  --fade-start: 0px;
+  --fade-end: 0px;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 var(--fade-start), #000 calc(100% - var(--fade-end)), transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 var(--fade-start), #000 calc(100% - var(--fade-end)), transparent 100%);
 }
+.project-bar__scroll.is-fade-start { --fade-start: 24px; }
+.project-bar__scroll.is-fade-end { --fade-end: 24px; }
 .project-bar__scroll::-webkit-scrollbar { height: 5px; }
 .project-bar__scroll::-webkit-scrollbar-thumb {
   background: rgba(99, 102, 241, 0.28);
@@ -296,8 +308,8 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
   flex-shrink: 0;
   display: grid;
   place-items: center;
-  min-width: 22px;
-  height: 22px;
+  min-width: 24px;
+  height: 24px;
   padding: 0 5px;
   border: none;
   border-radius: 999px;
@@ -348,11 +360,25 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
 
 .modal-input-wide { width: 100%; margin-top: 6px; padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); font: inherit; }
 
-.main { flex: 1; min-width: 0; padding: 14px 14px 28px; background: transparent; overflow-y: auto; overflow-x: hidden; overscroll-behavior-x: none; }
+.main {
+  flex: 1; min-width: 0; background: transparent;
+  /* No top padding: the sticky tab strip anchors to the scrollport edge, and
+     any padding here would let content scroll visibly above it. The gap lives
+     on the first child instead. */
+  padding: 0 14px 28px;
+  overflow-y: auto; overflow-x: hidden; overscroll-behavior-x: none;
+  /* Keep scrolled-to targets clear of the sticky tab strip. */
+  scroll-padding-top: 62px;
+}
+.task-view__header,
+.empty-state { margin-top: 14px; }
 .task-view {
   max-width: none; width: 100%; margin: 0 auto;
+  /* `clip` guards against horizontal overflow without becoming a scroll
+     container: `hidden` would force overflow-y to `auto` and steal
+     `position: sticky` from the tab strip. `hidden` first for old browsers. */
   overflow-x: hidden;
-  font-family: "Times New Roman", Times, Georgia, "Songti SC", "Noto Serif SC", serif;
+  overflow-x: clip;
 }
 
 .empty-state {
@@ -389,9 +415,15 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
 .tabs {
   display: flex; flex-wrap: nowrap; gap: 4px; margin-bottom: 14px; padding: 5px;
   border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--bg-elev-2);
+  background: rgba(244, 242, 236, 0.92);
+  backdrop-filter: blur(12px);
   overflow-x: auto;
+  scrollbar-width: none;
+  position: sticky;
+  top: 0;
+  z-index: 8;
 }
+.tabs::-webkit-scrollbar { display: none; }
 .tab {
   padding: 7px 14px; border: 1px solid transparent; border-radius: var(--radius-sm);
   background: transparent; color: var(--text-dim); font: inherit; cursor: pointer; font-size: 0.9rem;
@@ -807,19 +839,26 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
   min-height: var(--markdown-panel-height);
   max-height: var(--markdown-panel-height);
   overflow: auto;
-  padding: 18px 20px;
+  padding: 18px 22px;
   border: 0;
   border-radius: 0;
   background: #fff;
   color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 0.98rem;
+  line-height: 1.7;
 }
 .markdown-preview > :first-child { margin-top: 0; }
 .markdown-preview > :last-child { margin-bottom: 0; }
 .markdown-preview h1,
 .markdown-preview h2,
-.markdown-preview h3 {
-  letter-spacing: -0.03em;
-  line-height: 1.2;
+.markdown-preview h3,
+.markdown-preview h4,
+.markdown-preview h5,
+.markdown-preview h6 {
+  font-family: var(--font-sans);
+  letter-spacing: -0.02em;
+  line-height: 1.25;
 }
 .markdown-preview h1 { margin: 0 0 16px; font-size: 1.65rem; }
 .markdown-preview h2 { margin: 24px 0 10px; font-size: 1.2rem; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
@@ -827,7 +866,7 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
 .markdown-preview h4 { margin: 16px 0 6px; font-size: 0.95rem; }
 .markdown-preview h5 { margin: 14px 0 6px; font-size: 0.88rem; }
 .markdown-preview h6 { margin: 12px 0 6px; font-size: 0.82rem; color: var(--text-dim); }
-.markdown-preview p { margin: 8px 0; color: var(--text); }
+.markdown-preview p { margin: 0.7em 0; color: var(--text); }
 .markdown-preview ul,
 .markdown-preview ol { margin: 8px 0 12px 20px; padding: 0; }
 .markdown-preview li { margin: 4px 0; }
@@ -1589,12 +1628,16 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   background: rgba(31, 35, 48, 0.22); backdrop-filter: blur(12px);
 }
 .modal-backdrop[hidden] { display: none; }
+/* Header and footer stay pinned; only the body scrolls, so the confirm
+   buttons can never end up below the fold on a short window. */
 .modal-card {
-  width: min(640px, 100%); max-height: min(760px, calc(100vh - 48px)); overflow: auto;
+  display: flex; flex-direction: column;
+  width: min(640px, 100%); max-height: min(760px, calc(100vh - 48px)); overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.72); border-radius: 20px;
   background: var(--bg-elev-1); box-shadow: var(--shadow-lg);
 }
 .modal-card__header {
+  flex: 0 0 auto;
   display: flex; justify-content: space-between; align-items: flex-start; gap: 18px;
   padding: 20px 20px 14px; border-bottom: 1px solid var(--border);
 }
@@ -1686,10 +1729,13 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
 }
 .worktree-select-row input { margin-top: 2px; }
 .worktree-select-row span { word-break: break-all; }
-.modal-card__body { padding: 18px 20px 8px; }
+.modal-card__body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 18px 20px 8px; }
 .modal-card__footer {
+  flex: 0 0 auto;
   display: flex; justify-content: flex-end; align-items: center; gap: 10px;
   padding: 14px 20px 20px;
+  border-top: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.55);
 }
 .modal-card__footer .tab-panel__hint { margin-right: auto; margin-bottom: 0; }
 
@@ -1730,11 +1776,6 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   color: var(--text-dim);
   margin: 6px 0 2px;
   min-height: 1em;
-}
-#create-modal .modal-card__footer {
-  border-top: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.45);
-  padding-top: 12px;
 }
 #create-modal .modal-card__footer .btn {
   min-height: 36px;
@@ -2140,12 +2181,14 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
 .claude-info__agent {
   flex: 0 0 auto;
   font: inherit;
-  font-size: 0.78rem;
-  line-height: 1;
+  font-size: 0.8rem;
+  line-height: 1.2;
   width: auto;
-  min-width: 72px;
-  max-width: 82px;
-  padding: 3px 20px 3px 8px;
+  /* Wide enough for the longest option ("Cursor Agent"); it was being cut to
+     "Cursor Ag" by a hard max-width. */
+  min-width: 124px;
+  min-height: 26px;
+  padding: 4px 22px 4px 10px;
   border-radius: 999px;
   border: 1px solid var(--border-strong);
   background: var(--bg-elev-1);
@@ -2395,24 +2438,23 @@ textarea.editable__input {
   body.sidebar-open .sidebar-backdrop { display: block; }
   .tmux-list { max-height: 180px; }
 
-  .main { padding: 12px 12px 24px; }
+  .main { padding: 0 12px 24px; }
+  .task-view__header,
+  .empty-state { margin-top: 12px; }
   .task-view__header { padding: 12px 14px; border-radius: 18px; margin-bottom: 12px; }
   .task-view__title { font-size: 1.15rem; }
   .task-view__header-row { flex-direction: column; align-items: stretch; }
   .task-view__header-row .btn--danger { align-self: flex-end; min-height: 40px; }
 
-  /* Tab strip stays accessible: shrink padding, enable snap. */
+  /* Tab strip stays accessible: shrink padding, enable snap. It sticks to the
+     top of `.main` (the scrollport on phones), not to the viewport. */
   .tabs {
-    margin: 0 -12px 12px;
-    padding: 6px 12px;
+    margin: 0 0 12px;
+    padding: 6px 8px;
     gap: 4px;
-    border-radius: 0;
-    border-left: 0;
-    border-right: 0;
+    border-radius: 14px;
     background: rgba(244, 242, 236, 0.95);
-    position: sticky;
-    top: 56px;
-    z-index: 8;
+    box-shadow: 0 6px 18px rgba(31, 35, 48, 0.07);
     scroll-snap-type: x proximity;
     -webkit-overflow-scrolling: touch;
   }

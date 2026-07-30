@@ -282,6 +282,7 @@ function renderProjectToggleBar() {
     em.className = 'project-bar__empty-msg';
     em.textContent = 'No repos yet — use + Add repo to register a project root.';
     scroll.appendChild(em);
+    syncProjectBarFades();
     return;
   }
   list.forEach((p) => {
@@ -341,7 +342,7 @@ function renderProjectToggleBar() {
     rm.type = 'button';
     rm.className = 'project-toggle__rm';
     rm.setAttribute('aria-label', `Remove ${p.name || p.id} from list`);
-    rm.textContent = 'x';
+    rm.textContent = '×';
     rm.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -354,7 +355,25 @@ function renderProjectToggleBar() {
   requestAnimationFrame(() => {
     const active = scroll.querySelector('.project-toggle.is-active');
     if (active) active.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+    syncProjectBarFades();
   });
+}
+
+// Fade whichever edge of the project bar still has chips behind it, so a
+// half-visible chip reads as "scrollable" rather than clipped.
+function syncProjectBarFades() {
+  const scroll = document.getElementById('project-toggle-scroll');
+  if (!scroll) return;
+  const max = scroll.scrollWidth - scroll.clientWidth;
+  scroll.classList.toggle('is-fade-start', scroll.scrollLeft > 4);
+  scroll.classList.toggle('is-fade-end', scroll.scrollLeft < max - 4);
+  if (scroll.dataset.fadeBound) return;
+  scroll.dataset.fadeBound = '1';
+  scroll.addEventListener('scroll', syncProjectBarFades, { passive: true });
+  window.addEventListener('resize', syncProjectBarFades, { passive: true });
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(syncProjectBarFades).observe(scroll);
+  }
 }
 
 function clearProjectDropMarkers(root = document) {
