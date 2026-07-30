@@ -832,18 +832,58 @@ function renderMarkdown(md) {
     out.push(`</${listType}>`);
     listType = null;
   }
+  // Split on unescaped pipes so a literal "\|" survives inside a cell, then
+  // drop the empty cells created by the optional leading/trailing pipe.
+  function splitTableCells(line) {
+    const s = line.trim();
+    const cells = [];
+    let cur = '';
+    for (let i = 0; i < s.length; i += 1) {
+      if (s[i] === '\\' && s[i + 1] === '|') { cur += '|'; i += 1; continue; }
+      if (s[i] === '|') { cells.push(cur); cur = ''; continue; }
+      cur += s[i];
+    }
+    cells.push(cur);
+    if (s.startsWith('|')) cells.shift();
+    if (cells.length && s.endsWith('|') && !s.endsWith('\\|')) cells.pop();
+    return cells;
+  }
+  // A delimiter row is one or more cells of dashes with optional alignment
+  // colons. One dash is enough (GitHub allows "|-|-|"); requiring a pipe keeps
+  // a bare "---" a horizontal rule rather than a one-column table.
   function isTableSeparator(line) {
-    return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+    if (!line.includes('|')) return false;
+    const cells = splitTableCells(line);
+    return cells.length > 0 && cells.every((c) => /^\s*:?-+:?\s*$/.test(c));
   }
   function parseTableRow(line) {
-    return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim());
+    return splitTableCells(line).map((cell) => cell.trim());
   }
-  function renderTable(headers, rows) {
-    const head = headers.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join('');
+  function tableAlignments(line) {
+    return parseTableRow(line).map((c) => {
+      const left = c.startsWith(':');
+      const right = c.endsWith(':');
+      if (left && right) return 'center';
+      if (right) return 'right';
+      if (left) return 'left';
+      return '';
+    });
+  }
+  function renderTable(headers, rows, aligns) {
+    const attr = (i) => (aligns[i] ? ` style="text-align:${aligns[i]}"` : '');
+    const head = headers.map((cell, i) => `<th${attr(i)}>${renderInlineMarkdown(cell)}</th>`).join('');
     const body = rows
-      .map((row) => `<tr>${row.map((cell) => `<td>${renderInlineMarkdown(cell)}</td>`).join('')}</tr>`)
+      .map((row) => {
+        // Pad short rows so the grid stays rectangular instead of ragged.
+        const cells = headers.map(
+          (_, i) => `<td${attr(i)}>${renderInlineMarkdown(row[i] || '')}</td>`,
+        );
+        return `<tr>${cells.join('')}</tr>`;
+      })
       .join('');
-    return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    // A wide table scrolls inside its own box rather than stretching the pane.
+    return '<div class="md-table-wrap"><table>'
+      + `<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
   }
 
   for (let i = 0; i < lines.length; i += 1) {
@@ -881,6 +921,7 @@ function renderMarkdown(md) {
       flushParagraph();
       flushList();
       const headers = parseTableRow(line);
+      const aligns = tableAlignments(lines[i + 1]);
       const rows = [];
       i += 2;
       while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
@@ -888,7 +929,7 @@ function renderMarkdown(md) {
         i += 1;
       }
       i -= 1;
-      out.push(renderTable(headers, rows));
+      out.push(renderTable(headers, rows, aligns));
       continue;
     }
     const heading = line.match(/^(#{1,6})\s+(.+)$/);

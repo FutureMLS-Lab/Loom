@@ -911,6 +911,12 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
   border-radius: 5px;
   padding: 1px 5px;
 }
+.markdown-preview .md-table-wrap {
+  margin: 12px 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.markdown-preview .md-table-wrap table { margin: 0; }
 .markdown-preview table {
   width: 100%;
   border-collapse: collapse;
