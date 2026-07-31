@@ -1963,6 +1963,23 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   opacity: 0;
   transition: opacity 0.14s, transform 0.14s;
 }
+/* The task points at a skill file that isn't on this host — usually an
+   absolute path left over from another machine. Show it as broken rather
+   than as a normal choice, since the agent silently gets the default. */
+.skill-chip.is-missing {
+  border-color: #fecdd3;
+  border-style: dashed;
+  background: var(--danger-soft);
+  color: #b4392f;
+}
+.skill-chip.is-missing .skill-chip__label { text-decoration: line-through; }
+.skill-chip.is-missing.is-on {
+  background: var(--danger-soft);
+  border-style: dashed;
+  box-shadow: none;
+}
+.skill-chip.is-missing.is-on .skill-chip__mark { background: #e0564a; border-color: #e0564a; }
+.claude-info__hint--warn { color: #b4392f; font-style: normal; font-weight: 600; }
 .skill-chip.is-on {
   border-color: rgba(79, 70, 229, 0.42);
   background: linear-gradient(180deg, #fff, var(--accent-soft));

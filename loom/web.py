@@ -4564,6 +4564,16 @@ def make_handler(
                         "task_markdown_files": md_names,
                         "claude": summary or {},
                         "worktree_statuses": statuses,
+                        # Tasks carry absolute skill paths, so one moved or
+                        # renamed checkout leaves them pointing at nothing.
+                        # The prompt silently falls back to the default; tell
+                        # the UI so it can stop presenting a dead file as the
+                        # task's skill.
+                        "skills_missing": [
+                            str(p)
+                            for p in split_skills_paths(meta.skills_path or "")
+                            if not p.is_file()
+                        ],
                     }
                 )
                 self._send(st, b, h)

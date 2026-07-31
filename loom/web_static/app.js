@@ -70,6 +70,7 @@ const STATE = {
   projects: [],
   skillsPath: '',
   skillsOptions: [],
+  skillsMissing: [],
   codeRootPattern: '.',
   codeRootPath: '',
   serverReachable: true,
@@ -709,6 +710,7 @@ function renderSkillChips(sel) {
   const host = document.getElementById(sel.dataset.chips || '');
   if (!host) return;
   const options = [...sel.options];
+  const missing = new Set(STATE.skillsMissing || []);
   host.innerHTML = '';
   if (!options.length) {
     const empty = document.createElement('span');
@@ -720,12 +722,16 @@ function renderSkillChips(sel) {
   const labels = skillChipLabels(options);
   const requireOne = sel.dataset.requireOne === '1';
   options.forEach((opt, i) => {
+    const gone = missing.has(opt.value);
     const chip = document.createElement('button');
     chip.type = 'button';
-    chip.className = 'skill-chip' + (opt.selected ? ' is-on' : '');
+    chip.className = 'skill-chip' + (opt.selected ? ' is-on' : '') + (gone ? ' is-missing' : '');
     chip.setAttribute('role', 'checkbox');
     chip.setAttribute('aria-checked', opt.selected ? 'true' : 'false');
-    chip.title = opt.title || opt.value;
+    chip.title = gone
+      ? `${opt.value}\nThis file does not exist on this host, so the agent falls`
+        + ' back to the default skill. Click to remove it.'
+      : (opt.title || opt.value);
     chip.disabled = sel.disabled;
     const mark = document.createElement('span');
     mark.className = 'skill-chip__mark';
@@ -1531,6 +1537,7 @@ async function selectTask(slug) {
   $('#task-goal').textContent = d.meta.general_goal || '';
   STATE.currentMeta = d.meta || null;
   STATE.worktreeStatuses = d.worktree_statuses || [];
+  STATE.skillsMissing = d.skills_missing || [];
   STATE.taskRoot = d.task_root || '';
   STATE.planPath = d.plan_path || '';
   applyInterviewMdPayload(d);
@@ -1663,6 +1670,17 @@ function renderTaskSkillsPicker(meta = STATE.currentMeta || {}) {
   sel.disabled = !STATE.slug || sel.options.length === 0;
   applySkillsSelection(sel, current);
   renderSkillChips(sel);
+  const hint = document.getElementById('claude-info-skills-hint');
+  if (hint) {
+    const gone = currentPaths.filter((p) => (STATE.skillsMissing || []).includes(p));
+    const plural = gone.length > 1 ? 's' : '';
+    hint.textContent = !gone.length
+      ? 'used when starting deep interview'
+      : (gone.length === currentPaths.length
+        ? `file${plural} missing — the agent falls back to the default skill`
+        : `${gone.length} missing file${plural} ignored`);
+    hint.classList.toggle('claude-info__hint--warn', gone.length > 0);
+  }
   if (!sel.dataset.bound) {
     sel.dataset.bound = '1';
     sel.addEventListener('change', onTaskSkillsChange);
