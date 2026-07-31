@@ -72,6 +72,7 @@ const STATE = {
   skillsOptions: [],
   codeRootPattern: '.',
   codeRootPath: '',
+  serverReachable: true,
   modelDefaults: { cursor: 'gpt-5.6-sol-max', claude: 'claude-fable-5', codex: 'gpt-5.5' },
   modelOptions: { cursor: [], claude: [], codex: [] },
   tasks: [],
@@ -131,31 +132,48 @@ function withProjectQuery(path) {
   return `${path}${sep}project=${encodeURIComponent(STATE.projectId)}`;
 }
 
-async function apiNoProject(path, opts = {}) {
+async function apiFetch(url, opts = {}) {
   const headers = { ...(opts.headers || {}) };
   if (opts.body !== undefined && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
   }
-  const res = await fetch(path, { ...opts, headers });
+  let res;
+  try {
+    res = await fetch(url, { ...opts, headers });
+  } catch (err) {
+    // fetch only rejects when the request never reached the server: Loom was
+    // stopped, or the SSH tunnel it is served over went away.
+    setServerReachable(false);
+    throw err;
+  }
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { error: text }; }
-  if (!res.ok) throw makeApiError(res, data);
+  if (!res.ok) {
+    if (res.status >= 500) setServerReachable(false);
+    throw makeApiError(res, data);
+  }
+  setServerReachable(true);
   return data;
 }
 
+async function apiNoProject(path, opts = {}) {
+  return apiFetch(path, opts);
+}
+
 async function api(path, opts = {}) {
-  const url = withProjectQuery(path);
-  const headers = { ...(opts.headers || {}) };
-  if (opts.body !== undefined && !headers['Content-Type']) {
-    headers['Content-Type'] = 'application/json';
-  }
-  const res = await fetch(url, { ...opts, headers });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = { error: text }; }
-  if (!res.ok) throw makeApiError(res, data);
-  return data;
+  return apiFetch(withProjectQuery(path), opts);
+}
+
+// An unreachable server used to look exactly like an empty workspace — no
+// projects, no tasks, "Select Or Create A Task" — which reads as data loss.
+// Say so instead, and keep whatever was last loaded on screen.
+function setServerReachable(ok) {
+  if (STATE.serverReachable === ok) return;
+  STATE.serverReachable = ok;
+  const bar = document.getElementById('offline-bar');
+  if (bar) bar.hidden = ok;
+  document.body.classList.toggle('is-offline', !ok);
 }
 
 function makeApiError(res, data) {
@@ -1247,11 +1265,13 @@ function initFullscreenPreviews() {
 // ===== Tasks =====
 
 async function loadTasks() {
-  STATE.tasks = [];
   if (!STATE.projectId) {
+    STATE.tasks = [];
     renderTasksFromState();
     return;
   }
+  // Replace the list only once the new one arrives; clearing first made a
+  // failed refresh look like the project had lost all its tasks.
   const { tasks } = await api('/api/tasks');
   STATE.tasks = tasks || [];
   renderTasksFromState();
@@ -4951,16 +4971,35 @@ document.getElementById('btn-new-task').addEventListener('click', async () => {
   }
 });
 
+async function loadWorkspace() {
+  await loadProjectsList();
+  await loadProject();
+  await loadTasks();
+  await restoreSelectedTaskForProject();
+}
+
+(function initOfflineRetry() {
+  const btn = document.getElementById('btn-offline-retry');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try {
+      await loadWorkspace();
+    } catch (e) {
+      toast(e.message, { type: 'error' });
+    } finally {
+      btn.disabled = false;
+    }
+  });
+})();
+
 (async function init() {
   buildTabs();
   initMarkdownPreviews();
   initFullscreenPreviews();
   loadLastTaskMap();
   try {
-    await loadProjectsList();
-    await loadProject();
-    await loadTasks();
-    await restoreSelectedTaskForProject();
+    await loadWorkspace();
   } catch (e) {
     console.error(e);
     toast(e.message, { type: 'error' });

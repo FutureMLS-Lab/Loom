@@ -40,6 +40,12 @@
   </header>
   <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
 
+  <div class="offline-bar" id="offline-bar" role="status" hidden>
+    <span class="offline-bar__dot" aria-hidden="true"></span>
+    <span class="offline-bar__text">Can't reach the Loom server. Anything below is the last data loaded — agents in tmux keep running.</span>
+    <button type="button" class="btn btn--sm" id="btn-offline-retry">Retry</button>
+  </div>
+
   <nav class="project-bar" aria-label="Registered repositories">
     <span class="project-bar__hint" id="project-bar-hint">Projects</span>
     <div class="project-bar__scroll" id="project-toggle-scroll" role="tablist" aria-label="Switch project"></div>

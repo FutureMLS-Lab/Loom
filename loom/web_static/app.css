@@ -109,6 +109,38 @@ body.sidebar-open .icon-btn--menu .icon-btn__bar:nth-child(3) { transform: trans
 }
 .sidebar-backdrop[hidden] { display: none; }
 
+.offline-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 8px 18px;
+  background: linear-gradient(180deg, #fff1f2, #ffe4e6);
+  border-bottom: 1px solid #fecdd3;
+  color: #9f1239;
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+.offline-bar[hidden] { display: none; }
+.offline-bar__text { flex: 1 1 auto; min-width: 0; font-weight: 500; }
+.offline-bar__dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #e11d48;
+  box-shadow: 0 0 0 3px rgba(225, 29, 72, 0.16);
+  animation: offline-pulse 1.8s ease-in-out infinite;
+}
+@keyframes offline-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .offline-bar__dot { animation: none; } }
+/* Stale data stays readable but visibly not live. */
+body.is-offline .task-list,
+body.is-offline .project-bar__scroll { opacity: 0.6; }
+@media (max-width: 480px) {
+  .offline-bar { padding: 8px 12px; font-size: 0.8rem; }
+}
+
 .btn {
   display: inline-flex; align-items: center; gap: 6px; font: inherit; cursor: pointer;
   min-height: 34px; padding: 7px 14px; border-radius: 999px; border: 1px solid var(--border-strong);
