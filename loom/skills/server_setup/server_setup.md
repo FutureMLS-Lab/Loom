@@ -1,19 +1,21 @@
-# Loom Agent Server 搭建与运维
+# Loom Agent Server Setup
 
-从零开一台云主机，装好 agent CLI 和 Loom，把已有项目和任务全部接进去。
-命令按顺序可以直接执行。**任何 token、私钥、kubeconfig 都不要写进这个文件或仓库。**
+Build a cloud host from scratch, install the agent CLIs and Loom, and bring
+existing projects and tasks over. Commands run in order.
+**Never put a token, private key or kubeconfig in this file or in the repo.**
 
-## 1. 开一台 AWS 机器
+## 1. Launch an AWS host
 
-按需选型：Agent 主机是 CPU-only 的调度机，不跑训练，瓶颈在并发进程数和内存。
+The agent host is a CPU-only scheduler box — it does not train. Size it for
+concurrent processes and memory, not for GPUs.
 
 ```bash
 export AWS_REGION=us-west-2
-aws sso login          # 或 aws login --remote --region us-west-2
+aws sso login          # or: aws login --remote --region us-west-2
 aws sts get-caller-identity --region $AWS_REGION
 ```
 
-解析官方 Debian 12 AMI（不要写死 AMI id）：
+Resolve the official Debian 12 AMI (never hardcode an AMI id):
 
 ```bash
 AMI_ID=$(aws ssm get-parameter --region $AWS_REGION \
@@ -21,7 +23,7 @@ AMI_ID=$(aws ssm get-parameter --region $AWS_REGION \
   --query 'Parameter.Value' --output text)
 ```
 
-上传本机公钥（只传公钥）并建安全组：
+Upload your public key (public half only) and create a security group:
 
 ```bash
 aws ec2 import-key-pair --region $AWS_REGION \
@@ -31,10 +33,10 @@ aws ec2 import-key-pair --region $AWS_REGION \
 aws ec2 create-security-group --region $AWS_REGION \
   --group-name agent-dev-$(date +%Y%m%d) \
   --description "SSH for agent dev host" --vpc-id <DEFAULT_VPC_ID>
-# 只开 22/tcp；口令登录在主机侧关闭（见第 2 节）
+# Open 22/tcp only. Password login is disabled host-side (section 2).
 ```
 
-启动实例：
+Launch:
 
 ```bash
 aws ec2 run-instances --region $AWS_REGION \
@@ -47,14 +49,18 @@ aws ec2 run-instances --region $AWS_REGION \
   --count 1
 ```
 
-- `m8i.32xlarge` = 128 vCPU / 512 GiB，约可并发跑 60 个 agent（每个预算 2 vCPU + 8 GiB）。
-- 磁盘 1 TiB gp3 加密；IMDSv2 必须开；打开 termination protection。
-- **成本**：compute 约 $6.77/hr（24×7 约 $4,900/月），不用时 `aws ec2 stop-instances`；stop 后仅 EBS 约 $80/月。
-- 没有 Elastic IP 时，stop/start 后公网 IP 会变，要更新本地 `~/.ssh/config`。
+- `m8i.32xlarge` = 128 vCPU / 512 GiB, enough for roughly 60 concurrent agents
+  (budget ~2 vCPU + 8 GiB each).
+- 1 TiB encrypted gp3, IMDSv2 required, termination protection on.
+- **Cost**: about $6.77/hour of compute (~$4,900/month if left running). Stop it
+  when idle with `aws ec2 stop-instances`; a stopped host still costs ~$80/month
+  for the volume.
+- Without an Elastic IP the public address changes across stop/start — update
+  your local `~/.ssh/config` afterwards.
 
-## 2. SSH 加固
+## 2. Harden SSH
 
-`/etc/ssh/sshd_config.d/99-agent-dev.conf`：
+`/etc/ssh/sshd_config.d/99-agent-dev.conf`:
 
 ```text
 PasswordAuthentication no
@@ -74,9 +80,11 @@ printf '[sshd]\nenabled = true\nbackend = systemd\nport = ssh\nmaxretry = 5\nban
 sudo systemctl restart fail2ban && sudo fail2ban-client status sshd
 ```
 
-改 sshd 后**先另开一条 SSH 连接确认能登录**，再关掉当前会话。
+Debian cloud images log to journald, hence `backend = systemd`. After changing
+sshd, **open a second SSH session and confirm it works** before closing the
+first one.
 
-## 3. 基础工具
+## 3. Base tooling
 
 ```bash
 sudo apt-get update && sudo apt-get install -y \
@@ -88,9 +96,11 @@ pipx ensurepath && pipx install uv
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-GitHub CLI、Docker、kubectl、AWS CLI v2 都从官方源装；Docker 装完 `sudo usermod -aG docker $USER` 并重开一个 SSH 会话。
+Install GitHub CLI, Docker, kubectl and AWS CLI v2 from their official
+repositories. After Docker, run `sudo usermod -aG docker $USER` and open a new
+SSH session before using it without sudo.
 
-## 4. 装 Agent CLI 并登录
+## 4. Install and authenticate the agent CLIs
 
 ```bash
 curl -fsSL https://claude.ai/install.sh | bash        # Claude Code
@@ -98,7 +108,7 @@ curl -fsSL https://chatgpt.com/codex/install.sh | sh  # Codex CLI
 curl https://cursor.com/install -fsS | bash           # Cursor Agent -> agent / cursor-agent
 ```
 
-SSH 上登录（都会打印一个 URL，在可信浏览器里打开）：
+Log in over SSH; each prints a URL to open in a trusted browser:
 
 ```bash
 claude auth login
@@ -106,11 +116,12 @@ codex login --device-auth
 NO_OPEN_BROWSER=1 agent login
 ```
 
-验证：`claude --version && codex --version && agent --version && agent status --format json`
+Verify: `claude --version && codex --version && agent --version && agent status --format json`
 
-登录态是账号资产，不要跨组织复制 `~/.claude`、`~/.codex/auth.json`、`~/.cursor`。
+Sessions belong to an account, not to the machine. Do not copy `~/.claude`,
+`~/.codex/auth.json` or `~/.cursor` across organisations.
 
-## 5. 装 Loom
+## 5. Install Loom
 
 ```bash
 git clone https://github.com/FutureMLS-Lab/Loom.git "$HOME/loom"
@@ -118,80 +129,98 @@ pipx install --editable "$HOME/loom"
 loom --version && loom doctor
 ```
 
-`--editable` 之后升级只要 `git -C ~/loom pull`，不用重装。
+With `--editable`, upgrading is just `git -C ~/loom pull` — no reinstall.
 
-## 6. 启动 Loom
+## 6. Start Loom
 
-一定放在 tmux 里，Loom 自己管理的 agent pane 也都是 tmux session。
+Always start it inside tmux; the agent panes Loom manages are tmux sessions too.
 
 ```bash
 tmux new-session -s loom
-export LOOM_TOKEN="$(openssl rand -hex 24)"   # 存到密码管理器，不要写进文件
+export LOOM_TOKEN="$(openssl rand -hex 24)"   # keep it in a password manager
 loom web --project /home/admin --port 8765 --auth-token "$LOOM_TOKEN" --projects
 ```
 
-- `--project` 是启动目录；`--projects` 表示这个目录是**多个 git repo 的容器**，单个 repo 根目录则省略该参数。
-- `--auth-token` 必开；用户名随意，密码就是 token。
-- 想后台常驻用 `--daemon`，日志默认在 `<project>/.RUD/web.log`。
-- 只监听 127.0.0.1，**不要**用 `--host 0.0.0.0` 暴露到公网。
+- `--project` is the launch directory. `--projects` says that directory is a
+  **container of several git repos**; omit it when the launch directory is
+  itself one repo root.
+- Always set `--auth-token`. Any username works; the token is the password.
+- `--daemon` runs it in the background, logging to `<project>/.RUD/web.log`.
+- It binds 127.0.0.1. **Do not** expose it with `--host 0.0.0.0`.
 
-本地访问走 SSH 隧道：
+Reach it from your laptop over an SSH tunnel:
 
 ```bash
 ssh -N -L 8765:127.0.0.1:8765 admin@<SERVER_IP>
-# 浏览器打开 http://127.0.0.1:8765，密码填 token
+# open http://127.0.0.1:8765 and use the token as the password
 ```
 
-## 7. 把项目和任务放进去
+## 7. Bring projects and tasks in
 
-Loom 的任务就是项目目录下的 `.RUD/<slug>/`，所以迁移＝把目录搬过来。
+A Loom task *is* a directory: `<project>/.RUD/<slug>/`. Migrating means copying
+those directories.
 
-1. **注册项目**：界面顶部 `+ Add folder`，或
+1. **Register a project** — `+ Add folder` in the UI, or:
    ```bash
    curl -s -u "x:$LOOM_TOKEN" -X POST http://127.0.0.1:8765/api/projects \
      -H 'content-type: application/json' \
      -d '{"path":"/home/admin/myrepo","mode":"existing","code_root_pattern":"."}'
    ```
-   注册表在 `~/.loom/web-projects.json`（跟着 `$HOME` 走，换 HOME 就是另一套工作区）。
+   The registry lives at `~/.loom/web-projects.json`, so it follows `$HOME` — a
+   different HOME is a completely separate workspace.
 
-2. **搬历史任务**：把旧机器上的 `<project>/.RUD/` 整个 rsync 过来，Loom 会自动扫出来。
+2. **Move historical tasks** — rsync the old `.RUD/` tree across and Loom picks
+   them up on its own:
    ```bash
    rsync -av --exclude 'work/' old-host:/path/repo/.RUD/ /home/admin/myrepo/.RUD/
    ```
-   - `.RUD/<slug>/task.json` 是任务元数据，`PLAN.md` 是正文，`task-order.json` 决定侧栏顺序。
-   - `work/` 是 git worktree，**不要** rsync，到新机器上重新创建（`+ Add worktree`）。
+   - `.RUD/<slug>/task.json` is the metadata, `PLAN.md` is the content, and
+     `task-order.json` controls sidebar order.
+   - `work/` holds git worktrees — **do not** copy them. Recreate them on the
+     new host with `+ Add worktree`.
 
-3. **新建任务**：界面 `Create Task`，或 `POST /api/tasks`，body 里给 `title` / `general_goal` / 可选 `skills_path`、`agent`、`kind`。
+3. **Create a task** — `Create Task` in the UI, or `POST /api/tasks` with
+   `title` / `general_goal` plus optional `skills_path`, `agent`, `kind`.
 
-4. 任务用完不要手删目录，用界面的 `Delete task`，否则 `task-order.json` 会留下孤儿条目。
+4. Delete tasks through the UI, not with `rm`, or `task-order.json` keeps
+   orphaned entries.
 
-## 8. 配置
+## 8. Configure
 
-- **Skills**：`~/loom/loom/skills/**.md` 会被自动扫成可选项（支持子目录，标签就是相对路径）。新增技能直接放 `.md` 文件即可，刷新页面就能选。
-- **模型**：Cursor 的候选来自 `agent --list-models`（约 200 个，界面按家族分组），Claude/Codex 的候选写死在 `rud_task.py`。列表缓存 15 分钟。
-- **共享凭证**：集群 kubeconfig / SSH key / VPN 统一放 `~/agent-resources/`，权限 `0700`，并用软链接接到 `~/.kube/config`、`~/.ssh/config` 等标准位置。
-- **通知**：需要 agent 停下来时提醒，加 `--openclaw --openclaw-url <hooks-url> --openclaw-token <token>`。
+- **Skills**: every `.md` under `~/loom/loom/skills/` is offered in the picker,
+  including subdirectories (the label is the relative path). Drop a new file in
+  and reload the page.
+- **Models**: the Cursor list comes from `agent --list-models` (~200 entries,
+  grouped by family in the UI) and is cached for 15 minutes; the Claude and
+  Codex lists are defined in `rud_task.py`.
+- **Shared credentials**: keep cluster kubeconfig, SSH keys and VPN config under
+  `~/agent-resources/` with mode `0700`, symlinked into the standard locations
+  (`~/.kube/config`, `~/.ssh/config`).
+- **Notifications**: to be pinged when an agent goes idle, add
+  `--openclaw --openclaw-url <hooks-url> --openclaw-token <token>`.
 
-## 9. 升级版本
+## 9. Upgrade
 
 ```bash
-# Loom（editable 安装，pull 即生效；改了 Python 需重启 web，改了前端刷新即可）
+# Loom: editable install, so a pull is enough. Python changes need a web
+# restart; frontend changes only need a browser reload.
 git -C ~/loom pull
 
-# Agent CLI：重跑各自的安装脚本即可，登录态会保留
+# Agent CLIs: re-run the installers; login state survives.
 curl -fsSL https://claude.ai/install.sh | bash
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
 curl https://cursor.com/install -fsS | bash
 ```
 
-重启 Loom web **不会**杀掉 agent：pane 活在 tmux 里，重启后重新 attach 就行。
+Restarting the Loom web server does **not** kill agents — the panes live in
+tmux and reattach afterwards.
 
 ```bash
-tmux attach -t loom      # Ctrl-C 停掉，再执行第 6 节的启动命令
-tmux ls                  # 所有 loom-* session 就是各任务的 agent pane
+tmux attach -t loom      # Ctrl-C to stop, then re-run the section 6 command
+tmux ls                  # every loom-* session is one task's agent pane
 ```
 
-## 10. 验收清单
+## 10. Verification checklist
 
 ```bash
 nproc && free -h && df -h /
@@ -202,8 +231,9 @@ curl -s -o /dev/null -w '%{http_code}\n' -u "x:$LOOM_TOKEN" http://127.0.0.1:876
 sudo systemctl is-active ssh fail2ban docker
 ```
 
-## 11. 红线
+## 11. Hard rules
 
-- token / 私钥 / kubeconfig 一律不进 Git、不进 PLAN.md、不进日志。
-- Loom 不做鉴权以外的防护，只能绑 127.0.0.1 + SSH 隧道。
-- 换公司/换账号时重建主机，只复用本文的安装步骤，不要搬旧机器的登录态和组织凭证。
+- Tokens, private keys and kubeconfigs never go into Git, PLAN.md or logs.
+- Loom has no protection beyond its auth token: bind 127.0.0.1 and tunnel in.
+- When changing accounts or employers, rebuild the host from these steps. Do not
+  carry over login state or an organisation's credentials.
