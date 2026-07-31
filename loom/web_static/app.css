@@ -149,13 +149,6 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
 .sidebar__heading-row .sidebar__heading { margin: 0; }
 .sidebar__hint { color: var(--text-dim); font-size: 0.82rem; margin: -4px 0 8px; }
 
-.tmux-list { list-style: none; margin: 0; padding: 0; font-size: 0.85rem; max-height: 220px; overflow-y: auto; }
-.tmux-list li {
-  padding: 8px 10px; border-radius: 10px; border: 1px solid transparent;
-  margin-bottom: 4px; background: rgba(255, 255, 255, 0.72); cursor: default;
-}
-.tmux-list li.attached { border-color: rgba(79, 70, 229, 0.28); background: var(--accent-soft); }
-.tmux-list code { font-size: 0.8rem; word-break: break-all; }
 
 .task-list { list-style: none; margin: 0; padding: 0; }
 .task-list li {
@@ -452,45 +445,10 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
 }
 .tab-panel__hint { color: var(--text-dim); font-size: 0.85rem; margin: 0 0 10px 0; }
 
-.editor, .pre-panel {
-  width: 100%; min-height: 220px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+.editor {
+  width: 100%; min-height: 460px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
   font-family: var(--font-mono); font-size: 0.82rem; line-height: 1.45; background: var(--bg-elev-1); color: var(--text);
-}
-.editor { min-height: 460px; resize: vertical; }
-.pre-panel { white-space: pre-wrap; overflow: auto; max-height: 420px; margin: 0; background: #fbfaf7; }
-.pre-panel--interview {
-  max-height: 64vh;
-  min-height: 560px;
-  background: linear-gradient(180deg, #fffaf3 0%, #fbf2e3 100%);
-  border: 0;
-  border-radius: 0;
-  color: #4a4036;
-  caret-color: #d97706;
-  white-space: pre;
-  overflow: auto;
-  font-size: 0.82rem;
-  line-height: 1.4;
-  outline: none;
-  cursor: text;
-}
-.pre-panel--interview::selection { background: rgba(245, 158, 11, 0.28); color: #2b2620; }
-.pre-panel--interview.is-live { box-shadow: inset 0 0 0 2px rgba(217, 119, 6, 0.45); }
-
-/* Real-terminal interaction: a hidden textarea overlay captures keys + IME. */
-.term-screen { position: relative; cursor: text; }
-.term-keyboard {
-  position: absolute; left: 0; right: 0; bottom: 0;
-  height: 2.2em; margin: 0; padding: 2px 12px;
-  border: 0; outline: none; resize: none; overflow: hidden;
-  font-family: var(--font-mono); font-size: 0.82rem; line-height: 1.4;
-  background: transparent; color: transparent; caret-color: transparent;
-  white-space: pre; pointer-events: none;
-}
-.term-keyboard.is-composing {
-  /* While composing (e.g. Chinese IME) show the in-progress text in a bottom bar. */
-  color: #4a4036; caret-color: #d97706;
-  background: #fffaf0; border-top: 1px solid #efe4d2;
-  box-shadow: 0 -6px 14px rgba(120, 90, 40, 0.10);
+  resize: vertical;
 }
 
 /* xterm.js host (real terminal) */
@@ -747,37 +705,6 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
   .term-compose__send-label { display: none; }
   .term-compose__send { padding: 0 13px; }
 }
-.pre-panel--pane {
-  max-height: 72vh;
-  min-height: 640px;
-  background:
-    radial-gradient(circle at top left, rgba(99, 102, 241, 0.18), transparent 28%),
-    linear-gradient(180deg, #111827 0%, var(--terminal-bg) 100%);
-  border-color: var(--terminal-border);
-  color: var(--terminal-fg);
-  font-size: 0.82rem;
-  line-height: 1.38;
-  white-space: pre;
-  overflow: auto;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-}
-.pre-panel--log {
-  margin-top: 0;
-  width: 100%;
-  max-width: none;
-  max-height: 74vh;
-  min-height: 620px;
-  background: var(--terminal-bg);
-  color: var(--terminal-fg);
-  border: 0;
-  border-radius: 0;
-  white-space: pre;
-  overflow: auto;
-  font-size: 0.84rem;
-  line-height: 1.45;
-  tab-size: 2;
-}
-
 .editor__actions { margin-top: 10px; display: flex; align-items: center; gap: 12px; }
 
 .markdown-workbench {
@@ -1005,10 +932,6 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
   background: #34d399;
   box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.18);
 }
-.terminal-card .pre-panel--pane {
-  border: 0;
-  border-radius: 0;
-}
 .terminal-card .pane-input {
   width: calc(100% - 24px);
   margin: 12px;
@@ -1035,7 +958,7 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
 }
 
 /* File picker bar above the embedded read-only markdown viewer.
-   Matches the warm pill aesthetic of .tab-action-row so the select sits
+   Matches the warm pill aesthetic of .agent-bar so the select sits
    on the cream paper background instead of looking like a dropped-in
    dark widget. */
 .interview-md-bar {
@@ -1308,25 +1231,6 @@ input[type="text"], input[type="number"], textarea, select {
 label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-dim); }
 
 .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 10px; }
-.task-actions,
-.tab-action-row {
-  margin: 0 0 10px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  white-space: nowrap;
-}
-.task-actions .btn,
-.task-actions .tab-panel__hint,
-.tab-action-row .btn,
-.tab-action-row .tab-panel__hint { flex: 0 0 auto; margin: 0; }
-.action-hint { color: var(--text-dim); font-size: 0.85rem; white-space: pre-line; }
 /* One control bar for the agent tab. The workflow prose that used to sit above
    it lives in the "?" disclosure, so the terminal starts near the top of the
    panel instead of below three stacked strips. */
@@ -1498,157 +1402,6 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   height: 34px;
 }
 
-.worker-controls {
-  display: grid;
-  grid-template-columns: minmax(110px, 0.55fr) minmax(260px, 1.4fr) minmax(110px, 0.55fr);
-  gap: 12px;
-  align-items: end;
-  padding: 14px;
-  border: 1px solid rgba(214, 209, 195, 0.9);
-  border-radius: 18px;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,247,243,0.9));
-  box-shadow: var(--shadow-md);
-}
-.worker-field { margin: 0; min-width: 0; }
-.worker-field select,
-.worker-field input { margin-top: 4px; height: 36px; }
-.worker-buttons {
-  grid-column: 1 / -1;
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  justify-content: flex-start;
-  flex-wrap: wrap;
-  padding-top: 2px;
-}
-.worker-buttons .btn { white-space: nowrap; }
-.worker-status-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 12px;
-  padding: 13px 14px;
-  border: 1px solid rgba(214, 209, 195, 0.9);
-  border-radius: 18px;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(244, 242, 236, 0.82));
-  box-shadow: var(--shadow-sm);
-}
-.worker-status-card[data-worker-phase="complete"] {
-  border-color: rgba(16, 185, 129, 0.35);
-  background: linear-gradient(135deg, rgba(236, 253, 245, 0.95), rgba(244, 242, 236, 0.88));
-}
-.worker-status-card__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.worker-status-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-.worker-status-bar__label {
-  color: var(--text-faint);
-  font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-.worker-status-badge {
-  display: inline-block;
-  margin: 0;
-  padding: 6px 14px;
-  border-radius: 999px;
-  font-size: 0.95rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  line-height: 1.25;
-  border: 1px solid var(--border);
-  background: var(--bg-elev-2);
-  color: var(--text);
-}
-.worker-status-badge--idle { color: var(--text-dim); }
-.worker-status-badge--running {
-  border-color: rgba(99, 102, 241, 0.45);
-  background: rgba(238, 242, 255, 0.95);
-  color: #4338ca;
-}
-.worker-status-badge--complete {
-  border-color: rgba(16, 185, 129, 0.45);
-  background: rgba(209, 250, 229, 0.85);
-  color: #047857;
-}
-.worker-status-badge--failed,
-.worker-status-badge--error {
-  border-color: rgba(244, 63, 94, 0.4);
-  background: rgba(255, 241, 242, 0.92);
-  color: #be123c;
-}
-.worker-status-badge--paused {
-  border-color: rgba(245, 158, 11, 0.45);
-  background: rgba(254, 243, 199, 0.85);
-  color: #b45309;
-}
-.worker-status-badge--stopped {
-  border-color: rgba(148, 163, 184, 0.55);
-  background: rgba(241, 245, 249, 0.9);
-  color: #475569;
-}
-.worker-status-card__round {
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: 0.86rem;
-  white-space: nowrap;
-}
-.worker-status-card__meta {
-  margin: 0;
-  min-width: 0;
-  color: var(--text-dim);
-  font-size: 0.86rem;
-  line-height: 1.45;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.worker-progress {
-  height: 10px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #e7e3d8;
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
-}
-.worker-progress__bar {
-  width: 0%;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #6366f1, #14b8a6);
-  transition: width 0.25s ease, background 0.25s ease;
-}
-.worker-progress__bar--done {
-  background: linear-gradient(90deg, #059669, #34d399);
-}
-.worker-progress__bar--bad {
-  background: linear-gradient(90deg, #e11d48, #fb7185);
-}
-.worker-progress.worker-progress--done {
-  background: rgba(16, 185, 129, 0.18);
-}
-.worker-progress.worker-progress--bad {
-  background: rgba(251, 113, 133, 0.16);
-}
-@media (max-width: 1200px) {
-  .worker-controls { grid-template-columns: minmax(100px, 0.6fr) minmax(220px, 1.3fr) minmax(100px, 0.6fr); }
-  .worker-status-card__head { align-items: flex-start; }
-}
-@media (max-width: 760px) {
-  .worker-controls { grid-template-columns: 1fr; }
-  .worker-buttons .btn { flex: 1 1 160px; }
-}
 
 .status-ok { color: var(--good); }
 .status-bad { color: var(--bad); }
@@ -1737,34 +1490,6 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
 }
 #add-project-repo-row { margin-bottom: 4px; }
 #add-project-path-hint { margin: 6px 0 0; }
-.worktree-select-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.worktree-select-group {
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.58);
-}
-.worktree-select-group h3 {
-  margin: 0 0 8px;
-  font-family: var(--font-mono);
-  font-size: 0.85rem;
-  word-break: break-all;
-}
-.worktree-select-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 7px 0;
-  color: var(--text);
-  font-size: 0.86rem;
-  line-height: 1.35;
-}
-.worktree-select-row input { margin-top: 2px; }
-.worktree-select-row span { word-break: break-all; }
 .modal-card__body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 18px 20px 8px; }
 .modal-card__footer {
   flex: 0 0 auto;
@@ -2052,50 +1777,7 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   flex-direction: column;
   gap: 6px;
 }
-.wt-list-row {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 8px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-elev-1);
-  font-size: 0.82rem;
-}
-.wt-list-row--primary {
-  border-color: rgba(99, 102, 241, 0.45);
-  background: linear-gradient(180deg, rgba(238, 242, 255, 0.5), var(--bg-elev-1));
-}
-.wt-list-row__main {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 10px;
-  flex-wrap: nowrap;
-}
-.wt-list-row__path {
-  font-size: 0.8rem;
-  background: var(--bg-elev-2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 2px 8px;
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: min(720px, 100%);
-  overflow: hidden;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.wt-list-row__branch {
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: 0.74rem;
-}
-.wt-list-row__pill {
+
   flex: 0 0 auto;
   font-size: 0.62rem;
   font-weight: 700;
@@ -2135,27 +1817,6 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   color: #be123c;
   background: rgba(244, 63, 94, 0.15);
   border-color: rgba(244, 63, 94, 0.45);
-}
-.wt-list-row__push {
-  flex: 0 0 auto;
-  height: 26px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border-strong);
-  background: var(--bg-elev-1);
-  color: var(--text);
-  font: inherit;
-  font-size: 0.78rem;
-  cursor: pointer;
-}
-.wt-list-row__push:hover:not(:disabled) {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.wt-list-row__push:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 .claude-info__wt-actions {
   flex: 0 0 auto;
@@ -2557,7 +2218,6 @@ textarea.editable__input {
   }
   body.sidebar-open .sidebar { transform: translateX(0); }
   body.sidebar-open .sidebar-backdrop { display: block; }
-  .tmux-list { max-height: 180px; }
 
   .main { padding: 0 12px 24px; }
   .task-view__header,
@@ -2617,31 +2277,13 @@ textarea.editable__input {
   .key__label { font-size: 0.82rem; }
 
   .terminal-card { border-radius: 14px; box-shadow: 0 10px 22px rgba(15, 23, 42, 0.10); }
-  .pre-panel { font-size: 0.78rem; }
-  .pre-panel--pane { max-height: 56vh; min-height: 320px; }
-  .pre-panel--interview { max-height: 52vh; min-height: 320px; }
-  .pre-panel--log { max-height: 56vh; min-height: 320px; }
 
-
-  .tab-action-row,
-  .task-actions,
   .agent-bar {
     border-radius: 16px;
     padding: 8px 10px;
   }
-  .tab-action-row .btn,
-  .task-actions .btn,
   .agent-bar .btn { min-height: 40px; padding: 8px 14px; }
-  .action-hint { display: none; }
   .agent-bar__sep { display: none; }
-
-  .worker-controls { grid-template-columns: 1fr; padding: 12px; border-radius: 16px; }
-  .worker-buttons { justify-content: flex-start; flex-wrap: wrap; gap: 6px; }
-  .worker-buttons .btn { min-height: 40px; flex: 1 1 auto; }
-  .worker-status-card { padding: 12px; border-radius: 16px; }
-  .worker-status-card__head { flex-direction: column; align-items: flex-start; gap: 4px; }
-  .worker-status-card__round { font-size: 0.8rem; }
-  .worker-status-badge { font-size: 0.88rem; padding: 5px 12px; }
 
   .modal-backdrop { padding: 12px; }
   .modal-card { max-height: calc(100vh - 24px); border-radius: 18px; }
@@ -2697,9 +2339,6 @@ textarea.editable__input {
   .claude-info__wt-actions .btn { flex: 1 1 auto; }
 
   /* Worktree + session rows wrap instead of overflowing. */
-  .wt-list-row { flex-wrap: wrap; gap: 6px; }
-  .wt-list-row__main { flex-wrap: wrap; gap: 6px; width: 100%; }
-  .wt-list-row__path { max-width: 100%; flex: 1 1 100%; }
   .wt-picker, .session-picker { flex-wrap: wrap; }
   .wt-select, .session-select { flex: 1 1 100%; }
   .wt-picker__push, .session-picker__resume { flex: 1 1 auto; }
@@ -2707,7 +2346,6 @@ textarea.editable__input {
      rather than run off the side of the phone. */
   .wt-picker__status { flex: 1 1 auto; min-width: 0; }
   .wt-picker__status .wt-status { white-space: normal; }
-  .wt-list-row__push { margin-left: auto; }
   .claude-session { flex-wrap: wrap; gap: 6px 8px; }
   .claude-session__meta { flex: 1 1 100%; }
 }
@@ -2728,7 +2366,6 @@ textarea.editable__input {
   .btn--sm { min-height: 36px; padding: 6px 12px; font-size: 0.86rem; }
   .icon-btn { width: 40px; height: 40px; }
   .task-list li { padding: 12px; }
-  .tmux-list li { padding: 10px 12px; }
   .tab { min-height: 40px; }
   .project-toggle__rm { min-width: 28px; height: 28px; }
 }

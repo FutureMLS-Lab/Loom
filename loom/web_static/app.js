@@ -420,7 +420,6 @@ async function switchProject(id) {
   await loadProject();
   await loadTasks();
   await restoreSelectedTaskForProject();
-  await loadTmuxSessions();
 }
 
 async function removeProject(id) {
@@ -432,7 +431,6 @@ async function removeProject(id) {
     await loadProject();
     await loadTasks();
     await restoreSelectedTaskForProject();
-    await loadTmuxSessions();
   } catch (e) {
     toast(e.message, { type: 'error' });
   }
@@ -565,7 +563,6 @@ async function submitAddProject() {
     await loadProjectsList();
     await loadProject();
     await loadTasks();
-    await loadTmuxSessions();
   } catch (e) {
     status.textContent = e.message;
   } finally {
@@ -670,10 +667,6 @@ function applySkillsSelection(sel, joined) {
   for (const opt of sel.options) opt.selected = wanted.has(opt.value);
 }
 
-function skillsDisplayLabel(joined) {
-  const parts = splitSkillsValue(joined).map((p) => p.split('/').pop());
-  return parts.length ? parts.join(' + ') : '—';
-}
 
 // Chip labels drop the directory and the .md suffix ("aris/ARIS.md" -> "ARIS"),
 // widening to the parent directory only as far as needed to tell two
@@ -762,32 +755,6 @@ function renderSkillsPicker() {
   renderSkillChips(sel);
 }
 
-async function loadTmuxSessions() {
-  const ul = $('#tmux-sessions');
-  if (!ul) return;
-  ul.innerHTML = '';
-  try {
-    if (!STATE.projectId) {
-      ul.innerHTML = '<li class="task-list__empty">Select a project to list loom tmux sessions for that root.</li>';
-      return;
-    }
-    const q = `?project=${encodeURIComponent(STATE.projectId)}`;
-    const d = await apiNoProject(`/api/tmux/sessions${q}`);
-    const list = d.sessions || [];
-    if (!list.length) {
-      ul.innerHTML = '<li class="task-list__empty">No loom tmux sessions for this project (or tmux not installed).</li>';
-      return;
-    }
-    for (const s of list) {
-      const li = document.createElement('li');
-      if (s.attached === '1') li.classList.add('attached');
-      li.innerHTML = `<strong>${escapeHtml(s.name)}</strong>${s.attached === '1' ? ' <span class="status-ok">attached</span>' : ''}`;
-      ul.appendChild(li);
-    }
-  } catch (e) {
-    ul.innerHTML = `<li class="status-bad">${escapeHtml(e.message)}</li>`;
-  }
-}
 
 // ===== Markdown rendering =====
 
@@ -1428,8 +1395,6 @@ function clearTaskSelection() {
   restorePaneDraftForTask(null);
   $('#task-view').hidden = true;
   $('#task-empty').hidden = false;
-  const hdr = document.getElementById('hdr-skills');
-  if (hdr) hdr.textContent = STATE.skillsPath || '—';
   renderTaskSkillsPicker({});
 }
 
@@ -1677,8 +1642,6 @@ function renderTaskSkillsPicker(meta = STATE.currentMeta || {}) {
   sel.disabled = !STATE.slug || sel.options.length === 0;
   applySkillsSelection(sel, current);
   renderSkillChips(sel);
-  const hdr = document.getElementById('hdr-skills');
-  if (hdr && current) { hdr.textContent = skillsDisplayLabel(current); hdr.title = current; }
   if (!sel.dataset.bound) {
     sel.dataset.bound = '1';
     sel.addEventListener('change', onTaskSkillsChange);
@@ -1745,16 +1708,12 @@ function paneDraftKey(slug = STATE.slug) {
 function savePaneDraftForTask(slug = STATE.slug) {
   const key = paneDraftKey(slug);
   if (!key) return;
-  const input = document.getElementById('interview-in');
-  if (input) STATE.paneDrafts[key] = input.value;
   const compose = document.getElementById('term-compose-input');
   if (compose) STATE.composeDrafts[key] = compose.value;
 }
 
 function restorePaneDraftForTask(slug = STATE.slug) {
   const key = paneDraftKey(slug);
-  const input = document.getElementById('interview-in');
-  if (input) input.value = key ? (STATE.paneDrafts[key] || '') : '';
   const compose = document.getElementById('term-compose-input');
   if (compose) {
     compose.value = key ? (STATE.composeDrafts[key] || '') : '';
@@ -1786,7 +1745,6 @@ async function deleteSelectedTask() {
     await api('/api/tasks/' + encodeURIComponent(slug), { method: 'DELETE' });
     clearTaskSelection();
     await loadTasks();
-    await loadTmuxSessions();
   } catch (e) {
     toast(e.message, { type: 'error' });
   } finally {
@@ -1850,7 +1808,7 @@ function setTmuxOutputText(text) {
 function scrollTmuxOutputToBottom() { /* xterm.js auto-scrolls on write */ }
 
 function revealInterviewTerminal(block = 'center') {
-  const card = document.querySelector('.terminal-card--interview') || document.getElementById('interview-out');
+  const card = document.querySelector('.terminal-card--interview');
   if (!card) return;
   requestAnimationFrame(() => {
     card.scrollIntoView({ block, inline: 'nearest', behavior: 'smooth' });
@@ -2755,7 +2713,6 @@ async function startInterviewPane() {
     body: '{}',
   });
   $('#inp-interview-target').value = r.target || '';
-  $('#interview-target-label').textContent = r.target || 'Not started';
   await refreshInterviewPreview(true, 'top');
   revealInterviewTerminal();
   setTimeout(() => {
@@ -4856,8 +4813,6 @@ async function stopClaudePane() {
     });
     const tgt = $('#inp-interview-target');
     if (tgt) tgt.value = '';
-    const lbl = $('#interview-target-label');
-    if (lbl) lbl.textContent = 'Not started';
     disconnectTerminal();
     setTmuxOutputText(`Closed ${r.tmux_session || ''}\n${r.tmux_message || ''}`.trim());
     refreshInterviewPreview(true);
@@ -4923,7 +4878,6 @@ document.getElementById('btn-new-task').addEventListener('click', async () => {
   try {
     await loadProjectsList();
     await loadProject();
-    await loadTmuxSessions();
     await loadTasks();
     await restoreSelectedTaskForProject();
   } catch (e) {
