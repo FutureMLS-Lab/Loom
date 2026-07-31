@@ -1567,18 +1567,19 @@ function applyAgentLabels(meta) {
 
 function renderTaskModelPicker(meta = STATE.currentMeta || {}) {
   const input = document.getElementById('claude-info-model');
-  const list = document.getElementById('task-model-list');
-  if (!input || !list) return;
+  const select = document.getElementById('claude-info-model-select');
+  if (!input || !select) return;
   const agent = normalizeAgent(meta.agent);
   populateModelPicker(
     input,
-    list,
+    select,
     agent,
     String(meta.interview_model || '').trim()
       || (STATE.modelDefaults && STATE.modelDefaults[agent])
       || '',
   );
   input.disabled = !STATE.slug;
+  select.disabled = !STATE.slug;
   if (!input.dataset.bound) {
     input.dataset.bound = '1';
     input.addEventListener('change', onTaskModelChange);
@@ -2853,19 +2854,99 @@ function effectiveCreateAgent() {
   return 'cursor';
 }
 
-function populateModelPicker(input, list, agent, value) {
-  if (!input || !list) return;
+// Cursor advertises ~200 model ids, so group them by family; a flat list is
+// unreadable and a datalist hides it behind typing.
+const MODEL_FAMILIES = [
+  [/^gpt-[\d.]+-codex/, 'Codex'],
+  [/^(gpt|o\d)/, 'GPT'],
+  [/^claude|^opus|^sonnet|^haiku|^fable/, 'Claude'],
+  [/grok/, 'Grok'],
+  [/^gemini/, 'Gemini'],
+  [/^composer/, 'Composer'],
+  [/^kimi/, 'Kimi'],
+  [/^glm/, 'GLM'],
+  [/^deepseek/, 'DeepSeek'],
+];
+const MODEL_CUSTOM = '\u0000custom';
+
+function modelFamily(id) {
+  if (id === 'auto') return 'Auto';
+  for (const [pattern, name] of MODEL_FAMILIES) if (pattern.test(id)) return name;
+  return 'Other';
+}
+
+// The <select> is the visible control; `input` stays as the value holder that
+// every existing read/save path already uses, revealed only to type an id the
+// CLI doesn't advertise.
+function populateModelPicker(input, select, agent, value) {
+  if (!input || !select) return;
   agent = normalizeAgent(agent);
-  const options = (STATE.modelOptions && STATE.modelOptions[agent]) || [];
-  list.innerHTML = options.map((m) => `<option value="${escapeHtml(m)}"></option>`).join('');
-  input.placeholder = agent === 'cursor'
-    ? 'auto, gpt-5.6-sol-xhigh, claude-fable-5-thinking-xhigh…'
-    : (agent === 'codex'
-      ? 'e.g. gpt-5.5 (or leave blank for Codex config)'
-      : 'e.g. claude-fable-5');
-  input.value = value != null
-    ? value
-    : ((STATE.modelDefaults && STATE.modelDefaults[agent]) || '');
+  const options = ((STATE.modelOptions && STATE.modelOptions[agent]) || [])
+    .map((m) => (typeof m === 'string' ? { id: m, label: '' } : m))
+    .filter((m) => m && m.id);
+  const current = String(
+    value != null ? value : ((STATE.modelDefaults && STATE.modelDefaults[agent]) || ''),
+  ).trim();
+  input.value = current;
+  input.placeholder = agent === 'codex'
+    ? 'e.g. gpt-5.5 (or blank for Codex config)'
+    : 'Model id';
+
+  const families = new Map();
+  for (const m of options) {
+    const family = modelFamily(m.id);
+    if (!families.has(family)) families.set(family, []);
+    families.get(family).push(m);
+  }
+  const option = (id, label) => {
+    const el = document.createElement('option');
+    el.value = id;
+    el.textContent = label ? `${id} — ${label}` : id;
+    el.title = label || id;
+    return el;
+  };
+  select.innerHTML = '';
+  // A task can hold a model the CLI no longer lists; keep it selectable so
+  // opening the picker never silently rewrites it.
+  if (current && !options.some((m) => m.id === current)) {
+    const group = document.createElement('optgroup');
+    group.label = 'Current';
+    group.appendChild(option(current, ''));
+    select.appendChild(group);
+  }
+  for (const [name, list] of families) {
+    const group = document.createElement('optgroup');
+    group.label = name;
+    for (const m of list) group.appendChild(option(m.id, m.label));
+    select.appendChild(group);
+  }
+  const custom = document.createElement('option');
+  custom.value = MODEL_CUSTOM;
+  custom.textContent = 'Custom id…';
+  select.appendChild(custom);
+  select.value = current;
+  input.hidden = true;
+
+  if (!select.dataset.bound) {
+    select.dataset.bound = '1';
+    select.addEventListener('change', () => {
+      if (select.value === MODEL_CUSTOM) {
+        input.hidden = false;
+        input.focus();
+        input.select();
+        return;
+      }
+      input.hidden = true;
+      input.value = select.value;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    input.addEventListener('input', () => {
+      // Keep the select in step while a custom id is typed.
+      select.value = [...select.options].some((o) => o.value === input.value)
+        ? input.value
+        : MODEL_CUSTOM;
+    });
+  }
 }
 
 function updateCreateAgentHint(resetModel = false) {
@@ -2874,10 +2955,10 @@ function updateCreateAgentHint(resetModel = false) {
   if (!sel || !hint) return;
   hint.textContent = AGENT_HINTS[sel.value] || '';
   const input = document.getElementById('new-model');
-  const list = document.getElementById('new-model-list');
+  const select = document.getElementById('new-model-select');
   populateModelPicker(
     input,
-    list,
+    select,
     effectiveCreateAgent(),
     resetModel ? null : (input?.value || null),
   );

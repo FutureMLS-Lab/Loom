@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -72,32 +73,49 @@ CODEX_MODEL_OPTIONS = (
     "gpt-5.5",
     "gpt-5.4",
 )
-_CURSOR_MODEL_OPTIONS: tuple[str, ...] | None = None
+_CURSOR_MODEL_OPTIONS: tuple[dict[str, str], ...] | None = None
+_CURSOR_MODEL_OPTIONS_AT = 0.0
+# The CLI's catalogue changes when Cursor ships models, so don't cache it for
+# the whole lifetime of a long-running server.
+_CURSOR_MODEL_TTL_SECONDS = 900.0
+
+_CURSOR_FALLBACK_MODELS = (
+    CURSOR_DEFAULT_MODEL,
+    "auto",
+    "gpt-5.6-sol-xhigh",
+    "claude-fable-5-thinking-xhigh",
+    "claude-opus-4-8-thinking-high",
+    "composer-2.5",
+)
 
 
-def _cursor_model_options() -> tuple[str, ...]:
+def _cursor_model_options() -> tuple[dict[str, str], ...]:
     """Models advertised by the installed Cursor Agent CLI (cached).
 
+    Each entry carries the id to pass to ``--model`` and the CLI's own display
+    name, which is what makes a ~200 entry list navigable in the web picker.
     Keep a short fallback so task creation still works when the CLI is absent
     or temporarily unable to query the account.
     """
-    global _CURSOR_MODEL_OPTIONS
-    if _CURSOR_MODEL_OPTIONS is not None:
+    global _CURSOR_MODEL_OPTIONS, _CURSOR_MODEL_OPTIONS_AT
+    now = time.monotonic()
+    if _CURSOR_MODEL_OPTIONS is not None and now - _CURSOR_MODEL_OPTIONS_AT < _CURSOR_MODEL_TTL_SECONDS:
         return _CURSOR_MODEL_OPTIONS
-    fallback = (
-        CURSOR_DEFAULT_MODEL,
-        "auto",
-        "gpt-5.6-sol-xhigh",
-        "claude-fable-5-thinking-xhigh",
-        "claude-opus-4-8-thinking-high",
-        "composer-2.5",
-    )
+
+    def remember(models: tuple[dict[str, str], ...]) -> tuple[dict[str, str], ...]:
+        global _CURSOR_MODEL_OPTIONS, _CURSOR_MODEL_OPTIONS_AT
+        if not any(m["id"] == CURSOR_DEFAULT_MODEL for m in models):
+            models = ({"id": CURSOR_DEFAULT_MODEL, "label": ""}, *models)
+        _CURSOR_MODEL_OPTIONS = models
+        _CURSOR_MODEL_OPTIONS_AT = now
+        return models
+
+    fallback = tuple({"id": m, "label": ""} for m in _CURSOR_FALLBACK_MODELS)
     import shutil
 
     binary = shutil.which("agent") or shutil.which("cursor-agent")
     if not binary:
-        _CURSOR_MODEL_OPTIONS = fallback
-        return fallback
+        return remember(fallback)
     try:
         proc = subprocess.run(
             [binary, "--list-models"],
@@ -106,20 +124,13 @@ def _cursor_model_options() -> tuple[str, ...]:
             timeout=15,
         )
     except (OSError, subprocess.TimeoutExpired):
-        _CURSOR_MODEL_OPTIONS = fallback
-        return fallback
-    models: list[str] = []
+        return remember(fallback)
+    models: list[dict[str, str]] = []
     for line in (proc.stdout or "").splitlines():
-        match = re.match(r"^(\S+)\s+-\s+.+$", line.strip())
+        match = re.match(r"^(\S+)\s+-\s+(.+)$", line.strip())
         if match:
-            models.append(match.group(1))
-    advertised = tuple(models) if models else fallback
-    _CURSOR_MODEL_OPTIONS = (
-        advertised
-        if CURSOR_DEFAULT_MODEL in advertised
-        else (CURSOR_DEFAULT_MODEL, *advertised)
-    )
-    return _CURSOR_MODEL_OPTIONS
+            models.append({"id": match.group(1), "label": match.group(2).strip()})
+    return remember(tuple(models) if models else fallback)
 
 
 def normalize_agent(name: str | None) -> str:
@@ -208,12 +219,13 @@ def ensure_cursor_default_model_config(home: Path | None = None) -> tuple[bool, 
     return True, ""
 
 
-def agent_model_options(name: str) -> tuple[str, ...]:
-    return {
-        AGENT_CURSOR: _cursor_model_options(),
-        AGENT_CLAUDE: CLAUDE_MODEL_OPTIONS,
-        AGENT_CODEX: CODEX_MODEL_OPTIONS,
-    }.get(normalize_agent(name), _cursor_model_options())
+def agent_model_options(name: str) -> tuple[dict[str, str], ...]:
+    """Selectable models as ``{"id", "label"}``; label may be empty."""
+    agent = normalize_agent(name)
+    if agent == AGENT_CURSOR:
+        return _cursor_model_options()
+    ids = CLAUDE_MODEL_OPTIONS if agent == AGENT_CLAUDE else CODEX_MODEL_OPTIONS
+    return tuple({"id": i, "label": ""} for i in ids)
 
 
 # Model strings that were a previous global default and are not selectable via

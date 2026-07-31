@@ -1953,10 +1953,12 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   .skill-chip.is-refused { animation: none; box-shadow: 0 0 0 3px rgba(190, 18, 60, 0.18); }
 }
 
-.claude-info__model {
+.claude-info__model,
+.claude-info__row .model-select {
   flex: 1 1 auto;
   min-width: 190px;
   max-width: 360px;
+  min-height: 28px;
   font: inherit;
   font-size: 0.8rem;
   padding: 4px 9px;
@@ -1965,6 +1967,8 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   background: var(--bg-elev-1);
   color: var(--text);
 }
+/* Shown only when "Custom id…" is picked, so it sits beside the select. */
+.claude-info__row .model-custom { flex: 1 1 100%; max-width: none; }
 
 #claude-info-agent-hint {
   display: none;

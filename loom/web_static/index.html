@@ -102,8 +102,8 @@
             </div>
             <div class="claude-info__row">
               <span class="claude-info__label">Model</span>
-              <input id="claude-info-model" class="claude-info__model" list="task-model-list" />
-              <datalist id="task-model-list"></datalist>
+              <select id="claude-info-model-select" class="model-select" aria-label="Model"></select>
+              <input id="claude-info-model" class="claude-info__model model-custom" placeholder="Model id" hidden />
               <span class="claude-info__hint" id="claude-info-model-hint">used on next start</span>
             </div>
             <div class="claude-info__row claude-info__row--skills">
@@ -333,10 +333,10 @@
           <option value="aris">ARIS — autonomous research loop</option>
         </select>
         <p class="create-agent-hint" id="new-agent-hint"></p>
-        <label for="new-model">Model</label>
-        <input id="new-model" class="modal-input-wide" list="new-model-list" placeholder="Type or choose a model" />
-        <datalist id="new-model-list"></datalist>
-        <p class="skills-note">Suggestions reflect the selected agent; custom model names are accepted.</p>
+        <label for="new-model-select">Model</label>
+        <select id="new-model-select" class="modal-input-wide model-select"></select>
+        <input id="new-model" class="modal-input-wide model-custom" placeholder="Type a model id" hidden />
+        <p class="skills-note">Grouped by family for the selected agent. Pick <em>Custom id…</em> to type one that isn't listed.</p>
         <label for="new-goal">General goal</label>
         <textarea id="new-goal" rows="4" placeholder="Describe the outcome. The deep interview will ask follow-up questions."></textarea>
       </div>
