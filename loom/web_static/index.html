@@ -82,17 +82,13 @@
         <section class="tab-panel active" data-panel="claude" role="tabpanel">
           <input type="hidden" id="inp-interview-target" />
           <div class="agent-bar" aria-label="Agent controls">
-            <button type="button" class="btn btn--primary" id="btn-interview-start">Start Agent</button>
+            <button type="button" class="btn btn--primary" id="btn-interview-start" title="Launch the agent in a tmux pane — it keeps running even if you close the browser">Start Agent</button>
             <button type="button" class="btn btn--danger" id="btn-interview-stop">Stop Claude</button>
             <span class="agent-bar__sep" aria-hidden="true"></span>
             <span class="agent-bar__label">Prompts</span>
             <button type="button" class="btn btn--sm" id="btn-interview-paste" title="Paste the deep-interview prompt (general goal + skills) into the agent pane">Start Deep Interview</button>
             <button type="button" class="btn btn--sm" id="btn-run-goal" title="Paste /goal, which runs the agent against PLAN.md">Run /goal</button>
             <button type="button" class="btn btn--sm" id="btn-write-result" title="Paste the prompt that writes progress and results back into PLAN.md">Write result</button>
-            <details class="agent-bar__help">
-              <summary aria-label="How the Loom loop works">?</summary>
-              <p>Loom loop: start from the general goal, interview into <code>PLAN.md</code>, run <code>/goal</code> against it, then write progress and results back into <code>PLAN.md</code>. Each prompt button pastes into the active agent pane — run any of them, anytime. The tmux pane keeps running even if you close the browser.</p>
-            </details>
           </div>
           <div class="pane-card claude-info" id="claude-info-card">
             <div class="claude-info__row">

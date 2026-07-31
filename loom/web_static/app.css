@@ -1231,11 +1231,10 @@ input[type="text"], input[type="number"], textarea, select {
 label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-dim); }
 
 .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 10px; }
-/* One control bar for the agent tab. The workflow prose that used to sit above
-   it lives in the "?" disclosure, so the terminal starts near the top of the
-   panel instead of below three stacked strips. */
+/* One control bar for the agent tab, so the terminal starts near the top of
+   the panel instead of below three stacked strips. What each button does
+   lives in its tooltip rather than in on-screen prose. */
 .agent-bar {
-  position: relative;
   margin: 0 0 12px;
   padding: 8px 10px;
   border: 1px solid var(--border);
@@ -1258,42 +1257,6 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   align-self: stretch;
   margin: 2px 4px;
   background: var(--border-strong);
-}
-.agent-bar__help { margin-left: auto; }
-.agent-bar__help summary {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
-  border: 1px solid var(--border-strong);
-  background: var(--bg-elev-1);
-  color: var(--text-faint);
-  font-size: 0.76rem;
-  font-weight: 800;
-  cursor: pointer;
-  list-style: none;
-  transition: color 0.12s, border-color 0.12s, background 0.12s;
-}
-.agent-bar__help summary::-webkit-details-marker { display: none; }
-.agent-bar__help summary:hover,
-.agent-bar__help[open] summary { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
-/* Absolute so opening the note never reflows the bar or shifts the terminal. */
-.agent-bar__help p {
-  position: absolute;
-  right: 8px;
-  top: calc(100% - 2px);
-  z-index: 12;
-  width: min(420px, calc(100vw - 48px));
-  margin: 0;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--bg-elev-1);
-  box-shadow: var(--shadow-md);
-  color: var(--text-dim);
-  font-size: 0.84rem;
-  line-height: 1.5;
 }
 
 /* ===== Changes (read-only git diff) tab ===== */
