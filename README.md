@@ -80,7 +80,7 @@ When you're happy, **Push** the worktree or **Merge ↩** it from the Changes ta
    `~/.loom/web-projects.json`; nothing is written outside the path.
 
 2. **Create a task.** **Create Task** asks for a **type** (Claude, Codex, Kernel
-   Lab, or ARIS), a **title** (becomes the slug), and a **general goal**. Loom
+   Lab, or AR), a **title** (becomes the slug), and a **general goal**. Loom
    creates `.RUD/<slug>/` with an empty `PLAN.md`; if the project root is a git
    repo it auto-creates a worktree at `.RUD/<slug>/work/<repo>/` on branch
    `zhongzhu/<slug>`.
@@ -188,8 +188,48 @@ next runs and stops.)
 | Type | What it is |
 |------|------------|
 | **Claude / Codex** | The standard human-driven flow above. |
-| **ARIS** | Autonomous-research loop — mines ideas from the codebase, spins up a worktree per experiment, folds results into `PLAN.md` (skill: `loom/skills/aris/ARIS.md`). |
+| **AR** | Automated research: turns a direction into paper ideas, then drives each idea from LaTeX draft to reviewed submission. See below. |
 | **Kernel Lab** | Dedicated panel driving the Loom Kernel Hub evaluator (spec interview + build/run launcher with live log). Advanced / optional. |
+
+#### AR — automated research
+
+An AR task is one of two roles, both stored in `.RUD/<slug>/ar.json`.
+
+A **studio** is what you create from the modal: pick a research direction and a
+target venue (ICLR, NeurIPS, ICML or COLM), then either let it mine recent arXiv
+work and propose ideas, or hand it a rough idea of your own to sharpen. Select
+the ideas worth pursuing and Loom turns each one into its own task.
+
+Each of those is a **paper** task, and it walks a fixed pipeline:
+
+1. **Draft** — the author agent fills the venue's LaTeX skeleton. The experiments
+   section gets its full structure but every number stays an `\ARnum{}` marker
+   and every figure an `\ARfig{}` placeholder.
+2. **Your review** — a gate. Approve to open the loop, or send it back with notes.
+3. **Rounds** — by default ten of them. The author agent works in the task's tmux
+   pane (revising the paper, running experiments locally in the worktree) and
+   signals the end of its turn by writing `rounds/round-NN/author.md`. Loom then
+   compiles the PDF and runs a reviewer agent headlessly, with a different model,
+   against a top-conference rubric; its scores and report drive the next round.
+4. **Final review** — a gate. Approve to deliver and download the PDF, or send it
+   back for another batch of rounds.
+
+Round state lives on disk, so a round survives a killed pane or a server restart
+and resumes where it left off. The methodology the agents follow is in
+`loom/skills/ar/` (`AR-STUDIO.md`, `AR-AUTHOR.md`, `AR-REVIEWER.md`) — edit those
+to change how the pipeline writes and reviews.
+
+The venue LaTeX styles are vendored under `loom/templates/paper/<venue>/`. To
+refresh them when a conference publishes a new template:
+
+```bash
+python3 scripts/fetch_paper_styles.py            # all venues
+python3 scripts/fetch_paper_styles.py iclr icml  # just these
+```
+
+Building a PDF needs `latexmk` and a TeX Live install; on Debian the COLM
+template additionally needs `texlive-fonts-extra`. Loom reports a missing style
+file by name rather than dumping the LaTeX log.
 
 **Kernel Lab needs a separate bundle.** The Kernel Hub stack (Dockerfiles,
 compose files, the `kernel_evaluator` service and its CUDA reference docs) is

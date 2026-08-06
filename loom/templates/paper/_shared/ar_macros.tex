@@ -1,0 +1,27 @@
+% Draft markers used by AR paper tasks.
+%
+% Everything the pipeline has not written yet is marked with \ARTODO or \ARfig
+% so a human reviewing the first draft can see the holes at a glance instead of
+% reading for absences. Switch \ARdraftfalse (or delete the markers) once the
+% paper is finished; nothing else in the template depends on them.
+\newif\ifARdraft
+\ARdrafttrue
+
+% Inline "this sentence is not written yet" marker.
+\newcommand{\ARTODO}[1]{\ifARdraft\textcolor{red}{\textbf{[TODO:} #1\textbf{]}}\fi}
+
+% Reserved slot for a figure that has not been produced yet. Replace the whole
+% call with a real figure environment once the experiment has run.
+\newcommand{\ARfig}[2][0.8]{%
+  \ifARdraft
+  \begin{center}
+    \fbox{\parbox{#1\linewidth}{\centering
+      \textcolor{red}{\textbf{FIGURE PLACEHOLDER}}\\[2pt]
+      \small #2}}
+  \end{center}
+  \fi
+}
+
+% Reserved slot for a number that no experiment has produced yet. Never replace
+% this with a guess: either run the experiment or leave the marker standing.
+\newcommand{\ARnum}{\ifARdraft\textcolor{red}{??}\else--\fi}

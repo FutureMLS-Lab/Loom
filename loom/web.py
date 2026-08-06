@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+from loom import ar_task as ar
 from loom.openclaw import OpenClawClient, OpenClawConfig, openclaw_status
 from loom.paths import (
     KERNEL_HUB_ENV,
@@ -78,10 +79,12 @@ from loom.rud_task import (
     push_worktree_branch,
     read_kernel_interview,
     read_meta,
+    read_markdown_asset,
     read_project_notes,
     read_task_markdown_file,
     read_task_monitor,
     read_template,
+    rud_root,
     remove_task_worktree,
     reorder_tasks,
     rename_task_meta,
@@ -2644,6 +2647,41 @@ def _run_worktree_review(
 # --- Claude prompt builder --------------------------------------------------
 
 
+def _build_ar_prompt(
+    project_root: Path,
+    slug: str,
+    meta: Any,
+    task_dir: Path,
+    skills: str,
+) -> str:
+    """Pane prompt for an AR task, chosen by the role recorded in ar.json.
+
+    A paper task in the middle of the loop gets that round's author prompt, so
+    pressing the pane's prompt button resends exactly what the driver would -
+    useful after restarting a pane mid-round.
+    """
+    state = ar.read_ar_state(project_root, slug)
+    if not state:
+        # A legacy `aris` task, or one whose ar.json has not been written yet.
+        state = ar.new_studio_state()
+    if ar.is_paper(state):
+        paper_dir = ar.paper_root(project_root, slug)
+        stage = str(state.get("stage") or ar.STAGE_DRAFT)
+        n = ar.current_round(state)
+        if stage == ar.STAGE_LOOP and n >= 1:
+            review_path = ((ar.round_record(state, n - 1) or {}).get("review") or {}).get("path", "")
+            review_text = _ar_read_text(Path(review_path)) if review_path else ""
+            return ar.author_round_prompt(
+                task_dir, paper_dir, state, n, review_text=review_text
+            )
+        return ar.author_draft_prompt(task_dir, paper_dir, state)
+
+    base = ar.studio_prompt(task_dir, state, meta.general_goal)
+    if skills.strip():
+        base += f"\nDomain skills selected for this task:\n---\n{skills}\n---\n"
+    return base
+
+
 def _build_claude_prompt(
     project_root: Path,
     slug: str,
@@ -2659,43 +2697,8 @@ def _build_claude_prompt(
     skills = load_skills_text(meta.skills_path, default_skills)
     state_doc = KERNEL_WIKI if meta.kind == "kernel" else PLAN
     plan_path = td / state_doc
-    if (meta.kind or "").strip().lower() == "aris":
-        aris_skill_path = bundled_skills_path().parent / "aris" / "ARIS.md"
-        aris_skill = ""
-        if aris_skill_path.is_file():
-            aris_skill = aris_skill_path.read_text(encoding="utf-8", errors="replace")[:20000]
-        return f"""You are running an ARIS (Auto Research In Sleep) task in Loom -
-an autonomous research / optimization loop driven by you.
-
-Task directory:
-{td}
-
-{wt_line}
-
-Experiment worktrees go under: {td / "work"}/
-
-General goal (your research objective):
-{meta.general_goal}
-
-PLAN.md ledger (your single source of truth):
-{plan_path}
-
-=== ARIS methodology - follow this exactly ===
-{aris_skill or "(ARIS skill missing)"}
-=== end ARIS methodology ===
-
-Domain skills (extra context for this base):
----
-{skills or "(none)"}
----
-
-Begin now: read {plan_path}; if it has no ledger yet, bootstrap it from the
-General goal (Goal + Baseline + a ranked Idea backlog). Then start cycle 1 -
-branch a worktree under work/ for the top idea, run a real experiment, and
-record the result back into {plan_path}. Keep running cycles autonomously;
-only pause for the human checkpoints listed in the methodology. PLAN.md is the
-ONLY task-state file - do not create other status files.
-"""
+    if ar.is_ar_kind(meta.kind):
+        return _build_ar_prompt(project_root, slug, meta, td, skills)
     return f"""You are running Loom's {agent_label(meta.agent)} pane for this task.
 
 You start in this task's work directory (your git worktree is a subdirectory here - cd into it to touch code):
@@ -3237,6 +3240,10 @@ class ClaudeRegistry:
             return True, "tmux session killed"
         return False, (r.stderr or r.stdout or "tmux session not found").strip()
 
+    def wait_until_ready(self, target: str, timeout: float = 15.0) -> None:
+        """Block until the agent CLI in *target* is ready to receive a prompt."""
+        self._wait_for_claude_ready(target, timeout=timeout)
+
     def _wait_for_claude_ready(self, target: str, timeout: float = 45.0) -> None:
         deadline = time.time() + timeout
         markers = ("\u276f", "\u256d", "tip:", "tips:", "/help", "cursor agent")
@@ -3565,6 +3572,740 @@ class TaskMonitorManager:
         return started
 
 
+# --- AR paper loop ----------------------------------------------------------
+
+_AR_POLL_SECONDS = 5.0
+
+
+def _ar_run_async(fn, *args: Any) -> None:
+    """Run a long AR step off the request thread; it reports via ar.json."""
+    threading.Thread(target=fn, args=args, daemon=True).start()
+
+
+def _ar_headless_model(meta: Any) -> str:
+    """Model for headless AR calls.
+
+    These go through ``claude -p``, so a task configured for Cursor or Codex
+    cannot lend its model id; fall back to the Claude default in that case.
+    """
+    if meta is not None and normalize_agent(getattr(meta, "agent", "")) == AGENT_CLAUDE:
+        model = str(getattr(meta, "interview_model", "") or "").strip()
+        if model:
+            return model
+    return agent_default_model(AGENT_CLAUDE)
+
+
+def _ar_merge_ideas(
+    state: dict[str, Any], fresh: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Replace the proposed ideas with a new batch, keeping spawned ones.
+
+    An idea that already has a child task is a commitment the user made, so a
+    regenerate must not drop it or renumber it out from under the child.
+    """
+    kept = [
+        i
+        for i in (state.get("ideas") or [])
+        if isinstance(i, dict) and i.get("status") == ar.IDEA_STATUS_SPAWNED
+    ]
+    taken = {str(i.get("id")) for i in kept}
+    out = list(kept)
+    for idea in fresh:
+        base = idea["id"]
+        candidate = base
+        n = 2
+        while candidate in taken:
+            candidate = f"{base}-{n}"
+            n += 1
+        idea["id"] = candidate
+        taken.add(candidate)
+        out.append(idea)
+    return out
+
+
+def _ar_logger(root: Path, slug: str, job: str, *, reset: bool = True):
+    """Append-only progress log for one AR job, tailed by the panel."""
+    path = ar.job_log_path(root, slug, job)
+    if reset:
+        ar.reset_job_log(path)
+    return lambda line: ar.append_job_log(path, line)
+
+
+def _ar_mine_job(root: Path, slug: str, limit: int, venue_only: bool) -> None:
+    state = ar.read_ar_state(root, slug)
+    log = _ar_logger(root, slug, ar.JOB_PAPERS)
+    log(
+        f"querying arXiv for {ar.direction_label(state)} "
+        f"(limit {limit}{', venue-tagged only' if venue_only else ''})"
+    )
+    res = ar.mine_papers(
+        str(state.get("direction") or ""),
+        str(state.get("custom_direction") or ""),
+        limit=limit,
+        venue_only=venue_only,
+    )
+    if res.get("ok"):
+        log(f"query: {res.get('query', '')}")
+        for paper in (res.get("papers") or [])[:10]:
+            venue = f" [{paper['venue']}]" if paper.get("venue") else ""
+            log(f"  {paper.get('published', '')}{venue} {paper.get('title', '')[:90]}")
+        log(f"kept {len(res.get('papers') or [])} paper(s)")
+    else:
+        log(f"failed: {res.get('error')}")
+    if res.get("ok"):
+        ar.update_ar_state(
+            root,
+            slug,
+            papers=res.get("papers") or [],
+            papers_status="done",
+            papers_error="",
+            papers_query=res.get("query", ""),
+            papers_updated_at=_iso_now(),
+        )
+        print(f"[ar] {slug}: mined {len(res.get('papers') or [])} paper(s)", flush=True)
+    else:
+        ar.update_ar_state(
+            root, slug, papers_status="error", papers_error=str(res.get("error") or "")
+        )
+        print(f"[ar] {slug}: mining failed - {res.get('error')}", flush=True)
+
+
+def _ar_ideas_job(root: Path, slug: str, count: int, model: str) -> None:
+    state = ar.read_ar_state(root, slug)
+    log = _ar_logger(root, slug, ar.JOB_IDEAS)
+    res = ar.propose_ideas(
+        state,
+        ar.ar_skill_text(ar.SKILL_STUDIO),
+        count=count,
+        model=model,
+        on_line=log,
+    )
+    if not res.get("ok"):
+        log(f"failed: {res.get('error')}")
+    if res.get("ok"):
+        ar.update_ar_state(
+            root,
+            slug,
+            ideas=_ar_merge_ideas(state, res.get("ideas") or []),
+            ideas_status="done",
+            ideas_error="",
+            ideas_updated_at=_iso_now(),
+        )
+        print(f"[ar] {slug}: proposed {len(res.get('ideas') or [])} idea(s)", flush=True)
+    else:
+        ar.update_ar_state(
+            root, slug, ideas_status="error", ideas_error=str(res.get("error") or "")
+        )
+        print(f"[ar] {slug}: idea generation failed - {res.get('error')}", flush=True)
+
+
+def _ar_review_job(root: Path, slug: str, model: str) -> None:
+    """One out-of-band review, triggered from the panel rather than the loop."""
+    state = ar.read_ar_state(root, slug)
+    paper_dir = ar.paper_root(root, slug)
+    n = ar.current_round(state)
+    log = _ar_logger(root, slug, ar.JOB_REVIEW)
+    build = ar.build_pdf(paper_dir)
+    log(
+        "PDF built"
+        if build.get("ok")
+        else f"PDF build failed: {build.get('error')}"
+    )
+    author_note = _ar_read_text(ar.author_note_path(root, slug, n))
+    res = ar.run_reviewer(
+        paper_dir,
+        ar.ar_skill_text(ar.SKILL_REVIEWER),
+        venue=str(state.get("venue") or ar.DEFAULT_VENUE),
+        idea=state.get("idea") or {},
+        round_n=max(1, n),
+        author_note=author_note,
+        build=build,
+        model=model,
+        on_line=log,
+    )
+    if not res.get("ok"):
+        log(f"failed: {res.get('error')}")
+        ar.update_ar_state(
+            root, slug, review_status="error", review_error=str(res.get("error") or "")
+        )
+        return
+    path = ar.review_note_path(root, slug, n)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.write_text(str(res.get("review") or ""), encoding="utf-8")
+    except OSError as exc:
+        ar.update_ar_state(root, slug, review_status="error", review_error=str(exc))
+        return
+    state = ar.read_ar_state(root, slug)
+    rec = ar.ensure_round(state, n)
+    rec["review"] = {
+        "created_at": _iso_now(),
+        "model": model,
+        "path": str(path),
+        "scores": res.get("scores") or {},
+        "headline": res.get("headline") or "",
+    }
+    state["review_status"] = "done"
+    state["review_error"] = ""
+    ar.write_ar_state(root, slug, state)
+
+
+def _ar_spawn_children(
+    root: Path,
+    parent_slug: str,
+    state: dict[str, Any],
+    idea_ids: list[str],
+    code_root: Path,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Turn selected idea cards into paper tasks, one task per idea."""
+    parent = read_meta(root, parent_slug)
+    venue = str(state.get("venue") or ar.DEFAULT_VENUE)
+    spawned: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    for idea_id in idea_ids:
+        idea = ar.find_idea(state, idea_id)
+        if idea is None:
+            errors.append(f"unknown idea {idea_id!r}")
+            continue
+        if idea.get("status") == ar.IDEA_STATUS_SPAWNED and idea.get("child_slug"):
+            continue
+        try:
+            child = create_task(
+                root,
+                idea["title"],
+                ar.idea_summary(idea),
+                skills_path=(parent.skills_path if parent else ""),
+                interview_model=(
+                    parent.interview_model if parent else agent_default_model(AGENT_CURSOR)
+                ),
+                agent=(parent.agent if parent else AGENT_CURSOR),
+                kind=ar.KIND_AR,
+                auto_worktree=False,
+            )
+            prepare_task_worktree_from(root, child.slug, code_root)
+            paper_dir = ar.paper_root(root, child.slug)
+            seeded, msg = ar.seed_paper_skeleton(paper_dir, venue, idea)
+            if not seeded:
+                errors.append(f"{child.slug}: {msg}")
+            paper_state = ar.new_paper_state(
+                parent_slug=parent_slug,
+                idea=idea,
+                venue=venue,
+                direction=str(state.get("direction") or ""),
+                custom_direction=str(state.get("custom_direction") or ""),
+                max_rounds=state.get("max_rounds", ar.DEFAULT_MAX_ROUNDS),
+                author_model=(parent.interview_model if parent else ""),
+                reviewer_model=_ar_headless_model(parent),
+            )
+            paper_state["paper_dir"] = str(paper_dir)
+            ar.write_ar_state(root, child.slug, paper_state)
+            idea["status"] = ar.IDEA_STATUS_SPAWNED
+            idea["child_slug"] = child.slug
+            spawned.append(
+                {"idea_id": idea_id, "slug": child.slug, "title": child.title}
+            )
+            print(f"[ar] {parent_slug}: spawned paper task {child.slug}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{idea_id}: {exc}")
+
+    ar.write_ar_state(root, parent_slug, state)
+    return spawned, errors
+
+
+class _ARLoopDriver:
+    """Drives one AR paper task through draft -> rounds -> final review.
+
+    Phase 1 (the author) runs in the task's tmux pane, because writing a paper
+    and running its experiments is interactive work that benefits from the full
+    agent. Phase 2 (the reviewer) runs headlessly with a different model, so the
+    review is genuinely a second opinion rather than the author grading itself.
+
+    The handoff between the two is a file: the author writes
+    ``rounds/round-NN/author.md`` as the last act of its turn, and this driver
+    polls for it. Watching a file rather than pane text means a round survives a
+    server restart, a killed pane, or an agent that stops talking mid-turn -
+    the state on disk is always the truth.
+    """
+
+    def __init__(
+        self,
+        manager: "ARLoopManager",
+        project_root: Path,
+        project_id: str,
+        slug: str,
+    ) -> None:
+        self.manager = manager
+        self.project_root = project_root
+        self.project_id = project_id
+        self.slug = slug
+        self.last_error = ""
+        self.last_action = ""
+        self._stop = threading.Event()
+        self.thread = threading.Thread(
+            target=self._loop, name=f"loom-ar-{slug}", daemon=True
+        )
+
+    # --- lifecycle ---
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def is_alive(self) -> bool:
+        return self.thread.is_alive() and not self._stop.is_set()
+
+    # --- helpers ---
+
+    def _state(self) -> dict[str, Any]:
+        return ar.read_ar_state(self.project_root, self.slug)
+
+    def _save(self, state: dict[str, Any]) -> None:
+        ar.write_ar_state(self.project_root, self.slug, state)
+
+    def _note(self, action: str) -> None:
+        self.last_action = action
+        print(f"[ar] {self.slug}: {action}", flush=True)
+
+    def _paper_dir(self) -> Path:
+        return ar.paper_root(self.project_root, self.slug)
+
+    def _paste(self, prompt: str) -> tuple[bool, str]:
+        """Send a phase-1 prompt to the task's agent pane, starting it if needed.
+
+        Spawning one paper task per idea would be pointless if each then had to
+        be launched by hand, so the loop owns the pane's lifecycle: it starts
+        one when there isn't one and lets the next tick do the paste, once the
+        agent CLI has finished painting its prompt.
+        """
+        meta = read_meta(self.project_root, self.slug)
+        if meta is None:
+            return False, "task not found"
+        target = (meta.tmux_interview_target or "").strip()
+        if not target:
+            started = self.manager.ensure_pane(
+                self.project_root, self.project_id, self.slug
+            )
+            if not started.get("ok"):
+                return False, f"could not start the agent pane: {started.get('error')}"
+            self._note("started the agent pane")
+            return False, "starting the agent pane…"
+        self.manager.wait_until_ready(target)
+        return send_pane_text(target, prompt, submit=True)
+
+    def _emit(self, event: str, instruction: str, data: dict[str, Any]) -> None:
+        try:
+            self.manager.openclaw.emit(
+                event,
+                instruction=instruction,
+                project_root=self.project_root,
+                task_slug=self.slug,
+                data=data,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ar] {self.slug} emit error: {exc}", flush=True)
+
+    def _build(self) -> dict[str, Any]:
+        paper_dir = self._paper_dir()
+        build = ar.build_pdf(paper_dir)
+        state = self._state()
+        state["paper_dir"] = str(paper_dir)
+        if build.get("ok"):
+            state["pdf_path"] = str(build.get("pdf") or "")
+            state["pdf_built_at"] = _iso_now()
+            state["pdf_error"] = "" if build.get("clean") else "compiled with LaTeX errors"
+        else:
+            state["pdf_error"] = str(build.get("error") or "build failed")
+        self._save(state)
+        return build
+
+    # --- stages ---
+
+    def _tick_draft(self, state: dict[str, Any]) -> None:
+        note = ar.author_note_path(self.project_root, self.slug, 0)
+        if note.is_file():
+            build = self._build()
+            state = self._state()
+            rec = ar.ensure_round(state, 0)
+            rec["author"] = {
+                "ended_at": _iso_now(),
+                "note": str(note),
+                "summary": _ar_read_head(note),
+            }
+            state["stage"] = ar.STAGE_AWAIT_DRAFT_REVIEW
+            state["loop_running"] = False
+            self._save(state)
+            self._note("draft ready - waiting for the human draft gate")
+            self._emit(
+                "ar-draft-ready",
+                (
+                    f"Loom AR task {self.slug} finished its first draft and is "
+                    "waiting for your review at the draft gate. Approve it in the "
+                    "AR panel to open the author/reviewer loop."
+                ),
+                {
+                    "event": "ar-draft-ready",
+                    "pdf": state.get("pdf_path", ""),
+                    "build_ok": bool(build.get("ok")),
+                    "summary": rec["author"]["summary"],
+                },
+            )
+            self.stop()
+            return
+
+        if state.get("draft_prompt_sent_at"):
+            return
+        paper_dir = self._paper_dir()
+        if not (paper_dir / "main.tex").is_file():
+            ok, msg = ar.seed_paper_skeleton(
+                paper_dir, str(state.get("venue") or ar.DEFAULT_VENUE), state.get("idea")
+            )
+            if not ok:
+                self.last_error = msg
+                return
+        note.parent.mkdir(parents=True, exist_ok=True)
+        prompt = ar.author_draft_prompt(
+            task_root(self.project_root, self.slug), paper_dir, state
+        )
+        ok, err = self._paste(prompt)
+        if not ok:
+            self.last_error = err
+            return
+        self.last_error = ""
+        state["draft_prompt_sent_at"] = _iso_now()
+        self._save(state)
+        self._note("draft prompt sent to the agent pane")
+
+    def _tick_loop(self, state: dict[str, Any]) -> None:
+        n = ar.current_round(state)
+        rec = ar.round_record(state, n) if n else None
+
+        # A round is "open" until its review lands; anything else means we are
+        # between rounds and should start the next one.
+        if rec is None or rec.get("review"):
+            self._start_round(state, n + 1)
+            return
+
+        # The author's note is the authoritative end-of-round signal, so check
+        # it before the prompt bookkeeping: a round driven by hand, or one whose
+        # prompt failed to paste and was sent another way, still closes.
+        note = ar.author_note_path(self.project_root, self.slug, n)
+        if note.is_file():
+            self._close_round(state, n, note)
+            return
+
+        if not rec.get("prompt_sent_at"):
+            self._send_round_prompt(state, n)
+
+    def _start_round(self, state: dict[str, Any], n: int) -> None:
+        if n > ar.max_rounds(state):
+            state["stage"] = ar.STAGE_AWAIT_FINAL_REVIEW
+            state["loop_running"] = False
+            self._save(state)
+            self._note(f"finished {n - 1} round(s) - waiting for the final human gate")
+            review = ar.latest_review(state) or {}
+            self._emit(
+                "ar-loop-complete",
+                (
+                    f"Loom AR task {self.slug} finished all "
+                    f"{ar.max_rounds(state)} author/reviewer rounds and is waiting "
+                    "for your final review. Approve to deliver the paper, or send "
+                    "it back for more rounds."
+                ),
+                {
+                    "event": "ar-loop-complete",
+                    "rounds": ar.max_rounds(state),
+                    "last_review": review.get("headline", ""),
+                    "pdf": state.get("pdf_path", ""),
+                },
+            )
+            self.stop()
+            return
+        ar.ensure_round(state, n)
+        state["round"] = n
+        self._save(state)
+        self._send_round_prompt(self._state(), n)
+
+    def _send_round_prompt(self, state: dict[str, Any], n: int) -> None:
+        previous = ar.round_record(state, n - 1) or {}
+        review = previous.get("review") if isinstance(previous.get("review"), dict) else {}
+        review_text = ""
+        review_path = str((review or {}).get("path") or "")
+        if review_path:
+            try:
+                review_text = Path(review_path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                review_text = ""
+        gate = ar.last_gate(state, ar.GATE_DRAFT) or {}
+        final_gate = ar.last_gate(state, ar.GATE_FINAL) or {}
+        note = str(final_gate.get("note") or "") if final_gate.get("decision") == "reject" else str(gate.get("note") or "")
+
+        ar.round_dir(self.project_root, self.slug, n).mkdir(parents=True, exist_ok=True)
+        prompt = ar.author_round_prompt(
+            task_root(self.project_root, self.slug),
+            self._paper_dir(),
+            state,
+            n,
+            review_text=review_text,
+            gate_note=note,
+        )
+        ok, err = self._paste(prompt)
+        if not ok:
+            self.last_error = err
+            return
+        self.last_error = ""
+        state = self._state()
+        rec = ar.ensure_round(state, n)
+        rec["prompt_sent_at"] = _iso_now()
+        state["round"] = n
+        self._save(state)
+        self._note(f"round {n} prompt sent to the agent pane")
+
+    def _close_round(self, state: dict[str, Any], n: int, note: Path) -> None:
+        self._note(f"round {n} author finished - building and reviewing")
+        build = self._build()
+        author_text = _ar_read_text(note)
+
+        state = self._state()
+        rec = ar.ensure_round(state, n)
+        rec["author"] = {
+            "ended_at": _iso_now(),
+            "note": str(note),
+            "summary": _ar_read_head(note),
+        }
+        self._save(state)
+
+        reviewer_model = str(state.get("reviewer_model") or "") or agent_default_model(
+            AGENT_CLAUDE
+        )
+        result = ar.run_reviewer(
+            self._paper_dir(),
+            ar.ar_skill_text(ar.SKILL_REVIEWER),
+            venue=str(state.get("venue") or ar.DEFAULT_VENUE),
+            idea=state.get("idea") or {},
+            round_n=n,
+            author_note=author_text,
+            build=build,
+            model=reviewer_model,
+            on_line=_ar_logger(self.project_root, self.slug, ar.JOB_REVIEW),
+        )
+        state = self._state()
+        rec = ar.ensure_round(state, n)
+        if not result.get("ok"):
+            self.last_error = str(result.get("error") or "review failed")
+            rec["review_error"] = self.last_error
+            self._save(state)
+            self._note(f"round {n} review failed: {self.last_error}")
+            self.stop()
+            return
+
+        review_path = ar.review_note_path(self.project_root, self.slug, n)
+        review_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            review_path.write_text(str(result.get("review") or ""), encoding="utf-8")
+        except OSError as exc:
+            self.last_error = f"could not write review: {exc}"
+            self._save(state)
+            return
+
+        rec["review"] = {
+            "created_at": _iso_now(),
+            "model": reviewer_model,
+            "path": str(review_path),
+            "scores": result.get("scores") or {},
+            "headline": result.get("headline") or "",
+        }
+        rec.pop("review_error", None)
+        self._save(state)
+        self._note(f"round {n} reviewed - {rec['review']['headline']}")
+        self._emit(
+            "ar-round-reviewed",
+            (
+                f"Loom AR task {self.slug} finished round {n} of "
+                f"{ar.max_rounds(state)}: {rec['review']['headline']}."
+            ),
+            {
+                "event": "ar-round-reviewed",
+                "round": n,
+                "scores": rec["review"]["scores"],
+                "headline": rec["review"]["headline"],
+            },
+        )
+
+    # --- main loop ---
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                state = self._state()
+                if not ar.is_paper(state):
+                    self.last_error = "not an AR paper task"
+                    break
+                stage = str(state.get("stage") or ar.STAGE_DRAFT)
+                if stage == ar.STAGE_DRAFT:
+                    self._tick_draft(state)
+                elif stage == ar.STAGE_LOOP:
+                    self._tick_loop(state)
+                else:
+                    # Waiting on a human, or delivered: nothing to drive.
+                    break
+            except Exception as exc:  # noqa: BLE001
+                self.last_error = str(exc)
+                print(f"[ar] {self.slug} loop error: {exc}", flush=True)
+            if self._stop.wait(_AR_POLL_SECONDS):
+                break
+        state = self._state()
+        if state.get("loop_running"):
+            state["loop_running"] = False
+            self._save(state)
+        self.manager.forget(self.project_id, self.slug, self)
+
+
+def _ar_read_text(path: Path, limit: int = 20000) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[:limit]
+    except OSError:
+        return ""
+
+
+def _ar_read_head(path: Path, lines: int = 40) -> str:
+    text = _ar_read_text(path)
+    return "\n".join(text.splitlines()[:lines]).strip()
+
+
+class ARLoopManager:
+    """Owns per-task AR driver threads keyed by ``(project_id, slug)``."""
+
+    def __init__(
+        self,
+        openclaw_client: OpenClawClient,
+        claude_registry: "ClaudeRegistry | None" = None,
+        default_skills: Path | None = None,
+    ) -> None:
+        self.openclaw = openclaw_client
+        self.registry = claude_registry
+        self.default_skills = default_skills
+        self._drivers: dict[tuple[str, str], _ARLoopDriver] = {}
+        self._lock = threading.Lock()
+
+    def ensure_pane(
+        self, project_root: Path, project_id: str, slug: str
+    ) -> dict[str, Any]:
+        if self.registry is None:
+            return {"ok": False, "error": "no agent registry - press Start Agent"}
+        return self.registry.start(
+            project_root, project_id, slug, default_skills=self.default_skills
+        )
+
+    def wait_until_ready(self, target: str, timeout: float = 12.0) -> None:
+        if self.registry is not None:
+            self.registry.wait_until_ready(target, timeout=timeout)
+
+    def start(self, project_root: Path, project_id: str, slug: str) -> dict[str, Any]:
+        state = ar.read_ar_state(project_root, slug)
+        if not ar.is_paper(state):
+            return {"ok": False, "error": "not an AR paper task"}
+        stage = str(state.get("stage") or ar.STAGE_DRAFT)
+        if stage in (ar.STAGE_AWAIT_DRAFT_REVIEW, ar.STAGE_AWAIT_FINAL_REVIEW):
+            return {"ok": False, "error": f"waiting for you: {ar.STAGE_LABELS[stage]}"}
+        if stage == ar.STAGE_DELIVERED:
+            return {"ok": False, "error": "this paper has already been delivered"}
+        key = (project_id, slug)
+        with self._lock:
+            existing = self._drivers.get(key)
+            if existing is not None and existing.is_alive():
+                return {"ok": True, "running": True, "note": "already running"}
+            driver = _ARLoopDriver(self, project_root, project_id, slug)
+            self._drivers[key] = driver
+        ar.update_ar_state(project_root, slug, loop_running=True)
+        driver.start()
+        return {"ok": True, "running": True}
+
+    def stop(self, project_root: Path, project_id: str, slug: str) -> dict[str, Any]:
+        with self._lock:
+            driver = self._drivers.pop((project_id, slug), None)
+        if driver is not None:
+            driver.stop()
+        ar.update_ar_state(project_root, slug, loop_running=False)
+        return {"ok": True, "running": False}
+
+    def forget(self, project_id: str, slug: str, driver: "_ARLoopDriver") -> None:
+        with self._lock:
+            if self._drivers.get((project_id, slug)) is driver:
+                self._drivers.pop((project_id, slug), None)
+
+    def status(self, project_id: str, slug: str) -> dict[str, Any]:
+        with self._lock:
+            driver = self._drivers.get((project_id, slug))
+        if driver is None:
+            return {"running": False, "last_error": "", "last_action": ""}
+        return {
+            "running": driver.is_alive(),
+            "last_error": driver.last_error,
+            "last_action": driver.last_action,
+        }
+
+    @staticmethod
+    def sweep_stale_jobs(projects: list[tuple[str, Path]]) -> int:
+        """Clear AR jobs left ``running`` by a server that went away.
+
+        Mining, idea generation and out-of-band reviews run in threads that do
+        not survive a restart, and each endpoint refuses to start a second job
+        while its status says running - so without this sweep a restart in the
+        middle of one would wedge that task's button forever.
+        """
+        cleared = 0
+        for _project_id, root in projects:
+            try:
+                metas = list_tasks(root)
+            except Exception:  # noqa: BLE001
+                continue
+            for meta in metas:
+                if not ar.is_ar_kind(meta.kind):
+                    continue
+                try:
+                    state = ar.read_ar_state(root, meta.slug)
+                except Exception:  # noqa: BLE001
+                    continue
+                changes: dict[str, Any] = {}
+                for job in ("papers", "ideas", "review"):
+                    if str(state.get(f"{job}_status") or "") == "running":
+                        changes[f"{job}_status"] = "error"
+                        changes[f"{job}_error"] = (
+                            "interrupted by a Loom restart - run it again"
+                        )
+                if changes:
+                    ar.update_ar_state(root, meta.slug, **changes)
+                    cleared += 1
+        return cleared
+
+    def resume_running(self, projects: list[tuple[str, Path]]) -> int:
+        """Restart drivers for papers whose ar.json says the loop was running.
+
+        Round state lives on disk, so a resumed driver picks up exactly where
+        the old one left off rather than restarting the round.
+        """
+        started = 0
+        for project_id, root in projects:
+            try:
+                metas = list_tasks(root)
+            except Exception:  # noqa: BLE001
+                continue
+            for meta in metas:
+                if not ar.is_ar_kind(meta.kind):
+                    continue
+                try:
+                    state = ar.read_ar_state(root, meta.slug)
+                    if ar.is_paper(state) and state.get("loop_running"):
+                        if self.start(root, project_id, meta.slug).get("ok"):
+                            started += 1
+                except Exception:  # noqa: BLE001
+                    continue
+        return started
+
+
 # --- HTTP handler factory ---------------------------------------------------
 
 
@@ -3619,6 +4360,7 @@ def make_handler(
     *,
     multi_project_workspace: bool = False,
     monitor_manager: "TaskMonitorManager | None" = None,
+    ar_manager: "ARLoopManager | None" = None,
 ) -> type[BaseHTTPRequestHandler]:
     static_root = web_static_dir().resolve()
     required_token = auth_token.strip()
@@ -3626,6 +4368,9 @@ def make_handler(
     launch_root_resolved = launch_root.resolve()
     multi_ws = multi_project_workspace
     monitor_manager = monitor_manager or TaskMonitorManager(openclaw_client)
+    ar_manager = ar_manager or ARLoopManager(
+        openclaw_client, claude_registry, default_skills
+    )
     terminal_streams = _TerminalStreamRegistry()
 
     class Handler(BaseHTTPRequestHandler):
@@ -3679,6 +4424,258 @@ def make_handler(
                 400,
             )
             self._send(st, b, h)
+
+        # --- AR helpers ---
+
+        def _ar_payload(self, root: Path, project_id: str, slug: str) -> dict[str, Any]:
+            """Everything the AR panel renders for one task."""
+            state = ar.read_ar_state(root, slug)
+            paper_dir = ar.paper_root(root, slug)
+            pdf = paper_dir / "main.pdf"
+            payload: dict[str, Any] = {
+                "ok": True,
+                "slug": slug,
+                "state": state,
+                "catalog": ar.catalog(),
+                "direction_label": ar.direction_label(state) if state else "",
+                "paper_dir": str(paper_dir),
+                "pdf_available": pdf.is_file(),
+                "loop": ar_manager.status(project_id, slug),
+                "logs": {
+                    job: ar.read_job_log(ar.job_log_path(root, slug, job))
+                    for job in (ar.JOB_PAPERS, ar.JOB_IDEAS, ar.JOB_REVIEW)
+                },
+            }
+            if ar.is_paper(state):
+                payload["stage_label"] = ar.progress_summary(state)
+                payload["latest_review"] = ar.latest_review(state) or {}
+                payload["venues_available"] = ar.venue_is_available(
+                    str(state.get("venue") or ar.DEFAULT_VENUE)
+                )
+                prepared = ar.submission_path(root, slug)
+                if prepared.is_file():
+                    try:
+                        payload["submission"] = json.loads(
+                            prepared.read_text(encoding="utf-8")
+                        )
+                    except (OSError, json.JSONDecodeError):
+                        pass
+            return payload
+
+        def _ar_resolve_pdf(self, root: Path, slug: str) -> tuple[Path | None, str]:
+            """The task's compiled PDF, building it once if it is not there yet."""
+            paper_dir = ar.paper_root(root, slug)
+            pdf = paper_dir / "main.pdf"
+            if pdf.is_file():
+                return pdf, ""
+            if not (paper_dir / "main.tex").is_file():
+                return None, "this task has no paper yet"
+            build = ar.build_pdf(paper_dir)
+            if not build.get("ok"):
+                return None, str(build.get("error") or "build failed")
+            return Path(str(build.get("pdf"))), ""
+
+        def _ar_require_state(
+            self, root: Path, slug: str, role: str = ""
+        ) -> tuple[dict[str, Any] | None, str]:
+            state = ar.read_ar_state(root, slug)
+            if not state:
+                return None, "this task has no AR state"
+            if role == ar.ROLE_STUDIO and not ar.is_studio(state):
+                return None, "this is not an AR studio task"
+            if role == ar.ROLE_PAPER and not ar.is_paper(state):
+                return None, "this is not an AR paper task"
+            return state, ""
+
+        def _ar_action(
+            self,
+            root: Path,
+            project_id: str,
+            slug: str,
+            action: str,
+            body: dict[str, Any],
+        ) -> tuple[dict[str, Any], int]:
+            """Dispatch one POST /api/tasks/<slug>/ar/<action>.
+
+            Mining and idea generation call a model and can run for minutes, so
+            they hand off to a thread and report progress through ar.json; the
+            panel polls GET /ar the same way it polls everything else.
+            """
+            if action == "mine":
+                state, err = self._ar_require_state(root, slug, ar.ROLE_STUDIO)
+                if state is None:
+                    return {"ok": False, "error": err}, 400
+                if str(state.get("papers_status")) == "running":
+                    return {"ok": True, "status": "running"}, 202
+                limit = max(5, min(100, int(body.get("limit", 40) or 40)))
+                venue_only = bool(body.get("venue_only"))
+                ar.update_ar_state(root, slug, papers_status="running", papers_error="")
+                _ar_run_async(_ar_mine_job, root, slug, limit, venue_only)
+                return {"ok": True, "status": "running"}, 202
+
+            if action == "ideas":
+                state, err = self._ar_require_state(root, slug, ar.ROLE_STUDIO)
+                if state is None:
+                    return {"ok": False, "error": err}, 400
+                pasted = body.get("ideas")
+                if isinstance(pasted, list):
+                    ideas = [ar.normalize_idea(x, i) for i, x in enumerate(pasted)]
+                    ideas = [i for i in ideas if i["title"]]
+                    ar.update_ar_state(
+                        root,
+                        slug,
+                        ideas=_ar_merge_ideas(state, ideas),
+                        ideas_status="done",
+                        ideas_error="",
+                        ideas_updated_at=_iso_now(),
+                    )
+                    return self._ar_payload(root, project_id, slug), 200
+                if str(state.get("ideas_status")) == "running":
+                    return {"ok": True, "status": "running"}, 202
+                count = max(1, min(12, int(body.get("count", 6) or 6)))
+                meta = read_meta(root, slug)
+                model = str(body.get("model", "")).strip() or _ar_headless_model(meta)
+                ar.update_ar_state(root, slug, ideas_status="running", ideas_error="")
+                _ar_run_async(_ar_ideas_job, root, slug, count, model)
+                return {"ok": True, "status": "running"}, 202
+
+            if action == "spawn":
+                state, err = self._ar_require_state(root, slug, ar.ROLE_STUDIO)
+                if state is None:
+                    return {"ok": False, "error": err}, 400
+                raw_ids = body.get("idea_ids")
+                idea_ids = [str(x) for x in raw_ids] if isinstance(raw_ids, list) else []
+                if not idea_ids:
+                    return {"ok": False, "error": "select at least one idea"}, 400
+                code_root = pr.get_code_root(project_id) or root
+                spawned, errors = _ar_spawn_children(
+                    root, slug, state, idea_ids, code_root
+                )
+                payload = self._ar_payload(root, project_id, slug)
+                payload["spawned"] = spawned
+                payload["errors"] = errors
+                return payload, 200
+
+            if action in ("draft", "loop/start"):
+                state, err = self._ar_require_state(root, slug, ar.ROLE_PAPER)
+                if state is None:
+                    return {"ok": False, "error": err}, 400
+                if action == "draft":
+                    paper_dir = ar.paper_root(root, slug)
+                    if not (paper_dir / "main.tex").is_file():
+                        ok, msg = ar.seed_paper_skeleton(
+                            paper_dir,
+                            str(state.get("venue") or ar.DEFAULT_VENUE),
+                            state.get("idea"),
+                        )
+                        if not ok:
+                            return {"ok": False, "error": msg}, 500
+                        ar.update_ar_state(root, slug, paper_dir=str(paper_dir))
+                res = ar_manager.start(root, project_id, slug)
+                if not res.get("ok"):
+                    return res, 409
+                payload = self._ar_payload(root, project_id, slug)
+                payload["started"] = True
+                return payload, 200
+
+            if action == "loop/stop":
+                ar_manager.stop(root, project_id, slug)
+                return self._ar_payload(root, project_id, slug), 200
+
+            if action == "gate":
+                state, err = self._ar_require_state(root, slug, ar.ROLE_PAPER)
+                if state is None:
+                    return {"ok": False, "error": err}, 400
+                gate = str(body.get("gate", "")).strip().lower()
+                decision = str(body.get("decision", "")).strip().lower()
+                note = str(body.get("note", ""))
+                if gate not in (ar.GATE_DRAFT, ar.GATE_FINAL):
+                    return {"ok": False, "error": "gate must be draft or final"}, 400
+                if decision not in ("approve", "reject"):
+                    return {"ok": False, "error": "decision must be approve or reject"}, 400
+                expected = (
+                    ar.STAGE_AWAIT_DRAFT_REVIEW
+                    if gate == ar.GATE_DRAFT
+                    else ar.STAGE_AWAIT_FINAL_REVIEW
+                )
+                if str(state.get("stage")) != expected:
+                    return (
+                        {
+                            "ok": False,
+                            "error": (
+                                f"this task is not at the {gate} gate "
+                                f"(stage: {ar.progress_summary(state)})"
+                            ),
+                        },
+                        409,
+                    )
+                ar.record_gate(state, gate, decision, note)
+                if gate == ar.GATE_FINAL and decision == "approve":
+                    build = ar.build_pdf(ar.paper_root(root, slug))
+                    if build.get("ok"):
+                        state["pdf_path"] = str(build.get("pdf") or "")
+                        state["pdf_built_at"] = _iso_now()
+                ar.write_ar_state(root, slug, state)
+                if str(state.get("stage")) == ar.STAGE_LOOP:
+                    ar_manager.start(root, project_id, slug)
+                return self._ar_payload(root, project_id, slug), 200
+
+            if action == "review":
+                state, err = self._ar_require_state(root, slug, ar.ROLE_PAPER)
+                if state is None:
+                    return {"ok": False, "error": err}, 400
+                if str(state.get("review_status")) == "running":
+                    return {"ok": True, "status": "running"}, 202
+                meta = read_meta(root, slug)
+                model = (
+                    str(body.get("model", "")).strip()
+                    or str(state.get("reviewer_model") or "")
+                    or _ar_headless_model(meta)
+                )
+                ar.update_ar_state(root, slug, review_status="running", review_error="")
+                _ar_run_async(_ar_review_job, root, slug, model)
+                return {"ok": True, "status": "running"}, 202
+
+            if action == "submission":
+                state, err = self._ar_require_state(root, slug, ar.ROLE_PAPER)
+                if state is None:
+                    return {"ok": False, "error": err}, 400
+                payload = ar.build_submission(root, slug, state)
+                try:
+                    ar.submission_path(root, slug).write_text(
+                        json.dumps(payload, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                except OSError as exc:
+                    return {"ok": False, "error": f"could not write submission.json: {exc}"}, 500
+                out = self._ar_payload(root, project_id, slug)
+                out["submission"] = payload
+                return out, 200
+
+            if action == "build":
+                state, err = self._ar_require_state(root, slug, ar.ROLE_PAPER)
+                if state is None:
+                    return {"ok": False, "error": err}, 400
+                build = ar.build_pdf(ar.paper_root(root, slug))
+                changes: dict[str, Any] = {"paper_dir": str(ar.paper_root(root, slug))}
+                if build.get("ok"):
+                    changes["pdf_path"] = str(build.get("pdf") or "")
+                    changes["pdf_built_at"] = _iso_now()
+                    changes["pdf_error"] = (
+                        "" if build.get("clean") else "compiled with LaTeX errors"
+                    )
+                else:
+                    changes["pdf_error"] = str(build.get("error") or "build failed")
+                ar.update_ar_state(root, slug, **changes)
+                payload = self._ar_payload(root, project_id, slug)
+                payload["build"] = {
+                    k: build.get(k)
+                    for k in ("ok", "clean", "bytes", "error", "missing_packages")
+                }
+                payload["latex_errors"] = ar.latex_errors(str(build.get("log") or ""))
+                return payload, 200
+
+            return {"ok": False, "error": f"unknown AR action {action!r}"}, 404
 
         def _is_authorized(self) -> bool:
             if not required_token:
@@ -4004,6 +5001,125 @@ def make_handler(
                     self._send(st, b, h)
                     return
                 st, b, h = _json_bytes(read_kernel_interview(root, slug))
+                self._send(st, b, h)
+                return
+
+            if path == "/api/ar/catalog":
+                st, b, h = _json_bytes(ar.catalog())
+                self._send(st, b, h)
+                return
+
+            if path == "/api/asset":
+                # Figures referenced by a rendered markdown document. `task`
+                # scopes the lookup to one task directory; without it the base
+                # is the project's .RUD/ root, which is where NOTES.md lives.
+                root, _pid = self._resolve_scope(parsed)
+                if root is None:
+                    self._bad_project()
+                    return
+                qs = parse_qs(parsed.query or "")
+                rel = (qs.get("path") or [""])[0]
+                slug = (qs.get("task") or [""])[0].strip()
+                if slug and not _SLUG_RE.match(slug):
+                    st, b, h = _json_bytes({"error": "invalid slug"}, 400)
+                    self._send(st, b, h)
+                    return
+                base = task_root(root, slug) if slug else rud_root(root)
+                found = read_markdown_asset(base, rel)
+                if found is None:
+                    st, b, h = _json_bytes({"error": "asset not found"}, 404)
+                    self._send(st, b, h)
+                    return
+                data, ctype = found
+                self._send(
+                    200,
+                    data,
+                    [
+                        ("Content-Type", ctype),
+                        ("Content-Length", str(len(data))),
+                        # An SVG rendered in <img> can't run scripts, but one
+                        # opened directly at this URL would inherit the app's
+                        # origin, so neuter it either way.
+                        ("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'"),
+                        ("X-Content-Type-Options", "nosniff"),
+                        # Figures get regenerated in place; revalidate so the
+                        # preview never shows a stale one.
+                        ("Cache-Control", "no-cache"),
+                    ],
+                )
+                return
+
+            m_ar_pdf = re.match(r"^/api/tasks/([^/]+)/ar/pdf$", path)
+            if m_ar_pdf:
+                root, _pid = self._resolve_scope(parsed)
+                if root is None:
+                    self._bad_project()
+                    return
+                slug = m_ar_pdf.group(1)
+                if not _SLUG_RE.match(slug):
+                    st, b, h = _json_bytes({"error": "invalid slug"}, 400)
+                    self._send(st, b, h)
+                    return
+                pdf, err = self._ar_resolve_pdf(root, slug)
+                if pdf is None:
+                    st, b, h = _json_bytes({"ok": False, "error": err}, 404)
+                    self._send(st, b, h)
+                    return
+                try:
+                    body = pdf.read_bytes()
+                except OSError as exc:
+                    st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 500)
+                    self._send(st, b, h)
+                    return
+                self._send(
+                    200,
+                    body,
+                    [
+                        ("Content-Type", "application/pdf"),
+                        ("Content-Length", str(len(body))),
+                        ("Content-Disposition", f'attachment; filename="{slug}.pdf"'),
+                        ("Cache-Control", "no-store"),
+                    ],
+                )
+                return
+
+            m_ar_review = re.match(r"^/api/tasks/([^/]+)/ar/review/(\d+)$", path)
+            if m_ar_review:
+                root, _pid = self._resolve_scope(parsed)
+                if root is None:
+                    self._bad_project()
+                    return
+                slug = m_ar_review.group(1)
+                if not _SLUG_RE.match(slug):
+                    st, b, h = _json_bytes({"error": "invalid slug"}, 400)
+                    self._send(st, b, h)
+                    return
+                n = int(m_ar_review.group(2))
+                path_n = ar.review_note_path(root, slug, n)
+                if not path_n.is_file():
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": f"no review for round {n}"}, 404
+                    )
+                    self._send(st, b, h)
+                    return
+                st, b, h = _json_bytes(
+                    {"ok": True, "round": n, "review": _ar_read_text(path_n)}
+                )
+                self._send(st, b, h)
+                return
+
+            m_ar = re.match(r"^/api/tasks/([^/]+)/ar$", path)
+            if m_ar:
+                root, pid = self._resolve_scope(parsed)
+                if root is None or pid is None:
+                    self._bad_project()
+                    return
+                slug = m_ar.group(1)
+                if not _SLUG_RE.match(slug):
+                    st, b, h = _json_bytes({"error": "invalid slug"}, 400)
+                    self._send(st, b, h)
+                    return
+                st, b, h = _json_bytes(self._ar_payload(root, pid, slug))
                 self._send(st, b, h)
                 return
 
@@ -4737,6 +5853,23 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
+            m_ar_post = re.match(r"^/api/tasks/([^/]+)/ar/([a-z/-]+)$", path)
+            if m_ar_post:
+                root, pid = self._resolve_scope(parsed)
+                if root is None or pid is None:
+                    self._bad_project()
+                    return
+                slug = m_ar_post.group(1)
+                action = m_ar_post.group(2)
+                if not _SLUG_RE.match(slug):
+                    st, b, h = _json_bytes({"error": "invalid slug"}, 400)
+                    self._send(st, b, h)
+                    return
+                result, status = self._ar_action(root, pid, slug, action, body)
+                st, b, h = _json_bytes(result, status)
+                self._send(st, b, h)
+                return
+
             if path == "/api/kernel/prepare":
                 root, _pid = self._resolve_scope(parsed)
                 if root is None:
@@ -4801,6 +5934,22 @@ def make_handler(
                     return
                 title = str(body.get("title", "")).strip()
                 general_goal = str(body.get("general_goal", "")).strip()
+                kind = {"kernel": "kernel", "ar": ar.KIND_AR, "aris": ar.KIND_AR}.get(
+                    str(body.get("kind", "")).strip().lower(), "agent"
+                )
+                ar_state: dict[str, Any] | None = None
+                if kind == ar.KIND_AR:
+                    ar_state = ar.new_studio_state(
+                        direction=str(body.get("ar_direction", "")),
+                        custom_direction=str(body.get("ar_custom_direction", "")),
+                        venue=str(body.get("ar_venue", "")),
+                        mode=str(body.get("ar_mode", "")),
+                        seed_idea=str(body.get("ar_seed_idea", "")),
+                        max_rounds=body.get("ar_max_rounds", ar.DEFAULT_MAX_ROUNDS),
+                    )
+                    # AR asks for the paper's content, not a goal to interview
+                    # about, so derive the stored goal from the AR fields.
+                    general_goal = general_goal or ar.default_general_goal(ar_state)
                 if not title or not general_goal:
                     st, b, h = _json_bytes({"error": "title and general_goal required"}, 400)
                     self._send(st, b, h)
@@ -4838,11 +5987,11 @@ def make_handler(
                         or agent_default_model(raw_agent or AGENT_CURSOR)
                     ),
                     agent=raw_agent or AGENT_CURSOR,
-                    kind={"kernel": "kernel", "aris": "aris"}.get(
-                        str(body.get("kind", "")).strip().lower(), "agent"
-                    ),
+                    kind=kind,
                     auto_worktree=False,
                 )
+                if ar_state is not None:
+                    ar.write_ar_state(root, meta.slug, ar_state)
                 code_root = pr.get_code_root(project_id) or root
                 wt, _branch, auto_msg = prepare_task_worktree_from(
                     root, meta.slug, code_root
@@ -6226,6 +7375,13 @@ def serve(
     if _resumed:
         print(f"  Resumed {_resumed} enabled run-monitor(s)", flush=True)
     sk = default_skills if default_skills.is_file() else bundled_skills_path().resolve()
+    ar_manager = ARLoopManager(openclaw_client, claude_registry, sk)
+    _ar_swept = ar_manager.sweep_stale_jobs(_monitor_projects)
+    if _ar_swept:
+        print(f"  Cleared {_ar_swept} interrupted AR job(s) (mine/ideas/review)", flush=True)
+    _ar_resumed = ar_manager.resume_running(_monitor_projects)
+    if _ar_resumed:
+        print(f"  Resumed {_ar_resumed} running AR paper loop(s)", flush=True)
     handler = make_handler(
         web_project_registry,
         project_root,
@@ -6235,6 +7391,7 @@ def serve(
         auth_token,
         multi_project_workspace=multi_project_workspace,
         monitor_manager=monitor_manager,
+        ar_manager=ar_manager,
     )
     server = ThreadingHTTPServer((host, port), handler)
     rud_root = project_root / ".RUD"

@@ -18,6 +18,16 @@ def web_static_dir() -> Path:
     return _PKG / "web_static"
 
 
+def paper_templates_dir() -> Path:
+    """Venue LaTeX skeletons used by AR paper tasks.
+
+    These live inside the package (unlike the repo-root ``templates/``) because
+    an installed Loom must be able to seed a paper without a source checkout.
+    Style files are vendored by ``scripts/fetch_paper_styles.py``.
+    """
+    return _PKG / "templates" / "paper"
+
+
 def kernel_hub_dir() -> Path:
     """Kernel stack used by the optional Kernel Lab task type (scaffold +
     kernel_evaluator + docker-compose). ``scaffold/agent_runner/rud_kernel.py``

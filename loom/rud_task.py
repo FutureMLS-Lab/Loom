@@ -1160,6 +1160,46 @@ def _is_safe_md_relpath(name: str) -> bool:
     return True
 
 
+# Image types the markdown preview may load from a task / project directory.
+# Deliberately images-only: this backs figures in a rendered document, not a
+# general file server over the task tree.
+MARKDOWN_ASSET_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".avif": "image/avif",
+    ".bmp": "image/bmp",
+    ".ico": "image/x-icon",
+}
+MAX_MARKDOWN_ASSET_BYTES = 25 * 1024 * 1024
+
+
+def read_markdown_asset(base_dir: Path, relative: str) -> tuple[bytes, str] | None:
+    """Bytes and content type for an image referenced by a markdown document.
+
+    Returns ``None`` when the path escapes *base_dir* (including via a symlink,
+    since the check resolves first), is not an image type we render, is
+    missing, or is far larger than any sane inline figure.
+    """
+    if not relative or "\x00" in relative:
+        return None
+    target = path_under_task(base_dir, relative)
+    if target is None or not target.is_file():
+        return None
+    ctype = MARKDOWN_ASSET_TYPES.get(target.suffix.lower())
+    if ctype is None:
+        return None
+    try:
+        if target.stat().st_size > MAX_MARKDOWN_ASSET_BYTES:
+            return None
+        return target.read_bytes(), ctype
+    except OSError:
+        return None
+
+
 def list_task_markdown_files(project_root: Path, slug: str) -> list[str]:
     """Return relative paths of ``*.md`` files under the task root.
 

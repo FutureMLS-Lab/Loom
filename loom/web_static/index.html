@@ -6,7 +6,7 @@
   <title>Loom</title>
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
   <link rel="stylesheet" href="/static/vendor/xterm.css?v=5.5.0" />
-  <link rel="stylesheet" href="/static/app.css?v=20260730-50" />
+  <link rel="stylesheet" href="/static/app.css?v=20260806-5" />
 </head>
 <body>
   <header class="topbar">
@@ -309,6 +309,93 @@
           </div>
         </section>
 
+        <section class="tab-panel" data-panel="ar" role="tabpanel" hidden>
+          <p class="tab-panel__hint">
+            Automated research on <code id="ar-direction-label">…</code> ·
+            <span class="kernel-badge" id="ar-stage-badge" data-state="unknown">…</span>
+            <button type="button" class="btn btn--sm" id="btn-ar-refresh">Refresh</button>
+          </p>
+
+          <!-- Studio view: mine papers, propose ideas, spawn one task per idea -->
+          <div class="ar-studio" id="ar-studio" hidden>
+            <section class="ar-card">
+              <div class="ar-card__head">
+                <h3>Recent work</h3>
+                <div class="ar-card__actions">
+                  <label class="ar-check"><input type="checkbox" id="ar-venue-only" /> Venue-tagged only</label>
+                  <button type="button" class="btn btn--sm" id="btn-ar-mine">Mine arXiv</button>
+                </div>
+              </div>
+              <p class="tab-panel__hint" id="ar-papers-status">Nothing mined yet.</p>
+              <pre class="ar-log" id="ar-papers-log" hidden></pre>
+              <ul class="ar-paper-list" id="ar-paper-list"></ul>
+            </section>
+
+            <section class="ar-card">
+              <div class="ar-card__head">
+                <h3>Ideas</h3>
+                <div class="ar-card__actions">
+                  <label class="ar-check">Count <input type="number" id="ar-idea-count" min="1" max="12" value="6" /></label>
+                  <button type="button" class="btn btn--sm" id="btn-ar-ideas">Generate ideas</button>
+                  <button type="button" class="btn btn--primary btn--sm" id="btn-ar-spawn" title="Turn each selected idea into its own paper task">Create tasks</button>
+                </div>
+              </div>
+              <p class="tab-panel__hint" id="ar-ideas-status">No ideas yet. Generate them here, or paste a JSON array from the agent pane.</p>
+              <pre class="ar-log" id="ar-ideas-log" hidden></pre>
+              <div class="ar-idea-list" id="ar-idea-list"></div>
+            </section>
+          </div>
+
+          <!-- Paper view: draft gate, author/reviewer rounds, final gate -->
+          <div class="ar-paper" id="ar-paper" hidden>
+            <section class="ar-card">
+              <div class="ar-card__head">
+                <h3 id="ar-paper-title">Paper</h3>
+                <div class="ar-card__actions">
+                  <button type="button" class="btn btn--sm" id="btn-ar-build">Rebuild PDF</button>
+                  <button type="button" class="btn btn--sm" id="btn-ar-download">Download PDF</button>
+                  <button type="button" class="btn btn--sm" id="btn-ar-submission" title="Check this paper against the venue's requirements and write submission.json">Prepare submission</button>
+                </div>
+              </div>
+              <ol class="ar-stepper" id="ar-stepper"></ol>
+              <p class="tab-panel__hint" id="ar-paper-hint"></p>
+              <div class="ar-idea-brief" id="ar-idea-brief"></div>
+              <div class="ar-submission" id="ar-submission" hidden>
+                <h4 class="ar-submission__title">Submission readiness</h4>
+                <ul class="ar-checklist" id="ar-checklist"></ul>
+                <p class="tab-panel__hint">Loom never posts to OpenReview. Run this yourself, signed in as you:</p>
+                <pre class="ar-log" id="ar-submission-command"></pre>
+              </div>
+            </section>
+
+            <section class="ar-card" id="ar-gate-card" hidden>
+              <div class="ar-card__head">
+                <h3 id="ar-gate-title">Your review</h3>
+              </div>
+              <p class="tab-panel__hint" id="ar-gate-hint"></p>
+              <textarea id="ar-gate-note" rows="3" placeholder="Optional instruction for the author agent — carried into the next round."></textarea>
+              <div class="ar-card__actions">
+                <button type="button" class="btn btn--primary" id="btn-ar-approve">Approve</button>
+                <button type="button" class="btn btn--danger" id="btn-ar-reject">Request changes</button>
+              </div>
+            </section>
+
+            <section class="ar-card">
+              <div class="ar-card__head">
+                <h3>Rounds</h3>
+                <div class="ar-card__actions">
+                  <button type="button" class="btn btn--sm" id="btn-ar-loop-start">Start loop</button>
+                  <button type="button" class="btn btn--sm" id="btn-ar-loop-stop">Stop loop</button>
+                  <button type="button" class="btn btn--sm" id="btn-ar-review-now">Review now</button>
+                </div>
+              </div>
+              <p class="tab-panel__hint" id="ar-loop-status"></p>
+              <pre class="ar-log" id="ar-review-log" hidden></pre>
+              <ul class="ar-round-list" id="ar-round-list"></ul>
+            </section>
+          </div>
+        </section>
+
       </article>
     </section>
   </div>
@@ -336,15 +423,55 @@
           <option value="claude">Claude — claude CLI, resume by UUID</option>
           <option value="codex">Codex — codex CLI, codex resume &lt;id&gt;</option>
           <option value="kernel">Kernel Lab — Loom Kernel Hub optimization</option>
-          <option value="aris">ARIS — autonomous research loop</option>
+          <option value="ar">AR — automated research (paper pipeline)</option>
         </select>
         <p class="create-agent-hint" id="new-agent-hint"></p>
+
+        <div class="ar-create" id="ar-create-fields" hidden>
+          <div class="ar-create__row">
+            <div>
+              <label for="ar-direction">Research direction</label>
+              <select id="ar-direction" class="modal-input-wide"></select>
+            </div>
+            <div>
+              <label for="ar-venue">Target venue</label>
+              <select id="ar-venue" class="modal-input-wide"></select>
+            </div>
+          </div>
+          <input type="text" id="ar-custom-direction" class="modal-input-wide" placeholder="Describe the direction in your own words" hidden />
+          <fieldset class="kernel-mode-picker ar-mode-picker">
+            <label class="kernel-mode-card">
+              <input type="radio" name="ar-mode" value="auto" checked />
+              <span class="kernel-mode-card__body">
+                <strong>Auto direction</strong>
+                <small>Mine recent arXiv / ICLR / ICML work in this direction, then propose ideas to pick from.</small>
+              </span>
+            </label>
+            <label class="kernel-mode-card">
+              <input type="radio" name="ar-mode" value="seed" />
+              <span class="kernel-mode-card__body">
+                <strong>My idea</strong>
+                <small>Start from an idea you describe and iterate it into concrete proposals.</small>
+              </span>
+            </label>
+          </fieldset>
+          <div id="ar-seed-wrap">
+            <label for="ar-seed-idea" id="ar-seed-label">What the paper should be about</label>
+            <textarea id="ar-seed-idea" rows="4" placeholder="The concrete content you want the paper to establish."></textarea>
+            <p class="skills-note" id="ar-seed-note"></p>
+          </div>
+          <label for="ar-max-rounds">Author / reviewer rounds per paper</label>
+          <input type="number" id="ar-max-rounds" class="modal-input-wide" min="1" max="50" value="10" />
+          <p class="skills-note">Each idea you select becomes its own task: LaTeX draft, your review, then this many author/reviewer rounds before the final gate.</p>
+        </div>
         <label for="new-model-select">Model</label>
         <select id="new-model-select" class="modal-input-wide model-select"></select>
         <input id="new-model" class="modal-input-wide model-custom" placeholder="Type a model id" hidden />
         <p class="skills-note">Grouped by family for the selected agent. Pick <em>Custom id…</em> to type one that isn't listed.</p>
-        <label for="new-goal">General goal</label>
-        <textarea id="new-goal" rows="4" placeholder="Describe the outcome. The deep interview will ask follow-up questions."></textarea>
+        <div id="new-goal-wrap">
+          <label for="new-goal">General goal</label>
+          <textarea id="new-goal" rows="4" placeholder="Describe the outcome. The deep interview will ask follow-up questions."></textarea>
+        </div>
       </div>
 
       <div class="modal-card__footer">
@@ -483,6 +610,23 @@
     </div>
   </div>
 
+  <div class="preview-modal" id="ar-review-modal" hidden>
+    <div class="preview-modal__card" role="dialog" aria-modal="true" aria-labelledby="ar-review-title">
+      <header class="preview-modal__header">
+        <div>
+          <p class="preview-modal__eyebrow">Reviewer report</p>
+          <h2 id="ar-review-title">Review</h2>
+        </div>
+        <div class="preview-modal__actions">
+          <button type="button" class="icon-btn" id="btn-ar-review-close" aria-label="Close">×</button>
+        </div>
+      </header>
+      <main class="preview-modal__body">
+        <article id="ar-review-content" class="markdown-preview"></article>
+      </main>
+    </div>
+  </div>
+
   <div class="preview-modal" id="kernel-source-modal" hidden>
     <div class="preview-modal__card" role="dialog" aria-modal="true" aria-labelledby="kernel-source-title">
       <header class="preview-modal__header">
@@ -505,6 +649,6 @@
 
   <script src="/static/vendor/xterm.js?v=5.5.0"></script>
   <script src="/static/vendor/addon-fit.js?v=0.10.0"></script>
-  <script src="/static/app.js?v=20260730-50"></script>
+  <script src="/static/app.js?v=20260806-5"></script>
 </body>
 </html>

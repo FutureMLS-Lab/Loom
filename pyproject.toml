@@ -41,4 +41,4 @@ packages = ["loom"]
 exclude = ["loom/kernel_hub/**"]
 
 [tool.hatch.build.targets.sdist]
-include = ["loom", "tests", "README.md", "pyproject.toml"]
+include = ["loom", "tests", "scripts", "README.md", "pyproject.toml"]

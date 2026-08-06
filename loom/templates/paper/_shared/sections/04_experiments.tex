@@ -1,0 +1,81 @@
+\section{Experiments}
+\label{sec:experiments}
+
+% ---------------------------------------------------------------------------
+% NOTHING IN THIS SECTION MAY CONTAIN A NUMBER THAT AN EXPERIMENT DID NOT
+% PRODUCE. Leave \ARnum{} and the commented-out environments standing until a
+% run has actually finished and its log is committed alongside the paper. A
+% fabricated table is the one failure mode this pipeline cannot recover from.
+% ---------------------------------------------------------------------------
+
+\subsection{Setup}
+\label{sec:setup}
+
+\paragraph{Models and data.}
+\ARTODO{exact checkpoints, datasets, splits and sizes}
+
+\paragraph{Baselines.}
+% At least one baseline must be the obvious thing a skeptical reviewer would
+% try instead of the proposed method.
+\ARTODO{baselines and why these are the right comparisons}
+
+\paragraph{Metrics.}
+\ARTODO{metrics, how they are computed, and what counts as a meaningful gap}
+
+\paragraph{Implementation.}
+\ARTODO{hardware, precision, seeds, hyperparameters, and the number of repeats}
+
+\subsection{Main Results}
+\label{sec:main-results}
+
+\ARTODO{one paragraph reading the table out loud: what moved, by how much, and where it did not}
+
+% Uncomment and fill once the run has finished. Keep the caption self-contained:
+% a reader should understand the table without returning to the body text.
+%
+% \begin{table}[t]
+%   \centering
+%   \caption{Main results. Mean over N seeds, standard deviation in parentheses.}
+%   \label{tab:main}
+%   \begin{tabular}{lcc}
+%     \toprule
+%     Method & Metric A $\uparrow$ & Metric B $\downarrow$ \\
+%     \midrule
+%     Baseline &  &  \\
+%     Ours     &  &  \\
+%     \bottomrule
+%   \end{tabular}
+% \end{table}
+
+\ARfig{Main result figure: the headline comparison. Produce this from a script committed in the repository so it can be regenerated.}
+
+\subsection{Ablations}
+\label{sec:ablations}
+
+% One ablation per design decision claimed as a contribution. If a component
+% cannot be ablated away, explain why rather than omitting it.
+\ARTODO{ablation table and the conclusion each row supports}
+
+% \begin{table}[t]
+%   \centering
+%   \caption{Ablations. Each row removes one component from the full method.}
+%   \label{tab:ablation}
+%   \begin{tabular}{lc}
+%     \toprule
+%     Variant & Metric A $\uparrow$ \\
+%     \midrule
+%     Full method &  \\
+%     $-$ component 1 &  \\
+%     $-$ component 2 &  \\
+%     \bottomrule
+%   \end{tabular}
+% \end{table}
+
+\subsection{Analysis}
+\label{sec:analysis}
+
+% The section that separates a strong paper from a results dump: why does the
+% method behave the way the tables show? Include the case where it does not.
+\ARTODO{mechanism evidence, scaling behaviour, and failure cases}
+
+\ARfig{Analysis figure: the evidence for the mechanism claimed in Section~\ref{sec:intuition}.}

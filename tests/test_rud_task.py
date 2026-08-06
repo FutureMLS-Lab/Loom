@@ -44,6 +44,58 @@ def test_path_under_task(tmp_path: Path) -> None:
     assert path_under_task(td, "../etc/passwd") is None
 
 
+PNG_BYTES = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000a49444154789c6360000002000100ffff03000006000557bfabd4000000"
+    "0049454e44ae426082"
+)
+
+
+def test_read_markdown_asset(tmp_path: Path) -> None:
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "fig.png").write_bytes(PNG_BYTES)
+
+    found = rud_task.read_markdown_asset(tmp_path, "assets/fig.png")
+    assert found is not None
+    data, ctype = found
+    assert data == PNG_BYTES
+    assert ctype == "image/png"
+
+    # A document in a subdirectory resolves through its own relative path.
+    (tmp_path / "docs").mkdir()
+    assert rud_task.read_markdown_asset(tmp_path, "docs/../assets/fig.png") is not None
+
+
+def test_read_markdown_asset_rejects_unsafe_paths(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside.png"
+    outside.write_bytes(PNG_BYTES)
+    base = tmp_path / "task"
+    base.mkdir()
+
+    assert rud_task.read_markdown_asset(base, "../outside.png") is None
+    assert rud_task.read_markdown_asset(base, "/etc/hostname") is None
+    assert rud_task.read_markdown_asset(base, "") is None
+    assert rud_task.read_markdown_asset(base, "missing.png") is None
+
+    # A symlink pointing out of the tree is resolved before the check.
+    link = base / "sneaky.png"
+    link.symlink_to(outside)
+    assert rud_task.read_markdown_asset(base, "sneaky.png") is None
+
+
+def test_read_markdown_asset_is_images_only(tmp_path: Path) -> None:
+    (tmp_path / "secrets.env").write_text("TOKEN=hunter2", encoding="utf-8")
+    (tmp_path / "notes.md").write_text("# hi", encoding="utf-8")
+    assert rud_task.read_markdown_asset(tmp_path, "secrets.env") is None
+    assert rud_task.read_markdown_asset(tmp_path, "notes.md") is None
+
+
+def test_read_markdown_asset_size_cap(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "big.png").write_bytes(PNG_BYTES)
+    monkeypatch.setattr(rud_task, "MAX_MARKDOWN_ASSET_BYTES", 1)
+    assert rud_task.read_markdown_asset(tmp_path, "big.png") is None
+
+
 def test_create_task_seeds_plan_only(tmp_path: Path) -> None:
     skills = tmp_path / "skills.md"
     skills.write_text("# skills", encoding="utf-8")

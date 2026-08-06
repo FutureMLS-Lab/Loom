@@ -26,13 +26,26 @@ const TABS = [
 ];
 const DEFAULT_TAB = TABS[0].id;
 
+// An AR task keeps the normal tabs: its author agent runs in the same tmux
+// pane as any other task, and the paper lives in the worktree the Code Diff
+// tab shows. The AR tab just leads.
+const AR_TAB = { id: 'ar', label: 'AR' };
+function tabsFor(meta) { return isArKind(meta && meta.kind) ? [AR_TAB, ...TABS] : TABS; }
+function defaultTabFor(meta) { return isArKind(meta && meta.kind) ? AR_TAB.id : DEFAULT_TAB; }
+
 const AGENT_LABELS = { cursor: 'Agent', claude: 'Claude', codex: 'Codex' };
 function agentLabel(name) { return AGENT_LABELS[(name || '').toLowerCase()] || 'Agent'; }
 function normalizeAgent(name) { return AGENT_LABELS[(name || '').toLowerCase()] ? name.toLowerCase() : 'cursor'; }
 function taskBackendLabel(meta) {
   meta = meta || {};
   const base = `${agentLabel(meta.agent)}${meta.interview_model ? ' · ' + meta.interview_model : ''}`;
-  return meta.kind === 'aris' ? `ARIS · ${base}` : base;
+  return isArKind(meta.kind) ? `AR · ${base}` : base;
+}
+
+// Tasks created before the rename carry kind "aris"; they are AR tasks too.
+function isArKind(kind) {
+  const k = String(kind || '').toLowerCase();
+  return k === 'ar' || k === 'aris';
 }
 
 // Lightweight non-blocking toast (replaces jarring native alert() for transient
@@ -128,7 +141,12 @@ let TASK_JUST_DRAGGED = false;
 function withProjectQuery(path) {
   if (!STATE.projectId) return path;
   if (path.startsWith('/api/projects')) return path;
-  if (!path.startsWith('/api/project') && !path.startsWith('/api/tasks') && !path.startsWith('/api/kernel')) return path;
+  if (
+    !path.startsWith('/api/project')
+    && !path.startsWith('/api/tasks')
+    && !path.startsWith('/api/kernel')
+    && !path.startsWith('/api/asset')
+  ) return path;
   const sep = path.includes('?') ? '&' : '?';
   return `${path}${sep}project=${encodeURIComponent(STATE.projectId)}`;
 }
@@ -245,6 +263,9 @@ function showPanel(id) {
   if (id === 'changes') {
     refreshChangesView();
   }
+  if (id === 'ar') {
+    deferIdle(() => refreshAr(true));
+  }
 }
 
 function deferIdle(fn) {
@@ -258,14 +279,16 @@ function deferIdle(fn) {
 function buildTabs(meta) {
   const nav = $('#main-tabs');
   if (!nav) return;
+  // Only the Kernel Lab owns the whole view; it has no agent pane to reach.
   const isKernel = !!(meta && meta.kind === 'kernel');
   nav.hidden = isKernel;
   nav.innerHTML = '';
   if (isKernel) return;
-  for (const t of TABS) {
+  const active = defaultTabFor(meta);
+  for (const t of tabsFor(meta)) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'tab' + (t.id === DEFAULT_TAB ? ' active' : '');
+    b.className = 'tab' + (t.id === active ? ' active' : '');
     b.dataset.tab = t.id;
     b.textContent = typeof t.getLabel === 'function' ? t.getLabel(meta) : t.label;
     b.addEventListener('click', () => showPanel(t.id));
@@ -795,15 +818,71 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (ch) => HTML_ESCAPE_MAP[ch]);
 }
 
+// Set by renderMarkdownWithAssets for the duration of one render: maps a
+// relative image path to a URL Loom can serve. Documents rendered without one
+// (an AR review, say) simply leave relative images as literal text.
+let MD_ASSET_RESOLVER = null;
+
+// escapeHtml runs before the inline rules, so a URL taken back out of the
+// escaped text has to be decoded before it can be used as a real path.
+function unescapeHtml(s) {
+  return String(s)
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+// `![alt](path)`, `![alt](path "title")`, absolute or relative.
+function renderMarkdownImage(match, alt, target) {
+  const url = String(target).trim().split(/\s+/)[0];
+  if (/^(https?:|data:)/i.test(url)) {
+    return `<img src="${url}" alt="${alt}" class="md-img" loading="lazy">`;
+  }
+  const resolved = MD_ASSET_RESOLVER ? MD_ASSET_RESOLVER(unescapeHtml(url)) : null;
+  // No resolver (or a path we can't serve): keep the source text rather than
+  // silently dropping the figure.
+  if (!resolved) return match;
+  return `<img src="${escapeHtml(resolved)}" alt="${alt}" class="md-img" loading="lazy">`;
+}
+
 function renderInlineMarkdown(text) {
   return escapeHtml(text)
     // Images must run before links (![alt](url) shares the [text](url) shape).
-    .replace(/!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g, '<img src="$2" alt="$1" class="md-img" loading="lazy">')
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, renderMarkdownImage)
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/~~([^~]+)~~/g, '<del>$1</del>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+}
+
+// URL for an image referenced from `docPath`, resolved relative to that
+// document's own directory the way every markdown viewer does it.
+function markdownAssetUrl(relPath, docPath, slug) {
+  const dir = String(docPath || '').split('/').slice(0, -1).filter(Boolean).join('/');
+  const joined = dir ? `${dir}/${relPath}` : relPath;
+  const params = new URLSearchParams({ path: joined });
+  if (slug) params.set('task', slug);
+  return withProjectQuery(`/api/asset?${params.toString()}`);
+}
+
+function markdownAssetResolver(which) {
+  if (which === 'interview' && STATE.slug) {
+    return (rel) => markdownAssetUrl(rel, STATE.interviewMdFile, STATE.slug);
+  }
+  if (which === 'notes') return (rel) => markdownAssetUrl(rel, 'NOTES.md', '');
+  return null;
+}
+
+function renderMarkdownWithAssets(md, resolveAsset) {
+  MD_ASSET_RESOLVER = resolveAsset || null;
+  try {
+    return renderMarkdown(md);
+  } finally {
+    MD_ASSET_RESOLVER = null;
+  }
 }
 
 function renderMarkdown(md) {
@@ -977,7 +1056,7 @@ function updateMarkdownPreview(which, force = false) {
   const text = editor.value || '';
   if (!force && STATE.previewCache[which] === text) return;
   STATE.previewCache[which] = text;
-  preview.innerHTML = renderMarkdown(text);
+  preview.innerHTML = renderMarkdownWithAssets(text, markdownAssetResolver(which));
 }
 
 function updateActiveMarkdownPreview() {
@@ -1349,10 +1428,11 @@ function renderTasksFromState() {
     if (t.slug === selected) li.classList.add('active');
     const typeLabel = t.kind === 'kernel'
       ? 'Kernel'
-      : (t.kind === 'aris' ? 'ARIS' : agentLabel(t.agent));
+      : (isArKind(t.kind) ? 'AR' : agentLabel(t.agent));
+    const kindClass = isArKind(t.kind) ? 'ar' : (t.kind || 'agent');
     li.innerHTML =
       `<div class="task-title-row"><span class="task-title">${escapeHtml(t.title)}</span>` +
-      `<span class="task-kind task-kind--${escapeHtml(t.kind || 'agent')}">${escapeHtml(typeLabel)}</span></div>`;
+      `<span class="task-kind task-kind--${escapeHtml(kindClass)}">${escapeHtml(typeLabel)}</span></div>`;
     li.addEventListener('dragstart', (ev) => {
       TASK_DRAG_SLUG = t.slug;
       TASK_JUST_DRAGGED = true;
@@ -1476,6 +1556,7 @@ async function selectTask(slug) {
   STATE.planEditing = false;  // never carry an in-progress PLAN edit across tasks
   STATE.changesData = null;
   STATE.changesSelected = '';
+  resetArLab();
   document.querySelectorAll('#task-list li').forEach((li) => {
     li.classList.toggle('active', li.dataset.slug === slug);
   });
@@ -1508,6 +1589,7 @@ async function selectTask(slug) {
     applyAgentLabels(cached);
     buildTabs(cached);
     if (cached.kind === 'kernel') { showPanel('kernel'); initKernelLab(cached); }
+    else if (isArKind(cached.kind)) showPanel('ar');
     else showPanel(DEFAULT_TAB);
   }
 
@@ -1558,7 +1640,10 @@ async function selectTask(slug) {
   // refresh callbacks unnecessarily.
   if (!cached) {
     if (d.meta.kind === 'kernel') { showPanel('kernel'); initKernelLab(d.meta); }
+    else if (isArKind(d.meta.kind)) { showPanel('ar'); initArLab(d.meta); }
     else showPanel(DEFAULT_TAB);
+  } else if (isArKind(d.meta.kind)) {
+    initArLab(d.meta);
   }
   refreshInterviewPreview(true);
   refreshClaudeSessions();
@@ -1571,7 +1656,7 @@ function applyAgentLabels(meta) {
   const pasteBtn = document.getElementById('btn-interview-paste');
   const stopBtn = document.getElementById('btn-interview-stop');
   if (startBtn) startBtn.textContent = `Start ${label}`;
-  if (pasteBtn) pasteBtn.textContent = (meta && meta.kind === 'aris') ? 'Start ARIS loop' : 'Start Deep Interview';
+  if (pasteBtn) pasteBtn.textContent = isArKind(meta && meta.kind) ? 'Send AR prompt' : 'Start Deep Interview';
   if (stopBtn) stopBtn.textContent = `Stop ${label}`;
   const heading = document.querySelector('.tab-panel[data-panel="claude"] .terminal-card__bar h4');
   if (heading) heading.textContent = `${label} Terminal`;
@@ -2882,7 +2967,7 @@ const AGENT_HINTS = {
   claude: 'Claude Code pane. Resume a past session by UUID.',
   codex: 'Codex CLI pane. Resume with codex resume <id>.',
   kernel: 'Loom Kernel Hub optimization. The task view becomes the Kernel Lab.',
-  aris: 'Autonomous research loop: the agent mines ideas from the base repo, runs a worktree experiment per idea, and folds results back into PLAN.md.',
+  ar: 'Automated research: mine a direction for ideas, then each idea you pick becomes a task that drafts a paper, runs its experiments, and iterates against a reviewer agent.',
 };
 
 function effectiveCreateAgent() {
@@ -3000,7 +3085,75 @@ function updateCreateAgentHint(resetModel = false) {
     effectiveCreateAgent(),
     resetModel ? null : (input?.value || null),
   );
+  updateArCreateFields();
 }
+
+// The AR-only half of the create form: direction, venue, mode and rounds.
+async function updateArCreateFields() {
+  const wrap = document.getElementById('ar-create-fields');
+  if (!wrap) return;
+  const isAr = document.getElementById('new-agent-select')?.value === 'ar';
+  wrap.hidden = !isAr;
+  // An AR task has no "general goal" to interview about: what it needs is the
+  // paper's actual content, which the AR block asks for directly.
+  const goalWrap = document.getElementById('new-goal-wrap');
+  if (goalWrap) goalWrap.hidden = isAr;
+  if (!isAr) return;
+  const cat = await loadArCatalog();
+  const dir = document.getElementById('ar-direction');
+  if (dir && !dir.options.length) {
+    dir.innerHTML = (cat.directions || [])
+      .map((d) => `<option value="${escapeHtml(d.id)}">${escapeHtml(d.label)}</option>`)
+      .join('');
+    dir.addEventListener('change', syncArCustomDirection);
+  }
+  const venue = document.getElementById('ar-venue');
+  if (venue && !venue.options.length) {
+    venue.innerHTML = (cat.venues || [])
+      .map((v) => `<option value="${escapeHtml(v.id)}">${escapeHtml(v.label)}</option>`)
+      .join('');
+    if (cat.default_venue) venue.value = cat.default_venue;
+  }
+  const rounds = document.getElementById('ar-max-rounds');
+  if (rounds && cat.default_max_rounds && !rounds.dataset.init) {
+    rounds.value = cat.default_max_rounds;
+    rounds.max = cat.max_rounds_limit || 50;
+    rounds.dataset.init = '1';
+  }
+  syncArCustomDirection();
+  syncArMode();
+}
+
+function syncArCustomDirection() {
+  const dir = document.getElementById('ar-direction');
+  const custom = document.getElementById('ar-custom-direction');
+  if (!dir || !custom) return;
+  custom.hidden = dir.value !== 'custom';
+}
+
+// The paper-content box is shown in both modes; it is required when the user
+// is starting from their own idea and extra context when the studio is mining
+// a direction on its own.
+function syncArMode() {
+  const mode = document.querySelector('input[name="ar-mode"]:checked')?.value || 'auto';
+  const seeded = mode === 'seed';
+  const label = document.getElementById('ar-seed-label');
+  const note = document.getElementById('ar-seed-note');
+  const box = document.getElementById('ar-seed-idea');
+  if (label) label.textContent = seeded
+    ? 'What the paper should be about'
+    : 'What the paper should be about (optional)';
+  if (note) note.textContent = seeded
+    ? 'The studio sharpens this into concrete, testable variants — one paper task per variant you pick.'
+    : 'Leave this empty to let the studio propose ideas purely from recent work in the direction above.';
+  if (box) box.placeholder = seeded
+    ? 'The concrete content you want the paper to establish.'
+    : 'Optional: constraints, a dataset you must use, an angle you want covered.';
+}
+
+document.querySelectorAll('input[name="ar-mode"]').forEach((el) => {
+  el.addEventListener('change', syncArMode);
+});
 
 function resetCreateForm() {
   $('#new-title').value = '';
@@ -3009,6 +3162,10 @@ function resetCreateForm() {
   renderSkillsPicker();
   const sel = document.getElementById('new-agent-select');
   if (sel) sel.value = 'cursor';
+  const seed = document.getElementById('ar-seed-idea');
+  if (seed) seed.value = '';
+  const custom = document.getElementById('ar-custom-direction');
+  if (custom) custom.value = '';
   updateCreateAgentHint(true);
 }
 
@@ -3175,6 +3332,7 @@ document.addEventListener('keydown', (event) => {
   // TUIs, not a request to close a Loom modal.
   if (event.target && event.target.closest && event.target.closest('.xterm')) return;
   if (!$('#kernel-source-modal').hidden) closeKernelSourceModal();
+  else if (!$('#ar-review-modal').hidden) closeArReview();
   else if (!$('#preview-modal').hidden) closeFullscreenPreview();
   else if (!$('#notes-modal').hidden) closeNotesModal();
   else if (!$('#worktree-modal').hidden) closeWorktreeModal();
@@ -3270,7 +3428,7 @@ async function openNotesModal() {
     if (pathEl) pathEl.textContent = projectRoot ? `${projectRoot}/.RUD/NOTES.md` : '.RUD/NOTES.md';
     const d = await api('/api/notes');
     editor.value = d.content || '';
-    preview.innerHTML = renderMarkdown(editor.value);
+    preview.innerHTML = renderMarkdownWithAssets(editor.value, markdownAssetResolver('notes'));
     STATE.notesDirty = false;
     status.textContent = '';
   } catch (err) {
@@ -3315,7 +3473,9 @@ async function saveNotes() {
   if (!editor || !preview) return;
   editor.addEventListener('input', () => {
     STATE.notesDirty = true;
-    requestAnimationFrame(() => { preview.innerHTML = renderMarkdown(editor.value); });
+    requestAnimationFrame(() => {
+      preview.innerHTML = renderMarkdownWithAssets(editor.value, markdownAssetResolver('notes'));
+    });
   });
   editor.addEventListener('keydown', (ev) => {
     if ((ev.ctrlKey || ev.metaKey) && (ev.key === 's' || ev.key === 'S')) {
@@ -4421,6 +4581,428 @@ document.getElementById('kernel-chat-text').addEventListener('keydown', (ev) => 
   if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') { ev.preventDefault(); sendKernelChat(); }
 });
 
+// ===== AR (Automated Research) =====
+//
+// One panel serves both AR roles. A studio task mines papers and turns ideas
+// into child tasks; a paper task walks draft -> your gate -> author/reviewer
+// rounds -> your gate -> delivery. Which half renders is decided by
+// state.role, which the server keeps in .RUD/<slug>/ar.json.
+
+const AR = {
+  catalog: null,
+  data: null,
+  slug: null,
+  selected: new Set(),
+  timer: null,
+  busy: false,
+};
+
+const AR_STAGES = [
+  ['draft', 'Draft'],
+  ['await_draft_review', 'Your review'],
+  ['loop', 'Rounds'],
+  ['await_final_review', 'Final review'],
+  ['delivered', 'Delivered'],
+];
+
+function arTaskPath(suffix) {
+  return '/api/tasks/' + encodeURIComponent(AR.slug) + '/ar' + (suffix || '');
+}
+
+async function loadArCatalog() {
+  if (AR.catalog) return AR.catalog;
+  try {
+    AR.catalog = await api('/api/ar/catalog');
+  } catch (err) {
+    console.debug('AR catalog load failed', err);
+    AR.catalog = { directions: [], venues: [], default_venue: '', default_max_rounds: 10 };
+  }
+  return AR.catalog;
+}
+
+function resetArLab() {
+  if (AR.timer) { clearInterval(AR.timer); AR.timer = null; }
+  AR.data = null;
+  AR.slug = null;
+  AR.selected = new Set();
+}
+
+async function initArLab(meta) {
+  const slug = STATE.slug;
+  AR.slug = slug;
+  AR.selected = new Set();
+  await loadArCatalog();
+  await refreshAr();
+  if (AR.timer) clearInterval(AR.timer);
+  AR.timer = setInterval(() => {
+    if (document.hidden || STATE.slug !== AR.slug) return;
+    const panel = document.querySelector('.tab-panel[data-panel="ar"]');
+    if (!panel || panel.hidden) return;
+    refreshAr(true);
+  }, 5000);
+}
+
+async function refreshAr(quiet = false) {
+  const slug = AR.slug;
+  if (!slug) return;
+  try {
+    const d = await api(arTaskPath());
+    if (AR.slug !== slug) return;
+    AR.data = d;
+    renderAr(d);
+  } catch (err) {
+    if (!quiet) toast(err.message || 'Could not load AR state', { type: 'error' });
+  }
+}
+
+async function arPost(action, body, label) {
+  if (AR.busy) return null;
+  AR.busy = true;
+  try {
+    const d = await api(arTaskPath('/' + action), {
+      method: 'POST',
+      body: JSON.stringify(body || {}),
+    });
+    if (d && d.state) { AR.data = d; renderAr(d); }
+    else await refreshAr(true);
+    return d;
+  } catch (err) {
+    toast(`${label || action} failed: ${err.message}`, { type: 'error' });
+    return null;
+  } finally {
+    AR.busy = false;
+  }
+}
+
+function renderAr(d) {
+  const state = (d && d.state) || {};
+  const isPaper = state.role === 'paper';
+  $('#ar-studio').hidden = isPaper;
+  $('#ar-paper').hidden = !isPaper;
+  const dirEl = $('#ar-direction-label');
+  if (dirEl) dirEl.textContent = d.direction_label || state.direction || '—';
+  const badge = $('#ar-stage-badge');
+  if (badge) {
+    badge.textContent = isPaper ? (d.stage_label || state.stage || '') : 'studio';
+    badge.dataset.state = isPaper ? String(state.stage || '') : 'studio';
+  }
+  if (isPaper) renderArPaper(d, state);
+  else renderArStudio(d, state);
+}
+
+// --- Studio ---
+
+// Tail of a job's progress log. Kept pinned to the bottom while the job runs
+// so new lines are visible without scrolling, but left alone once it is done
+// so a user reading back through it isn't yanked away.
+function renderArLog(elId, lines, running) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const text = (lines || []).join('\n');
+  el.hidden = !text;
+  if (!text) return;
+  if (el.textContent !== text) {
+    const pinned = running
+      || el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+    el.textContent = text;
+    if (pinned) el.scrollTop = el.scrollHeight;
+  }
+  el.classList.toggle('is-running', !!running);
+}
+
+function renderArStudio(d, state) {
+  const logs = d.logs || {};
+  renderArLog('ar-papers-log', logs.papers, state.papers_status === 'running');
+  renderArLog('ar-ideas-log', logs.ideas, state.ideas_status === 'running');
+  const papers = Array.isArray(state.papers) ? state.papers : [];
+  const pStatus = $('#ar-papers-status');
+  if (pStatus) {
+    if (state.papers_status === 'running') pStatus.textContent = 'Mining arXiv…';
+    else if (state.papers_error) pStatus.textContent = state.papers_error;
+    else if (papers.length) pStatus.textContent = `${papers.length} paper(s), newest first.`;
+    else pStatus.textContent = 'Nothing mined yet.';
+  }
+  const list = $('#ar-paper-list');
+  if (list) {
+    list.innerHTML = papers.map((p) => {
+      const venue = p.venue ? `<span class="ar-tag">${escapeHtml(p.venue)}</span>` : '';
+      return `<li class="ar-paper">
+        <div class="ar-paper__head">
+          <a href="${escapeHtml(p.url || '#')}" target="_blank" rel="noreferrer">${escapeHtml(p.title || '')}</a>
+          ${venue}<span class="ar-paper__date">${escapeHtml(p.published || '')}</span>
+        </div>
+        <p class="ar-paper__summary">${escapeHtml((p.summary || '').slice(0, 320))}</p>
+      </li>`;
+    }).join('');
+  }
+
+  const ideas = Array.isArray(state.ideas) ? state.ideas : [];
+  const iStatus = $('#ar-ideas-status');
+  if (iStatus) {
+    if (state.ideas_status === 'running') iStatus.textContent = 'Generating ideas — this takes a few minutes…';
+    else if (state.ideas_error) iStatus.textContent = state.ideas_error;
+    else if (ideas.length) iStatus.textContent = `${ideas.length} idea(s). Select the ones worth a paper, then create tasks.`;
+    else iStatus.textContent = 'No ideas yet. Generate them here, or paste a JSON array from the agent pane.';
+  }
+  const host = $('#ar-idea-list');
+  if (!host) return;
+  host.innerHTML = ideas.map((idea) => {
+    const spawned = idea.status === 'spawned';
+    const checked = AR.selected.has(idea.id) ? ' checked' : '';
+    const experiments = (idea.experiments || []).map((x) => `<li>${escapeHtml(x)}</li>`).join('');
+    const link = spawned && idea.child_slug
+      ? `<button type="button" class="btn btn--sm ar-idea__open" data-slug="${escapeHtml(idea.child_slug)}">Open task</button>`
+      : '';
+    return `<article class="ar-idea${spawned ? ' is-spawned' : ''}">
+      <header class="ar-idea__head">
+        <label class="ar-idea__pick">
+          <input type="checkbox" data-idea="${escapeHtml(idea.id)}"${checked}${spawned ? ' disabled' : ''} />
+          <strong>${escapeHtml(idea.title)}</strong>
+        </label>
+        <span class="ar-idea__score">${Number(idea.score || 0).toFixed(2)}</span>
+        ${link}
+      </header>
+      <dl class="ar-idea__body">
+        ${idea.hypothesis ? `<dt>Hypothesis</dt><dd>${escapeHtml(idea.hypothesis)}</dd>` : ''}
+        ${idea.novelty ? `<dt>Why it is new</dt><dd>${escapeHtml(idea.novelty)}</dd>` : ''}
+        ${idea.metric ? `<dt>Metric</dt><dd>${escapeHtml(idea.metric)}</dd>` : ''}
+        ${experiments ? `<dt>Experiments</dt><dd><ul>${experiments}</ul></dd>` : ''}
+        ${idea.risk ? `<dt>Risk</dt><dd>${escapeHtml(idea.risk)}</dd>` : ''}
+      </dl>
+    </article>`;
+  }).join('');
+
+  host.querySelectorAll('input[data-idea]').forEach((box) => {
+    box.addEventListener('change', () => {
+      if (box.checked) AR.selected.add(box.dataset.idea);
+      else AR.selected.delete(box.dataset.idea);
+      updateArSpawnLabel();
+    });
+  });
+  host.querySelectorAll('.ar-idea__open').forEach((btn) => {
+    btn.addEventListener('click', () => selectTask(btn.dataset.slug));
+  });
+  updateArSpawnLabel();
+}
+
+// Keeping the count in the button label means the row needs no separate
+// "N selected" text competing for the same line.
+function updateArSpawnLabel() {
+  const btn = document.getElementById('btn-ar-spawn');
+  if (!btn) return;
+  const n = AR.selected.size;
+  btn.textContent = n ? `Create ${n} task${n === 1 ? '' : 's'}` : 'Create tasks';
+}
+
+// --- Paper ---
+
+function renderArPaper(d, state) {
+  const title = $('#ar-paper-title');
+  if (title) title.textContent = (state.idea && state.idea.title) || 'Paper';
+
+  const stepper = $('#ar-stepper');
+  if (stepper) {
+    const currentIdx = AR_STAGES.findIndex(([id]) => id === state.stage);
+    stepper.innerHTML = AR_STAGES.map(([id, label], i) => {
+      const cls = i < currentIdx ? 'is-done' : (i === currentIdx ? 'is-current' : '');
+      const extra = id === 'loop' ? ` (${state.round || 0}/${state.max_rounds || 0})` : '';
+      return `<li class="ar-step ${cls}">${escapeHtml(label)}${extra}</li>`;
+    }).join('');
+  }
+
+  const hint = $('#ar-paper-hint');
+  if (hint) {
+    const bits = [];
+    if (d.paper_dir) bits.push(d.paper_dir);
+    if (state.pdf_error) bits.push(state.pdf_error);
+    else if (state.pdf_built_at) bits.push(`PDF built ${state.pdf_built_at}`);
+    hint.textContent = bits.join(' · ');
+  }
+
+  const brief = $('#ar-idea-brief');
+  if (brief) {
+    const idea = state.idea || {};
+    brief.innerHTML = idea.hypothesis
+      ? `<p><strong>Hypothesis.</strong> ${escapeHtml(idea.hypothesis)}</p>` +
+        (idea.metric ? `<p><strong>Metric.</strong> ${escapeHtml(idea.metric)}</p>` : '')
+      : '';
+  }
+
+  renderArGate(state);
+  renderArSubmission(d.submission);
+  renderArRounds(d, state);
+}
+
+function renderArSubmission(sub) {
+  const host = $('#ar-submission');
+  if (!host) return;
+  host.hidden = !sub;
+  if (!sub) return;
+  const list = $('#ar-checklist');
+  if (list) {
+    list.innerHTML = (sub.checks || []).map((c) =>
+      `<li class="ar-check-item ${c.ok ? 'is-ok' : 'is-bad'}">
+        <span class="ar-check-item__mark" aria-hidden="true">${c.ok ? '✓' : '✗'}</span>
+        <span>${escapeHtml(c.label)}${c.detail ? ` <em>${escapeHtml(c.detail)}</em>` : ''}</span>
+      </li>`).join('');
+  }
+  const title = $('#ar-submission__title') || host.querySelector('.ar-submission__title');
+  if (title) {
+    title.textContent = sub.ready
+      ? `Submission readiness — ready for ${sub.venue_label}`
+      : 'Submission readiness — not ready yet';
+  }
+  const cmd = $('#ar-submission-command');
+  if (cmd) cmd.textContent = sub.command || '';
+}
+
+function renderArGate(state) {
+  const card = $('#ar-gate-card');
+  if (!card) return;
+  const atDraft = state.stage === 'await_draft_review';
+  const atFinal = state.stage === 'await_final_review';
+  card.hidden = !(atDraft || atFinal);
+  if (card.hidden) return;
+  card.dataset.gate = atDraft ? 'draft' : 'final';
+  $('#ar-gate-title').textContent = atDraft ? 'Draft gate' : 'Final gate';
+  $('#ar-gate-hint').textContent = atDraft
+    ? 'The skeleton draft is ready. Approve to open the author/reviewer rounds, or send it back with notes.'
+    : `All ${state.max_rounds} rounds are done. Approve to deliver the paper, or send it back for another batch of rounds.`;
+  $('#btn-ar-approve').textContent = atDraft ? 'Approve draft' : 'Approve and deliver';
+}
+
+function renderArRounds(d, state) {
+  renderArLog(
+    'ar-review-log',
+    (d.logs || {}).review,
+    state.review_status === 'running' || !!(d.loop || {}).running,
+  );
+  const status = $('#ar-loop-status');
+  if (status) {
+    const loop = d.loop || {};
+    const bits = [];
+    if (loop.running) bits.push('Loop running');
+    else bits.push('Loop stopped');
+    if (loop.last_action) bits.push(loop.last_action);
+    if (loop.last_error) bits.push(`error: ${loop.last_error}`);
+    if (state.review_status === 'running') bits.push('review in progress…');
+    status.textContent = bits.join(' · ');
+  }
+
+  const host = $('#ar-round-list');
+  if (!host) return;
+  const rounds = Array.isArray(state.rounds) ? state.rounds : [];
+  if (!rounds.length) {
+    host.innerHTML = '<li class="ar-round ar-round--empty">No rounds yet.</li>';
+    return;
+  }
+  host.innerHTML = rounds.slice().reverse().map((r) => {
+    const label = r.n === 0 ? 'Draft' : `Round ${r.n}`;
+    const author = r.author || null;
+    const review = r.review || null;
+    const scores = (review && review.scores) || {};
+    const chips = Object.entries(scores)
+      .map(([k, v]) => `<span class="ar-score">${escapeHtml(k)} ${escapeHtml(String(v))}</span>`)
+      .join('');
+    const reviewBtn = review
+      ? `<button type="button" class="btn btn--sm ar-round__review" data-round="${r.n}">Read review</button>`
+      : '';
+    const authorSummary = author && author.summary
+      ? `<pre class="ar-round__summary">${escapeHtml(author.summary.slice(0, 900))}</pre>`
+      : '<p class="ar-round__pending">Author working…</p>';
+    return `<li class="ar-round">
+      <div class="ar-round__head">
+        <strong>${escapeHtml(label)}</strong>
+        <span class="ar-round__headline">${escapeHtml((review && review.headline) || (r.review_error ? `review failed: ${r.review_error}` : ''))}</span>
+        ${reviewBtn}
+      </div>
+      <div class="ar-round__scores">${chips}</div>
+      ${authorSummary}
+    </li>`;
+  }).join('');
+
+  host.querySelectorAll('.ar-round__review').forEach((btn) => {
+    btn.addEventListener('click', () => openArReview(Number(btn.dataset.round)));
+  });
+}
+
+async function openArReview(n) {
+  try {
+    const d = await api(arTaskPath('/review/' + n));
+    $('#ar-review-title').textContent = n === 0 ? 'Draft review' : `Round ${n} review`;
+    $('#ar-review-content').innerHTML = renderMarkdown(d.review || '');
+    $('#ar-review-modal').hidden = false;
+    document.body.classList.add('preview-open');
+  } catch (err) {
+    toast(err.message || 'Could not load the review', { type: 'error' });
+  }
+}
+
+function closeArReview() {
+  $('#ar-review-modal').hidden = true;
+  document.body.classList.remove('preview-open');
+}
+
+function downloadArPdf() {
+  if (!AR.slug) return;
+  // A plain navigation lets the browser handle the PDF stream and the
+  // Content-Disposition filename; fetch + blob would lose both.
+  window.open(withProjectQuery(arTaskPath('/pdf')), '_blank');
+}
+
+// --- AR panel wire-up ---
+
+document.getElementById('btn-ar-refresh').addEventListener('click', () => refreshAr());
+document.getElementById('btn-ar-mine').addEventListener('click', () => {
+  arPost('mine', { venue_only: $('#ar-venue-only').checked }, 'Mining');
+});
+document.getElementById('btn-ar-ideas').addEventListener('click', () => {
+  arPost('ideas', { count: Number($('#ar-idea-count').value || 6) }, 'Idea generation');
+});
+document.getElementById('btn-ar-spawn').addEventListener('click', async () => {
+  const ids = [...AR.selected];
+  if (!ids.length) { toast('Select at least one idea first.'); return; }
+  const d = await arPost('spawn', { idea_ids: ids }, 'Creating tasks');
+  if (!d) return;
+  AR.selected = new Set();
+  updateArSpawnLabel();
+  const made = (d.spawned || []).length;
+  if (made) toast(`Created ${made} paper task(s).`);
+  (d.errors || []).forEach((e) => toast(e, { type: 'error' }));
+  await loadTasks();
+});
+document.getElementById('btn-ar-build').addEventListener('click', async () => {
+  const d = await arPost('build', {}, 'Build');
+  if (d && d.build && !d.build.ok) toast(d.build.error || 'Build failed', { type: 'error' });
+  else if (d && d.build && !d.build.clean) toast('PDF built, but LaTeX reported errors.');
+});
+document.getElementById('btn-ar-download').addEventListener('click', downloadArPdf);
+document.getElementById('btn-ar-submission').addEventListener('click', async () => {
+  const d = await arPost('submission', {}, 'Submission prep');
+  if (d && d.submission) {
+    toast(d.submission.ready
+      ? `Ready for ${d.submission.venue_label}. submission.json written.`
+      : 'submission.json written — see the checklist for what still blocks it.');
+  }
+});
+document.getElementById('btn-ar-loop-start').addEventListener('click', () => arPost('loop/start', {}, 'Start loop'));
+document.getElementById('btn-ar-loop-stop').addEventListener('click', () => arPost('loop/stop', {}, 'Stop loop'));
+document.getElementById('btn-ar-review-now').addEventListener('click', () => arPost('review', {}, 'Review'));
+document.getElementById('btn-ar-approve').addEventListener('click', () => {
+  const gate = $('#ar-gate-card').dataset.gate || 'draft';
+  arPost('gate', { gate, decision: 'approve', note: $('#ar-gate-note').value }, 'Approve');
+  $('#ar-gate-note').value = '';
+});
+document.getElementById('btn-ar-reject').addEventListener('click', () => {
+  const gate = $('#ar-gate-card').dataset.gate || 'draft';
+  arPost('gate', { gate, decision: 'reject', note: $('#ar-gate-note').value }, 'Request changes');
+  $('#ar-gate-note').value = '';
+});
+document.getElementById('btn-ar-review-close').addEventListener('click', closeArReview);
+document.getElementById('ar-review-modal').addEventListener('click', (event) => {
+  if (event.target.id === 'ar-review-modal') closeArReview();
+});
+
 // ===== Claude pane info card (worktree + session history + Resume) =====
 
 function formatSessionMtime(ts) {
@@ -4952,7 +5534,6 @@ document.getElementById('btn-delete-task').addEventListener('click', deleteSelec
 
 document.getElementById('btn-new-task').addEventListener('click', async () => {
   const title = $('#new-title').value.trim();
-  const general_goal = $('#new-goal').value.trim();
   const skillsEl = document.getElementById('new-skills');
   const skills_path = skillsEl ? selectedSkillsValue(skillsEl) : '';
   const agentSel = document.getElementById('new-agent-select');
@@ -4960,14 +5541,21 @@ document.getElementById('btn-new-task').addEventListener('click', async () => {
   const interviewModel = (document.getElementById('new-model')?.value || '').trim();
   const btn = $('#btn-new-task');
   const status = $('#new-task-status');
-  if (!title || !general_goal) {
+  // AR tasks have no general goal: the paper's content plays that role, and
+  // the server derives the stored goal from the AR fields below.
+  const general_goal = agent === 'ar' ? '' : $('#new-goal').value.trim();
+  if (!title) {
+    status.textContent = 'A title is required.';
+    return;
+  }
+  if (agent !== 'ar' && !general_goal) {
     status.textContent = 'Title and general goal are required.';
     return;
   }
   btn.disabled = true;
   status.textContent = 'Creating…';
   try {
-    const special = agent === 'kernel' || agent === 'aris';
+    const special = agent === 'kernel' || agent === 'ar';
     const body = {
       title,
       general_goal,
@@ -4975,7 +5563,21 @@ document.getElementById('btn-new-task').addEventListener('click', async () => {
       interview_model: interviewModel,
     };
     if (agent === 'kernel') body.kind = 'kernel';
-    else if (agent === 'aris') body.kind = 'aris';
+    else if (agent === 'ar') {
+      body.kind = 'ar';
+      body.ar_direction = $('#ar-direction')?.value || '';
+      body.ar_custom_direction = $('#ar-custom-direction')?.value.trim() || '';
+      body.ar_venue = $('#ar-venue')?.value || '';
+      body.ar_mode = document.querySelector('input[name="ar-mode"]:checked')?.value || 'auto';
+      body.ar_seed_idea = $('#ar-seed-idea')?.value.trim() || '';
+      body.ar_max_rounds = Number($('#ar-max-rounds')?.value || 10);
+      if (body.ar_mode === 'seed' && !body.ar_seed_idea) {
+        status.textContent = 'Describe what the paper should be about, or switch to auto direction.';
+        btn.disabled = false;
+        return;
+      }
+      delete body.general_goal;
+    }
     if (skills_path) body.skills_path = skills_path;
     const { meta } = await api('/api/tasks', { method: 'POST', body: JSON.stringify(body) });
     resetCreateForm();
