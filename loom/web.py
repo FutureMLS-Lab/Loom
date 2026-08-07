@@ -42,6 +42,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from loom import ar_task as ar
 from loom.openclaw import OpenClawClient, OpenClawConfig, openclaw_status
 from loom.paths import (
+    AR_ROOT_ENV,
     KERNEL_HUB_ENV,
     bundled_skills_path,
     kernel_hub_dir,
@@ -2851,6 +2852,7 @@ class ClaudeRegistry:
         *,
         resume_session_id: str = "",
         default_skills: Path | None = None,
+        env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         meta = read_meta(project_root, slug)
         if not meta:
@@ -2972,6 +2974,9 @@ class ClaudeRegistry:
                 "already_running": True,
             }
 
+        env_args: list[str] = []
+        for key, value in (env or {}).items():
+            env_args += ["-e", f"{key}={value}"]
         try:
             subprocess.run(
                 [
@@ -2986,6 +2991,7 @@ class ClaudeRegistry:
                     "64",
                     "-c",
                     str(cwd),
+                    *env_args,
                 ],
                 capture_output=True,
                 text=True,
@@ -3243,6 +3249,12 @@ class ClaudeRegistry:
     def wait_until_ready(self, target: str, timeout: float = 15.0) -> None:
         """Block until the agent CLI in *target* is ready to receive a prompt."""
         self._wait_for_claude_ready(target, timeout=timeout)
+
+    def target_alive(self, target: str) -> bool:
+        """True when *target* still names a live tmux session."""
+        if not target.strip():
+            return False
+        return self._tmux_session_exists(_session_name_from_tmux_target(target))
 
     def _wait_for_claude_ready(self, target: str, timeout: float = 45.0) -> None:
         deadline = time.time() + timeout
@@ -3690,6 +3702,9 @@ def _ar_ideas_job(root: Path, slug: str, count: int, model: str) -> None:
             ideas_status="done",
             ideas_error="",
             ideas_updated_at=_iso_now(),
+            cost_usd=round(
+                float(state.get("cost_usd") or 0.0) + float(res.get("cost") or 0.0), 4
+            ),
         )
         print(f"[ar] {slug}: proposed {len(res.get('ideas') or [])} idea(s)", flush=True)
     else:
@@ -3755,7 +3770,6 @@ def _ar_spawn_children(
     parent_slug: str,
     state: dict[str, Any],
     idea_ids: list[str],
-    code_root: Path,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Turn selected idea cards into paper tasks, one task per idea."""
     parent = read_meta(root, parent_slug)
@@ -3782,12 +3796,14 @@ def _ar_spawn_children(
                 agent=(parent.agent if parent else AGENT_CURSOR),
                 kind=ar.KIND_AR,
                 auto_worktree=False,
+                slug=ar.child_slug(parent_slug, idea["title"]),
             )
-            prepare_task_worktree_from(root, child.slug, code_root)
+            # A paper gets its own code and manuscript repositories rather than
+            # a branch of whatever project spawned it.
+            layout = ar.init_paper_workspace(root, child.slug, venue, idea)
             paper_dir = ar.paper_root(root, child.slug)
-            seeded, msg = ar.seed_paper_skeleton(paper_dir, venue, idea)
-            if not seeded:
-                errors.append(f"{child.slug}: {msg}")
+            if not layout.get("ok"):
+                errors.append(f"{child.slug}: {layout.get('skeleton')}")
             paper_state = ar.new_paper_state(
                 parent_slug=parent_slug,
                 idea=idea,
@@ -3884,6 +3900,12 @@ class _ARLoopDriver:
         if meta is None:
             return False, "task not found"
         target = (meta.tmux_interview_target or "").strip()
+        # A recorded target outlives the session it names - the pane can be
+        # killed, or the task moved. Treat a dead one as no pane at all rather
+        # than pasting into a session that no longer exists.
+        if target and not self.manager.pane_alive(target):
+            update_meta(self.project_root, self.slug, tmux_interview_target="")
+            target = ""
         if not target:
             started = self.manager.ensure_pane(
                 self.project_root, self.project_id, self.slug
@@ -3959,11 +3981,14 @@ class _ARLoopDriver:
             return
         paper_dir = self._paper_dir()
         if not (paper_dir / "main.tex").is_file():
-            ok, msg = ar.seed_paper_skeleton(
-                paper_dir, str(state.get("venue") or ar.DEFAULT_VENUE), state.get("idea")
+            layout = ar.init_paper_workspace(
+                self.project_root,
+                self.slug,
+                str(state.get("venue") or ar.DEFAULT_VENUE),
+                state.get("idea"),
             )
-            if not ok:
-                self.last_error = msg
+            if not layout.get("ok"):
+                self.last_error = str(layout.get("skeleton") or "could not lay out work/")
                 return
         note.parent.mkdir(parents=True, exist_ok=True)
         prompt = ar.author_draft_prompt(
@@ -4077,9 +4102,12 @@ class _ARLoopDriver:
         }
         self._save(state)
 
-        reviewer_model = str(state.get("reviewer_model") or "") or agent_default_model(
+        base_model = str(state.get("reviewer_model") or "") or agent_default_model(
             AGENT_CLAUDE
         )
+        reviewer_model = ar.reviewer_model_for(state, base_model, n)
+        if reviewer_model != base_model:
+            self._note(f"round {n} plateaued - reviewing with {reviewer_model} instead")
         result = ar.run_reviewer(
             self._paper_dir(),
             ar.ar_skill_text(ar.SKILL_REVIEWER),
@@ -4118,8 +4146,36 @@ class _ARLoopDriver:
             "headline": result.get("headline") or "",
         }
         rec.pop("review_error", None)
+        state["cost_usd"] = round(
+            float(state.get("cost_usd") or 0.0) + float(result.get("cost") or 0.0), 4
+        )
         self._save(state)
         self._note(f"round {n} reviewed - {rec['review']['headline']}")
+
+        if ar.should_stop_early(state):
+            state["stage"] = ar.STAGE_AWAIT_FINAL_REVIEW
+            state["loop_running"] = False
+            state["stop_reason"] = (
+                f"reviewer rated it {int(ar.best_rating(state))}/10, at or above "
+                f"the target of {ar.stop_rating(state)}"
+            )
+            self._save(state)
+            self._note(f"stopping early: {state['stop_reason']}")
+            self._emit(
+                "ar-loop-complete",
+                (
+                    f"Loom AR task {self.slug} hit its target rating at round {n} "
+                    "and is waiting for your final review."
+                ),
+                {
+                    "event": "ar-loop-complete",
+                    "round": n,
+                    "headline": rec["review"]["headline"],
+                    "stop_reason": state["stop_reason"],
+                },
+            )
+            self.stop()
+            return
         self._emit(
             "ar-round-reviewed",
             (
@@ -4196,12 +4252,21 @@ class ARLoopManager:
         if self.registry is None:
             return {"ok": False, "error": "no agent registry - press Start Agent"}
         return self.registry.start(
-            project_root, project_id, slug, default_skills=self.default_skills
+            project_root,
+            project_id,
+            slug,
+            default_skills=self.default_skills,
+            env=ar.agent_env(),
         )
 
     def wait_until_ready(self, target: str, timeout: float = 12.0) -> None:
         if self.registry is not None:
             self.registry.wait_until_ready(target, timeout=timeout)
+
+    def pane_alive(self, target: str) -> bool:
+        if self.registry is None:
+            return bool(target.strip())
+        return self.registry.target_alive(target)
 
     def start(self, project_root: Path, project_id: str, slug: str) -> dict[str, Any]:
         state = ar.read_ar_state(project_root, slug)
@@ -4449,6 +4514,8 @@ def make_handler(
             if ar.is_paper(state):
                 payload["stage_label"] = ar.progress_summary(state)
                 payload["latest_review"] = ar.latest_review(state) or {}
+                payload["plateaued"] = ar.is_plateaued(state)
+                payload["best_rating"] = ar.best_rating(state)
                 payload["venues_available"] = ar.venue_is_available(
                     str(state.get("venue") or ar.DEFAULT_VENUE)
                 )
@@ -4547,10 +4614,7 @@ def make_handler(
                 idea_ids = [str(x) for x in raw_ids] if isinstance(raw_ids, list) else []
                 if not idea_ids:
                     return {"ok": False, "error": "select at least one idea"}, 400
-                code_root = pr.get_code_root(project_id) or root
-                spawned, errors = _ar_spawn_children(
-                    root, slug, state, idea_ids, code_root
-                )
+                spawned, errors = _ar_spawn_children(root, slug, state, idea_ids)
                 payload = self._ar_payload(root, project_id, slug)
                 payload["spawned"] = spawned
                 payload["errors"] = errors
@@ -5993,9 +6057,14 @@ def make_handler(
                 if ar_state is not None:
                     ar.write_ar_state(root, meta.slug, ar_state)
                 code_root = pr.get_code_root(project_id) or root
-                wt, _branch, auto_msg = prepare_task_worktree_from(
-                    root, meta.slug, code_root
-                )
+                if ar_state is not None:
+                    # A studio only mines and spawns; it has no code of its own,
+                    # so a worktree of the project would sit there unused.
+                    wt, _branch, auto_msg = None, "", "AR studio: no worktree needed"
+                else:
+                    wt, _branch, auto_msg = prepare_task_worktree_from(
+                        root, meta.slug, code_root
+                    )
                 meta = read_meta(root, meta.slug) or meta
                 cands = _project_worktree_candidates(pr, root, project_id)
                 hint = ""
@@ -7344,6 +7413,11 @@ def serve(
     web_project_registry = WebProjectRegistry()
     if multi_project_workspace:
         web_project_registry.prune_redundant_parent_projects(project_root)
+    # AR tasks belong to no code project, so they get a root of their own that
+    # is always there - registering it means a new AR task has somewhere to go
+    # without the user creating a folder first.
+    _ar_root, _ar_created = ar.ensure_ar_root()
+    web_project_registry.ensure_project(_ar_root, name=_ar_root.name)
     claude_registry = ClaudeRegistry()
     openclaw_client = OpenClawClient(openclaw_config)
     monitor_manager = TaskMonitorManager(openclaw_client)
@@ -7406,6 +7480,12 @@ def serve(
     print(f"  Project registry: {web_project_registry.persist_path}", flush=True)
     print(f"  Task root:        {rud_root}", flush=True)
     print(f"  Project notes:    {rud_root}/NOTES.md", flush=True)
+    print(
+        f"  AR root:          {_ar_root}"
+        f"{'  (created)' if _ar_created else ''}"
+        f"  [override with {AR_ROOT_ENV}]",
+        flush=True,
+    )
     print(f"  Static assets:    {web_static_dir().resolve()}", flush=True)
     print(f"  Default skills:   {sk}", flush=True)
     print("  Tabs:             Claude, PLAN.md (per task) + Notes button (per project)", flush=True)

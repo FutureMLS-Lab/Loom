@@ -31,8 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from loom.paths import bundled_skills_path, paper_templates_dir
-from loom.rud_task import WORK_SUBDIR, task_root, task_worktree_path
+from loom.paths import ar_root, bundled_skills_path, paper_templates_dir
+from loom.rud_task import RUD_DIR, WORK_SUBDIR, slugify, task_root
 
 # --- Task kind --------------------------------------------------------------
 
@@ -58,9 +58,18 @@ def is_ar_kind(kind: str | None) -> bool:
 
 AR_STATE = "ar.json"
 ROUNDS_SUBDIR = "rounds"
-PAPER_SUBDIR = "paper"
+# A paper task's work/ holds two sibling repositories: the experiment code and
+# the manuscript. The agent pane starts at work/, so both are one cd away and
+# both show up in the Changes tab.
+CODE_SUBDIR = "code"
+MANUSCRIPT_SUBDIR = "manuscript"
 AUTHOR_NOTE = "author.md"
 REVIEW_NOTE = "review.md"
+
+# Separator between a studio's slug and its paper tasks'. Loom stores tasks
+# flat, so the prefix is what groups a studio with its children on disk and in
+# the sidebar.
+CHILD_SLUG_SEP = "--"
 
 ROLE_STUDIO = "studio"
 ROLE_PAPER = "paper"
@@ -410,6 +419,7 @@ def new_studio_state(
         "papers_updated_at": "",
         "ideas": [],
         "ideas_updated_at": "",
+        "cost_usd": 0.0,
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
     }
@@ -444,6 +454,9 @@ def new_paper_state(
         "loop_running": False,
         "author_model": author_model,
         "reviewer_model": reviewer_model,
+        "stop_rating": DEFAULT_STOP_RATING,
+        "stop_reason": "",
+        "cost_usd": 0.0,
         "paper_dir": "",
         "pdf_path": "",
         "pdf_built_at": "",
@@ -513,6 +526,12 @@ def normalize_idea(raw: Any, index: int = 0) -> dict[str, Any]:
     }
 
 
+def child_slug(parent_slug: str, title: str, limit: int = 80) -> str:
+    """Slug for a paper task, prefixed so it groups under its studio."""
+    base = f"{parent_slug}{CHILD_SLUG_SEP}{slugify(title)}"
+    return base[:limit].rstrip("-_") or f"{parent_slug}{CHILD_SLUG_SEP}paper"
+
+
 def find_idea(state: dict[str, Any], idea_id: str) -> dict[str, Any] | None:
     for idea in state.get("ideas") or []:
         if isinstance(idea, dict) and str(idea.get("id")) == idea_id:
@@ -542,15 +561,122 @@ def idea_summary(idea: dict[str, Any]) -> str:
 # --- Paper task layout ------------------------------------------------------
 
 
-def paper_root(project_root: Path, slug: str) -> Path:
-    """Directory holding ``main.tex`` for this task.
+def ensure_ar_root() -> tuple[Path, bool]:
+    """Create the AR project root if it isn't there. Returns ``(path, created)``."""
+    root = ar_root()
+    existed = (root / RUD_DIR).is_dir()
+    try:
+        (root / RUD_DIR).mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return root, False
+    return root, not existed
 
-    The paper lives inside the task's git worktree so its history is captured by
-    the Changes tab; tasks without a worktree fall back to ``<task>/work/``.
+
+def shared_cache_dir() -> Path:
+    """One model/dataset cache for every AR task on this host."""
+    return ar_root() / ".cache"
+
+
+def agent_env() -> dict[str, str]:
+    """Environment for an AR agent pane.
+
+    Left to itself an agent puts a fresh cache next to each experiment, so the
+    same checkpoints get downloaded again per experiment and per task - the
+    first paper here spent 18 GB that way. Pointing every pane at one cache
+    makes the second download a no-op.
     """
-    wt = task_worktree_path(project_root, slug)
-    base = wt if wt is not None else (task_root(project_root, slug) / WORK_SUBDIR)
-    return base / PAPER_SUBDIR
+    cache = shared_cache_dir()
+    hf = cache / "huggingface"
+    for path in (hf, cache / "torch", cache / "pip"):
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+    return {
+        "HF_HOME": str(hf),
+        "HF_HUB_CACHE": str(hf / "hub"),
+        "HF_DATASETS_CACHE": str(hf / "datasets"),
+        "TORCH_HOME": str(cache / "torch"),
+        "PIP_CACHE_DIR": str(cache / "pip"),
+    }
+
+
+def work_root(project_root: Path, slug: str) -> Path:
+    """``<task>/work/`` - where the agent pane starts and both repos live."""
+    return task_root(project_root, slug) / WORK_SUBDIR
+
+
+def paper_root(project_root: Path, slug: str) -> Path:
+    """``<task>/work/manuscript/`` - the LaTeX sources, its own git repo."""
+    return work_root(project_root, slug) / MANUSCRIPT_SUBDIR
+
+
+def code_root(project_root: Path, slug: str) -> Path:
+    """``<task>/work/code/`` - the experiment code, its own git repo.
+
+    A paper's experiments get a repository of their own rather than a branch of
+    whatever project spawned the task: the two have separate lifetimes, and a
+    paper about one subject should not bury its code in an unrelated library's
+    history.
+    """
+    return work_root(project_root, slug) / CODE_SUBDIR
+
+
+def _git_init(repo: Path, message: str) -> tuple[bool, str]:
+    """Create *repo* as a git repository with one initial commit."""
+    repo.mkdir(parents=True, exist_ok=True)
+    if (repo / ".git").exists():
+        return True, "already a repository"
+    steps = [
+        ["git", "init", "-q"],
+        ["git", "add", "-A"],
+        ["git", "-c", "user.name=Loom AR", "-c", "user.email=ar@loom.local",
+         "commit", "-q", "--allow-empty", "-m", message],
+    ]
+    for cmd in steps:
+        try:
+            proc = subprocess.run(
+                cmd, cwd=str(repo), capture_output=True, text=True, timeout=60
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return False, str(exc)
+        if proc.returncode != 0:
+            return False, (proc.stderr or proc.stdout or "").strip()[:300]
+    return True, "initialised"
+
+
+def init_paper_workspace(
+    project_root: Path,
+    slug: str,
+    venue: str,
+    idea: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Lay out ``work/code`` and ``work/manuscript`` for a new paper task."""
+    code = code_root(project_root, slug)
+    paper = paper_root(project_root, slug)
+    title = str((idea or {}).get("title") or slug)
+
+    code.mkdir(parents=True, exist_ok=True)
+    readme = code / "README.md"
+    if not readme.exists():
+        readme.write_text(
+            f"# Experiments for: {title}\n\n"
+            "Code backing the paper in `../manuscript/`. One directory per\n"
+            "experiment, each with its runner, its aggregation step and the\n"
+            "exact command that produced the numbers in the paper.\n",
+            encoding="utf-8",
+        )
+    seeded, message = seed_paper_skeleton(paper, venue, idea)
+    code_ok, code_msg = _git_init(code, f"Start experiments for {title}")
+    paper_ok, paper_msg = _git_init(paper, f"Start the {venue_entry(venue)['label']} manuscript")
+    return {
+        "ok": seeded and code_ok and paper_ok,
+        "code": str(code),
+        "manuscript": str(paper),
+        "skeleton": message,
+        "code_repo": code_msg,
+        "manuscript_repo": paper_msg,
+    }
 
 
 def rounds_root(project_root: Path, slug: str) -> Path:
@@ -1089,7 +1215,7 @@ def _run_headless(
             bufsize=1,
         )
     except OSError as exc:
-        return {"ok": False, "error": f"claude CLI not runnable: {exc}"}
+        return {"ok": False, "error": f"claude CLI not runnable: {exc}", "cost": 0.0}
 
     # A hung CLI would block on readline forever, so enforce the deadline out
     # of band rather than around a single read.
@@ -1111,6 +1237,7 @@ def _run_headless(
         threading.Thread(target=_heartbeat, daemon=True).start()
 
     final = ""
+    cost = 0.0
     texts: list[str] = []
     try:
         for raw in proc.stdout or ():
@@ -1125,6 +1252,10 @@ def _run_headless(
                 continue
             if event.get("type") == "result":
                 final = str(event.get("result") or "")
+                try:
+                    cost = float(event.get("total_cost_usd") or 0.0)
+                except (TypeError, ValueError):
+                    cost = 0.0
             elif event.get("type") == "assistant":
                 for block in (event.get("message") or {}).get("content") or []:
                     if isinstance(block, dict) and block.get("type") == "text":
@@ -1155,8 +1286,9 @@ def _run_headless(
             "ok": False,
             "error": "empty response from claude",
             "stderr": stderr[-500:],
+            "cost": cost,
         }
-    return {"ok": True, "text": text}
+    return {"ok": True, "text": text, "cost": cost}
 
 
 def _extract_json_array(text: str) -> list[Any] | None:
@@ -1465,6 +1597,103 @@ def latest_review(state: dict[str, Any]) -> dict[str, Any] | None:
 
 def loop_is_complete(state: dict[str, Any]) -> bool:
     return current_round(state) >= max_rounds(state)
+
+
+# --- Adapting the loop ------------------------------------------------------
+
+# A rating this high means the reviewer would argue for the paper, so more
+# rounds buy polish rather than acceptance. Stop and hand it back to the human.
+DEFAULT_STOP_RATING = 8
+# Consecutive reviews without improvement before we treat the loop as stuck.
+PLATEAU_WINDOW = 3
+# Rotated through when the score stops moving: a second opinion from the same
+# model tends to repeat the same asks, and repeating them is what stalled.
+REVIEWER_ROTATION = ("claude-fable-5", "claude-opus-4-8", "claude-sonnet-5")
+
+SCORE_DIMENSIONS = ("soundness", "presentation", "contribution")
+
+
+def score_history(state: dict[str, Any], field: str = "rating") -> list[float]:
+    """Every recorded value of one score field, oldest first."""
+    out: list[float] = []
+    for rec in state.get("rounds") or []:
+        scores = ((rec or {}).get("review") or {}).get("scores") or {}
+        value = scores.get(field)
+        if isinstance(value, (int, float)):
+            out.append(float(value))
+    return out
+
+
+def best_rating(state: dict[str, Any]) -> float:
+    ratings = score_history(state, "rating")
+    return max(ratings) if ratings else 0.0
+
+
+def stop_rating(state: dict[str, Any]) -> int:
+    try:
+        return int(state.get("stop_rating") or DEFAULT_STOP_RATING)
+    except (TypeError, ValueError):
+        return DEFAULT_STOP_RATING
+
+
+def should_stop_early(state: dict[str, Any]) -> bool:
+    """True once the reviewer rates the paper at or above the target."""
+    return bool(score_history(state, "rating")) and best_rating(state) >= stop_rating(state)
+
+
+def is_plateaued(state: dict[str, Any], window: int = PLATEAU_WINDOW) -> bool:
+    """True when the rating has not improved across the last *window* reviews."""
+    ratings = score_history(state, "rating")
+    if len(ratings) < window:
+        return False
+    recent = ratings[-window:]
+    return max(recent) <= max(ratings[:-window] or [0]) or len(set(recent)) == 1
+
+
+def stuck_dimensions(state: dict[str, Any], window: int = PLATEAU_WINDOW) -> list[str]:
+    """Score dimensions that have not moved across the last *window* reviews."""
+    out: list[str] = []
+    for field in SCORE_DIMENSIONS:
+        values = score_history(state, field)
+        if len(values) >= window and len(set(values[-window:])) == 1:
+            out.append(field)
+    return out
+
+
+def reviewer_model_for(state: dict[str, Any], base: str, round_n: int) -> str:
+    """Reviewer model for a round, rotated once the score stops moving."""
+    if not is_plateaued(state):
+        return base
+    rotation = [m for m in REVIEWER_ROTATION if m != base] or list(REVIEWER_ROTATION)
+    return rotation[round_n % len(rotation)]
+
+
+def plateau_note(state: dict[str, Any], window: int = PLATEAU_WINDOW) -> str:
+    """Instruction added to the author's prompt when the loop is stuck."""
+    if not is_plateaued(state, window):
+        return ""
+    ratings = score_history(state, "rating")
+    stuck = stuck_dimensions(state, window)
+    stuck_text = (
+        f" {', '.join(stuck)}ha{'s' if len(stuck) == 1 else 've'} not moved at all."
+        if stuck
+        else ""
+    )
+    return (
+        f"The rating has not improved in {window} rounds "
+        f"({', '.join(str(int(r)) for r in ratings[-window:])}).{stuck_text}\n"
+        "Incremental responses to the review are not working, so do not spend "
+        "this round on another one. Pick exactly one:\n"
+        "  (a) Attack the stuck dimension directly - if contribution is stuck, "
+        "the claim itself is too small or too well covered by prior work, so "
+        "sharpen or change it.\n"
+        "  (b) Run the experiment the reviewer keeps asking for, even a reduced "
+        "version, and report it honestly.\n"
+        "  (c) If neither is possible with the compute available, say so plainly "
+        "in the paper's limitations and narrow the claim to what the evidence "
+        "actually supports. A correct narrow paper beats a stuck broad one.\n"
+        "State which you chose, and why, at the top of your round note."
+    )
 
 
 def progress_summary(state: dict[str, Any]) -> str:
@@ -1896,8 +2125,10 @@ def author_draft_prompt(
 Task directory:
 {task_dir}
 
-Paper (already seeded with the {venue} LaTeX skeleton):
-{paper_dir}
+Your pane starts in {task_dir / WORK_SUBDIR}, which holds two git repositories:
+  code/        your experiments
+  manuscript/  the paper, already seeded with the {venue} LaTeX skeleton
+Full path to the manuscript: {paper_dir}
 
 The idea this paper must establish:
 {idea_summary(state.get("idea") or {})}
@@ -1932,6 +2163,7 @@ def author_round_prompt(
     """Phase-1 prompt for one loop round, carrying the previous review."""
     venue = venue_entry(str(state.get("venue") or DEFAULT_VENUE)).get("label")
     note = author_note_path_for(task_dir, round_n)
+    work = task_dir / WORK_SUBDIR
     total = max_rounds(state)
     if review_text.strip():
         feedback = (
@@ -1949,13 +2181,16 @@ def author_round_prompt(
         if gate_note.strip()
         else ""
     )
+    stuck = plateau_note(state)
+    stuck_block = f"\n=== THE LOOP IS STUCK - READ THIS FIRST ===\n{stuck}\n\n" if stuck else ""
     return f"""You are the author of an AR paper task in Loom. This is ROUND {round_n} of {total}.
 
 Task directory:
 {task_dir}
 
-Paper ({venue} format):
-{paper_dir}
+Your pane starts in {work}, which holds two git repositories:
+  code/        your experiments
+  manuscript/  the paper in {venue} format ({paper_dir})
 
 The idea this paper must establish:
 {idea_summary(state.get("idea") or {})}
@@ -1963,7 +2198,7 @@ The idea this paper must establish:
 === AR author methodology - follow this exactly ===
 {ar_skill_text(SKILL_AUTHOR) or "(AR author skill missing)"}
 === end methodology ===
-
+{stuck_block}
 {feedback}
 
 Run the experiments first, then fold the real numbers into the paper, then

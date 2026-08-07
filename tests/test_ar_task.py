@@ -386,14 +386,178 @@ def test_progress_summary_shows_round_counter() -> None:
     assert ar.progress_summary(state) == "Delivered"
 
 
+# --- adapting the loop ------------------------------------------------------
+
+
+def _with_reviews(*ratings, **dims) -> dict:
+    """A paper state whose rounds carry the given rating sequence."""
+    state = _paper_state(max_rounds=10)
+    for i, rating in enumerate(ratings, start=1):
+        scores = {"rating": rating}
+        for field, values in dims.items():
+            if i <= len(values):
+                scores[field] = values[i - 1]
+        ar.ensure_round(state, i)["review"] = {"scores": scores, "headline": ""}
+    state["round"] = len(ratings)
+    return state
+
+
+def test_score_history_and_best_rating() -> None:
+    state = _with_reviews(3, 4, 4, 4, 5)
+    assert ar.score_history(state) == [3.0, 4.0, 4.0, 4.0, 5.0]
+    assert ar.best_rating(state) == 5.0
+    assert ar.score_history(_paper_state()) == []
+    assert ar.best_rating(_paper_state()) == 0.0
+
+
+def test_plateau_matches_the_real_run() -> None:
+    # The sequence the live low-bit-RL paper actually produced.
+    assert ar.is_plateaued(_with_reviews(3)) is False
+    assert ar.is_plateaued(_with_reviews(3, 4)) is False
+    assert ar.is_plateaued(_with_reviews(3, 4, 4)) is False
+    # Three identical ratings in a row is a stall.
+    assert ar.is_plateaued(_with_reviews(3, 4, 4, 4)) is True
+    # A genuine improvement clears it.
+    assert ar.is_plateaued(_with_reviews(3, 4, 4, 4, 5)) is False
+    # So does steady progress.
+    assert ar.is_plateaued(_with_reviews(3, 4, 5, 6)) is False
+    # Sliding backwards is still a stall: nothing improved on the best so far.
+    assert ar.is_plateaued(_with_reviews(6, 5, 4, 3)) is True
+
+
+def test_stuck_dimensions() -> None:
+    state = _with_reviews(
+        3, 4, 4, 4,
+        contribution=[2, 2, 2, 2],
+        soundness=[2, 3, 3, 3],
+        presentation=[3, 3, 3, 4],
+    )
+    stuck = ar.stuck_dimensions(state)
+    assert "contribution" in stuck
+    assert "soundness" in stuck        # 3, 3, 3 over the window
+    assert "presentation" not in stuck  # moved to 4
+
+
+def test_reviewer_rotation_only_when_stuck() -> None:
+    moving = _with_reviews(3, 4, 5)
+    assert ar.reviewer_model_for(moving, "claude-fable-5", 4) == "claude-fable-5"
+
+    stalled = _with_reviews(4, 4, 4)
+    picked = ar.reviewer_model_for(stalled, "claude-fable-5", 4)
+    assert picked != "claude-fable-5"
+    assert picked in ar.REVIEWER_ROTATION
+
+
+def test_plateau_note_tells_the_author_to_change_tack() -> None:
+    assert ar.plateau_note(_with_reviews(3, 4, 5)) == ""
+    note = ar.plateau_note(_with_reviews(4, 4, 4, contribution=[2, 2, 2]))
+    assert "has not improved in 3 rounds" in note
+    assert "contribution" in note
+    assert "narrow the claim" in note
+
+
+def test_early_stop() -> None:
+    assert ar.should_stop_early(_paper_state()) is False
+    assert ar.should_stop_early(_with_reviews(3, 4, 5)) is False
+    assert ar.should_stop_early(_with_reviews(3, 8)) is True
+
+    lenient = _with_reviews(6)
+    lenient["stop_rating"] = 6
+    assert ar.should_stop_early(lenient) is True
+    assert ar.stop_rating(lenient) == 6
+    assert ar.stop_rating(_paper_state()) == ar.DEFAULT_STOP_RATING
+
+
+def test_new_paper_state_carries_budget_fields() -> None:
+    state = _paper_state()
+    assert state["cost_usd"] == 0.0
+    assert state["stop_rating"] == ar.DEFAULT_STOP_RATING
+    assert state["stop_reason"] == ""
+
+
+def test_agent_env_points_every_task_at_one_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LOOM_AR_ROOT", str(tmp_path / "ar"))
+    env = ar.agent_env()
+    shared = tmp_path / "ar" / ".cache"
+    assert env["HF_HOME"] == str(shared / "huggingface")
+    assert env["HF_HUB_CACHE"].startswith(str(shared))
+    assert env["TORCH_HOME"] == str(shared / "torch")
+    assert env["PIP_CACHE_DIR"] == str(shared / "pip")
+    # The directories are created, so the first run does not race on them.
+    assert (shared / "huggingface").is_dir()
+    assert (shared / "torch").is_dir()
+
+
 # --- paper layout and skeleton ----------------------------------------------
 
 
-def test_paper_root_falls_back_to_work_dir(tmp_path: Path) -> None:
+def test_ensure_ar_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "ar"
+    monkeypatch.setenv("LOOM_AR_ROOT", str(target))
+
+    root, created = ar.ensure_ar_root()
+    assert root == target
+    assert created is True
+    assert (target / ".RUD").is_dir()
+
+    # Starting again must not report a fresh creation.
+    root, created = ar.ensure_ar_root()
+    assert root == target
+    assert created is False
+
+
+def test_ar_root_defaults_to_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    from loom.paths import ar_root
+
+    monkeypatch.delenv("LOOM_AR_ROOT", raising=False)
+    assert ar_root() == Path.home() / "ar"
+
+
+def test_work_layout(tmp_path: Path) -> None:
     root = _project(tmp_path)
     meta = create_task(root, "AR paper", "goal", kind=ar.KIND_AR, auto_worktree=False)
-    expected = task_root(root, meta.slug) / "work" / ar.PAPER_SUBDIR
-    assert ar.paper_root(root, meta.slug) == expected
+    work = task_root(root, meta.slug) / "work"
+    assert ar.work_root(root, meta.slug) == work
+    assert ar.code_root(root, meta.slug) == work / "code"
+    assert ar.paper_root(root, meta.slug) == work / "manuscript"
+
+
+def test_child_slug_groups_under_its_studio() -> None:
+    assert ar.child_slug("low-bit-rl", "Matched-Entropy Controls") == (
+        "low-bit-rl--matched-entropy-controls"
+    )
+    # Long titles are cut to the slug limit without leaving a trailing dash.
+    long = ar.child_slug("low-bit-rl", "A " + "very " * 40 + "long title")
+    assert len(long) <= 80
+    assert long.startswith("low-bit-rl--")
+    assert not long.endswith("-")
+    # A title that slugifies to nothing still yields a usable slug.
+    assert ar.child_slug("studio", "!!!") == "studio--task"
+
+
+def test_init_paper_workspace(tmp_path: Path) -> None:
+    if not ar.venue_is_available("iclr"):
+        pytest.skip("styles not vendored")
+    root = _project(tmp_path)
+    meta = create_task(root, "AR paper", "goal", kind=ar.KIND_AR, auto_worktree=False)
+    layout = ar.init_paper_workspace(root, meta.slug, "iclr", {"title": "A Paper"})
+    assert layout["ok"], layout
+
+    code = ar.code_root(root, meta.slug)
+    paper = ar.paper_root(root, meta.slug)
+    # Both halves are real repositories, so results stay traceable to code.
+    assert (code / ".git").is_dir()
+    assert (paper / ".git").is_dir()
+    assert (code / "README.md").is_file()
+    assert (paper / "main.tex").is_file()
+
+    # Re-running is safe: it must not clobber a repo that already has work.
+    (code / "run.py").write_text("print('hi')", encoding="utf-8")
+    again = ar.init_paper_workspace(root, meta.slug, "iclr", {"title": "A Paper"})
+    assert again["code_repo"] == "already a repository"
+    assert (code / "run.py").is_file()
 
 
 def test_round_paths(tmp_path: Path) -> None:
