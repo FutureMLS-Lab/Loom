@@ -18,6 +18,20 @@ def web_static_dir() -> Path:
     return _PKG / "web_static"
 
 
+AR_ROOT_ENV = "LOOM_AR_ROOT"
+
+
+def ar_root() -> Path:
+    """Home for AR research tasks, created on startup.
+
+    AR tasks are not tied to any code project - a paper carries its own code
+    and manuscript repositories - so they get a root of their own instead of
+    burying themselves in the ``.RUD`` of whatever repo happened to spawn them.
+    """
+    override = os.environ.get(AR_ROOT_ENV, "").strip()
+    return Path(override).expanduser() if override else Path.home() / "ar"
+
+
 def paper_templates_dir() -> Path:
     """Venue LaTeX skeletons used by AR paper tasks.
 

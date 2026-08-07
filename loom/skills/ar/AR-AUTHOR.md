@@ -17,22 +17,59 @@ that says what you claim it says. If you are unsure, look it up or drop it.
 
 ## Layout
 
+Your pane starts in the task's `work/`, which holds two sibling git
+repositories. They are separate on purpose: the code outlives the paper, and
+the paper should be publishable without dragging an unrelated history with it.
+
 ```
-<worktree>/paper/
-  main.tex               # venue style, do not restructure
-  ar_macros.tex          # \ARTODO, \ARfig, \ARnum
-  sections/*.tex         # where you write
-  figures/               # only scripts' output, never hand-drawn numbers
-  main.bib
-<worktree>/experiments/  # your code, one directory per experiment
-<task>/rounds/round-NN/
-  author.md              # you write this at the end of every round
-  review.md              # the reviewer writes this; you read it at the start
+work/
+├── code/                 # your experiments - its own git repository
+│   ├── README.md
+│   └── <experiment>/     # one directory per experiment: runner, aggregator, README
+└── manuscript/           # the paper - its own git repository
+    ├── main.tex          # venue style, do not restructure
+    ├── ar_macros.tex     # \ARTODO, \ARfig, \ARnum
+    ├── sections/*.tex    # where you write
+    ├── figures/          # only scripts' output, never hand-drawn numbers
+    └── main.bib
+
+../rounds/round-NN/
+    author.md             # you write this at the end of every round
+    review.md             # the reviewer writes this; you read it at the start
 ```
 
+Commit in both repositories as you go, with ordinary messages. Nothing is
+pushed anywhere, so commit freely — the history is how a result stays traceable
+to the code that produced it.
+
 Build the PDF with `latexmk -pdf -interaction=nonstopmode main.tex` from
-`paper/`. Loom rebuilds it too, but a round that ends with a broken build wastes
-the reviewer's turn.
+`manuscript/`. Loom rebuilds it too, but a round that ends with a broken build
+wastes the reviewer's turn.
+
+A figure belongs in `manuscript/figures/` and the script that drew it in
+`code/`. Never hand-place a number that no script emitted.
+
+## Figures
+
+Dedicated skills are installed under `loom/skills/ar/figures/`, and the round
+prompt lists them with their paths. Read the relevant `SKILL.md` before drawing
+rather than reaching for default matplotlib — each one carries a house style, a
+drawing kit in its `scripts/`, and a runnable example.
+
+- **teaser-figure** and **teaser-figure-plain** — the page-one overview. Use the
+  plain variant when the paper has something concrete to draw and a real
+  measurement to plot; the tinted-panel variant when the contribution is a
+  mechanism with no drawable object.
+- **results-figure** and **results-figure-replicates** — the evidence plots. Use
+  the replicates variant whenever you have more than one seed, which for this
+  pipeline is most of the time: showing the spread is what makes a small-scale
+  result credible.
+- **checkbib** — run it before every gate. The reviewer challenges citations,
+  and a bibliography that cites something the paper never uses, or misattributes
+  a claim, costs more soundness than it saves effort.
+
+The red line in those skills is the same as the one here: every number and claim
+in a figure comes from the paper's own results, never from what would look good.
 
 ## Stage 1 — the first draft
 
@@ -65,9 +102,9 @@ Each round you get the previous round's `review.md`. Work in this order:
    experiment, or rebut. Rebutting is legitimate — a reviewer can be wrong — but
    a rebuttal must be an argument in the paper, not a note to the reviewer.
 3. **Run the experiments first**, while there is time for them to fail. Put the
-   code in `experiments/`, commit it, and save raw logs next to the results so
-   any number in the paper can be traced back. Prefer a cheap pilot before a
-   long run.
+   code in `code/<experiment>/`, commit it, and save raw logs next to the
+   results so any number in the paper can be traced back. Prefer a cheap pilot
+   before a long run.
 4. **Then write.** Fold results into the tables, replace the `\ARnum{}` markers
    that are now measured, and update the abstract and introduction so the
    claims match what the tables actually show. Claims shrink when results are
@@ -112,15 +149,23 @@ to judge work you already know is incomplete.
 
 ## Experiments run locally
 
-This task's experiments run on the machine Loom is running on, inside your
-worktree. Before a heavy run, check what is available (`nvidia-smi`, `free -h`,
-`df -h`) and scale the experiment to fit. A 1B-parameter result you actually
-have beats a 70B result you cannot run. Say plainly in the paper what scale you
-tested at — reviewers accept small-scale evidence that is honestly labelled and
-reject unlabelled small-scale evidence.
+This task's experiments run on the machine Loom is running on, inside `code/`.
+Before a heavy run, check what is available (`nvidia-smi`, `free -h`, `df -h`)
+and scale the experiment to fit.
 
-Never `git push`, open a PR, or touch anything outside your worktree without
-being asked. Never print or commit secrets.
+**Use the shared cache.** `HF_HOME`, `HF_HUB_CACHE`, `TORCH_HOME` and
+`PIP_CACHE_DIR` are already set in your environment and point at one cache
+shared by every AR task on this host. Never set a per-experiment `.cache`, and
+never pass `cache_dir=` to a `from_pretrained` call — doing so re-downloads
+checkpoints you already have, once per experiment. One task did exactly that
+and cost 18 GB. A shared virtualenv per task is fine; one per experiment is
+usually waste too. A 1B-parameter result you actually have beats
+a 70B result you cannot run. Say plainly in the paper what scale you tested at —
+reviewers accept small-scale evidence that is honestly labelled and reject
+unlabelled small-scale evidence.
+
+Never `git push`, open a PR, or touch anything outside `work/` without being
+asked. Never print or commit secrets.
 
 ## What makes the reviewer's score go up
 

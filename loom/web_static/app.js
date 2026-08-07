@@ -4814,6 +4814,8 @@ function renderArPaper(d, state) {
   if (hint) {
     const bits = [];
     if (d.paper_dir) bits.push(d.paper_dir);
+    if (Number(state.cost_usd) > 0) bits.push(`$${Number(state.cost_usd).toFixed(2)} spent`);
+    if (state.stop_reason) bits.push(`stopped early: ${state.stop_reason}`);
     if (state.pdf_error) bits.push(state.pdf_error);
     else if (state.pdf_built_at) bits.push(`PDF built ${state.pdf_built_at}`);
     hint.textContent = bits.join(' · ');
@@ -4886,6 +4888,7 @@ function renderArRounds(d, state) {
     if (loop.last_action) bits.push(loop.last_action);
     if (loop.last_error) bits.push(`error: ${loop.last_error}`);
     if (state.review_status === 'running') bits.push('review in progress…');
+    if (d.plateaued) bits.push('score has stalled — the author was told to change tack');
     status.textContent = bits.join(' · ');
   }
 

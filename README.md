@@ -216,8 +216,11 @@ Each of those is a **paper** task, and it walks a fixed pipeline:
    submission runs three independent Cursor reviewers headlessly:
    `gpt-5.6-sol-max`, `claude-fable-5-thinking-max`, and
    `cursor-grok-4.5-high`. Each reviewer sees an isolated workspace containing
-   only the compiled PDF (never the LaTeX source); their reports and
-   deterministically aggregated scores drive the next round.
+   only the compiled PDF (never the LaTeX source). All reports are preserved;
+   the lowest-Rating reviewer's complete score block is the final verdict. If
+   that lowest score plateaus for three rounds, the fixed panel stays in place
+   and the author must make a structural change. Two more rounds without
+   improvement pause the loop for a human decision.
 4. **Final review** — a gate. Approve to deliver and download the PDF, or send it
    back for another batch of rounds.
 

@@ -42,6 +42,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from loom import ar_task as ar
 from loom.openclaw import OpenClawClient, OpenClawConfig, openclaw_status
 from loom.paths import (
+    AR_ROOT_ENV,
     KERNEL_HUB_ENV,
     bundled_skills_path,
     kernel_hub_dir,
@@ -2677,7 +2678,12 @@ def _build_ar_prompt(
         return ar.author_draft_prompt(task_dir, paper_dir, state)
 
     base = ar.studio_prompt(task_dir, state, meta.general_goal)
-    if skills.strip():
+    # Only skills the user deliberately picked. A task that never chose any
+    # carries the bundled default, and pasting an unrelated host runbook into a
+    # research prompt is noise at best - and leaks whatever happens to be in
+    # that file at worst.
+    chosen = (meta.skills_path or "").strip()
+    if skills.strip() and chosen and chosen != str(bundled_skills_path()):
         base += f"\nDomain skills selected for this task:\n---\n{skills}\n---\n"
     return base
 
@@ -2851,6 +2857,7 @@ class ClaudeRegistry:
         *,
         resume_session_id: str = "",
         default_skills: Path | None = None,
+        env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         meta = read_meta(project_root, slug)
         if not meta:
@@ -2972,6 +2979,9 @@ class ClaudeRegistry:
                 "already_running": True,
             }
 
+        env_args: list[str] = []
+        for key, value in (env or {}).items():
+            env_args += ["-e", f"{key}={value}"]
         try:
             subprocess.run(
                 [
@@ -2986,6 +2996,7 @@ class ClaudeRegistry:
                     "64",
                     "-c",
                     str(cwd),
+                    *env_args,
                 ],
                 capture_output=True,
                 text=True,
@@ -3243,6 +3254,12 @@ class ClaudeRegistry:
     def wait_until_ready(self, target: str, timeout: float = 15.0) -> None:
         """Block until the agent CLI in *target* is ready to receive a prompt."""
         self._wait_for_claude_ready(target, timeout=timeout)
+
+    def target_alive(self, target: str) -> bool:
+        """True when *target* still names a live tmux session."""
+        if not target.strip():
+            return False
+        return self._tmux_session_exists(_session_name_from_tmux_target(target))
 
     def _wait_for_claude_ready(self, target: str, timeout: float = 45.0) -> None:
         deadline = time.time() + timeout
@@ -3690,6 +3707,9 @@ def _ar_ideas_job(root: Path, slug: str, count: int, model: str) -> None:
             ideas_status="done",
             ideas_error="",
             ideas_updated_at=_iso_now(),
+            cost_usd=round(
+                float(state.get("cost_usd") or 0.0) + float(res.get("cost") or 0.0), 4
+            ),
         )
         print(f"[ar] {slug}: proposed {len(res.get('ideas') or [])} idea(s)", flush=True)
     else:
@@ -3763,17 +3783,21 @@ def _ar_review_job(root: Path, slug: str) -> None:
         "path": str(path),
         "scores": res.get("scores") or {},
         "headline": res.get("headline") or "",
+        "deciding_model": res.get("deciding_model") or "",
         "input_pdf": res.get("input_pdf") or str(paper_dir / "main.pdf"),
         "reviewers": [
             {
                 key: item.get(key)
-                for key in ("model", "scores", "headline", "duration_seconds")
+                for key in ("model", "scores", "headline", "duration_seconds", "cost")
             }
             for item in (res.get("reviewers") or [])
         ],
     }
     state["review_status"] = "done"
     state["review_error"] = ""
+    state["cost_usd"] = round(
+        float(state.get("cost_usd") or 0.0) + float(res.get("cost") or 0.0), 4
+    )
     ar.write_ar_state(root, slug, state)
 
 
@@ -3782,7 +3806,6 @@ def _ar_spawn_children(
     parent_slug: str,
     state: dict[str, Any],
     idea_ids: list[str],
-    code_root: Path,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Turn selected idea cards into paper tasks, one task per idea."""
     parent = read_meta(root, parent_slug)
@@ -3809,12 +3832,14 @@ def _ar_spawn_children(
                 agent=(parent.agent if parent else AGENT_CURSOR),
                 kind=ar.KIND_AR,
                 auto_worktree=False,
+                slug=ar.child_slug(parent_slug, idea["title"]),
             )
-            prepare_task_worktree_from(root, child.slug, code_root)
+            # A paper gets its own code and manuscript repositories rather than
+            # a branch of whatever project spawned it.
+            layout = ar.init_paper_workspace(root, child.slug, venue, idea)
             paper_dir = ar.paper_root(root, child.slug)
-            seeded, msg = ar.seed_paper_skeleton(paper_dir, venue, idea)
-            if not seeded:
-                errors.append(f"{child.slug}: {msg}")
+            if not layout.get("ok"):
+                errors.append(f"{child.slug}: {layout.get('skeleton')}")
             paper_state = ar.new_paper_state(
                 parent_slug=parent_slug,
                 idea=idea,
@@ -3912,6 +3937,12 @@ class _ARLoopDriver:
         if meta is None:
             return False, "task not found"
         target = (meta.tmux_interview_target or "").strip()
+        # A recorded target outlives the session it names - the pane can be
+        # killed, or the task moved. Treat a dead one as no pane at all rather
+        # than pasting into a session that no longer exists.
+        if target and not self.manager.pane_alive(target):
+            update_meta(self.project_root, self.slug, tmux_interview_target="")
+            target = ""
         if not target:
             started = self.manager.ensure_pane(
                 self.project_root, self.project_id, self.slug
@@ -3987,11 +4018,14 @@ class _ARLoopDriver:
             return
         paper_dir = self._paper_dir()
         if not (paper_dir / "main.tex").is_file():
-            ok, msg = ar.seed_paper_skeleton(
-                paper_dir, str(state.get("venue") or ar.DEFAULT_VENUE), state.get("idea")
+            layout = ar.init_paper_workspace(
+                self.project_root,
+                self.slug,
+                str(state.get("venue") or ar.DEFAULT_VENUE),
+                state.get("idea"),
             )
-            if not ok:
-                self.last_error = msg
+            if not layout.get("ok"):
+                self.last_error = str(layout.get("skeleton") or "could not lay out work/")
                 return
         note.parent.mkdir(parents=True, exist_ok=True)
         prompt = ar.author_draft_prompt(
@@ -4250,18 +4284,74 @@ class _ARLoopDriver:
             "path": str(review_path),
             "scores": result.get("scores") or {},
             "headline": result.get("headline") or "",
+            "deciding_model": result.get("deciding_model") or "",
             "input_pdf": result.get("input_pdf") or str(self._paper_dir() / "main.pdf"),
             "reviewers": [
                 {
                     key: item.get(key)
-                    for key in ("model", "scores", "headline", "duration_seconds")
+                    for key in ("model", "scores", "headline", "duration_seconds", "cost")
                 }
                 for item in (result.get("reviewers") or [])
             ],
         }
         rec.pop("review_error", None)
+        state["cost_usd"] = round(
+            float(state.get("cost_usd") or 0.0) + float(result.get("cost") or 0.0), 4
+        )
+        ar.update_plateau_tracking(state, n)
         self._save(state)
         self._note(f"round {n} reviewed - {rec['review']['headline']}")
+
+        if ar.should_stop_early(state):
+            state["stage"] = ar.STAGE_AWAIT_FINAL_REVIEW
+            state["loop_running"] = False
+            state["stop_reason"] = (
+                f"the lowest panel reviewer rated it {int(ar.best_rating(state))}/10, "
+                f"at or above the target of {ar.stop_rating(state)}"
+            )
+            self._save(state)
+            self._note(f"stopping early: {state['stop_reason']}")
+            self._emit(
+                "ar-loop-complete",
+                (
+                    f"Loom AR task {self.slug} hit its target rating at round {n} "
+                    "and is waiting for your final review."
+                ),
+                {
+                    "event": "ar-loop-complete",
+                    "round": n,
+                    "headline": rec["review"]["headline"],
+                    "stop_reason": state["stop_reason"],
+                },
+            )
+            self.stop()
+            return
+
+        if ar.should_pause_for_plateau(state, n):
+            started = int(state.get("plateau_started_round") or n)
+            state["stage"] = ar.STAGE_AWAIT_FINAL_REVIEW
+            state["loop_running"] = False
+            state["stop_reason"] = (
+                f"the lowest panel rating plateaued at round {started} and did not "
+                f"improve after {ar.PLATEAU_HUMAN_GRACE_ROUNDS} structural repair rounds"
+            )
+            self._save(state)
+            self._note(f"pausing for human input: {state['stop_reason']}")
+            self._emit(
+                "ar-loop-complete",
+                (
+                    f"Loom AR task {self.slug} stayed on a score plateau through "
+                    f"round {n} and is waiting for your decision."
+                ),
+                {
+                    "event": "ar-loop-complete",
+                    "round": n,
+                    "headline": rec["review"]["headline"],
+                    "stop_reason": state["stop_reason"],
+                },
+            )
+            self.stop()
+            return
         self._emit(
             "ar-round-reviewed",
             (
@@ -4338,12 +4428,21 @@ class ARLoopManager:
         if self.registry is None:
             return {"ok": False, "error": "no agent registry - press Start Agent"}
         return self.registry.start(
-            project_root, project_id, slug, default_skills=self.default_skills
+            project_root,
+            project_id,
+            slug,
+            default_skills=self.default_skills,
+            env=ar.agent_env(),
         )
 
     def wait_until_ready(self, target: str, timeout: float = 12.0) -> None:
         if self.registry is not None:
             self.registry.wait_until_ready(target, timeout=timeout)
+
+    def pane_alive(self, target: str) -> bool:
+        if self.registry is None:
+            return bool(target.strip())
+        return self.registry.target_alive(target)
 
     def start(self, project_root: Path, project_id: str, slug: str) -> dict[str, Any]:
         state = ar.read_ar_state(project_root, slug)
@@ -4574,9 +4673,11 @@ def make_handler(
             state = ar.read_ar_state(root, slug)
             paper_dir = ar.paper_root(root, slug)
             pdf = paper_dir / "main.pdf"
+            meta = read_meta(root, slug)
             payload: dict[str, Any] = {
                 "ok": True,
                 "slug": slug,
+                "title": meta.title if meta else slug,
                 "state": state,
                 "catalog": ar.catalog(),
                 "direction_label": ar.direction_label(state) if state else "",
@@ -4591,6 +4692,8 @@ def make_handler(
             if ar.is_paper(state):
                 payload["stage_label"] = ar.progress_summary(state)
                 payload["latest_review"] = ar.latest_review(state) or {}
+                payload["plateaued"] = ar.is_plateaued(state)
+                payload["best_rating"] = ar.best_rating(state)
                 payload["venues_available"] = ar.venue_is_available(
                     str(state.get("venue") or ar.DEFAULT_VENUE)
                 )
@@ -4603,6 +4706,84 @@ def make_handler(
                     except (OSError, json.JSONDecodeError):
                         pass
             return payload
+
+        def _ar_overview(self, root: Path, project_id: str) -> dict[str, Any]:
+            """Every AR task in one payload, studios with their papers nested.
+
+            The Factory dashboard needs the whole fleet at a glance; fetching
+            each task separately would be one request per paper per poll.
+            """
+            studios: dict[str, dict[str, Any]] = {}
+            papers: list[dict[str, Any]] = []
+            for meta in list_tasks(root):
+                if not ar.is_ar_kind(meta.kind):
+                    continue
+                state = ar.read_ar_state(root, meta.slug)
+                if not state:
+                    continue
+                common = {
+                    "slug": meta.slug,
+                    "title": meta.title,
+                    "venue": ar.venue_entry(
+                        str(state.get("venue") or ar.DEFAULT_VENUE)
+                    )["label"],
+                    "cost_usd": float(state.get("cost_usd") or 0.0),
+                    "updated_at": state.get("updated_at", ""),
+                }
+                if ar.is_studio(state):
+                    studios[meta.slug] = {
+                        **common,
+                        "direction": ar.direction_label(state),
+                        "mode": state.get("mode", ""),
+                        "papers_found": len(state.get("papers") or []),
+                        "ideas": len(state.get("ideas") or []),
+                        "papers_status": state.get("papers_status", ""),
+                        "ideas_status": state.get("ideas_status", ""),
+                        "children": [],
+                    }
+                elif ar.is_paper(state):
+                    papers.append(
+                        {
+                            **common,
+                            "parent_slug": state.get("parent_slug", ""),
+                            "stage": state.get("stage", ""),
+                            "stage_label": ar.progress_summary(state),
+                            "round": ar.current_round(state),
+                            "max_rounds": ar.max_rounds(state),
+                            "best_rating": ar.best_rating(state),
+                            "plateaued": ar.is_plateaued(state),
+                            "loop_running": bool(state.get("loop_running")),
+                            "pdf_available": (
+                                ar.paper_root(root, meta.slug) / "main.pdf"
+                            ).is_file(),
+                            "awaiting_you": state.get("stage")
+                            in (ar.STAGE_AWAIT_DRAFT_REVIEW, ar.STAGE_AWAIT_FINAL_REVIEW),
+                        }
+                    )
+
+            orphans: list[dict[str, Any]] = []
+            for paper in papers:
+                parent = studios.get(str(paper.get("parent_slug")))
+                (parent["children"] if parent else orphans).append(paper)
+
+            return {
+                "ok": True,
+                "project": project_id,
+                "root": str(root),
+                "studios": list(studios.values()),
+                "orphans": orphans,
+                "totals": {
+                    "studios": len(studios),
+                    "papers": len(papers),
+                    "awaiting_you": sum(1 for p in papers if p["awaiting_you"]),
+                    "running": sum(1 for p in papers if p["loop_running"]),
+                    "cost_usd": round(
+                        sum(s["cost_usd"] for s in studios.values())
+                        + sum(p["cost_usd"] for p in papers),
+                        2,
+                    ),
+                },
+            }
 
         def _ar_resolve_pdf(self, root: Path, slug: str) -> tuple[Path | None, str]:
             """The task's compiled PDF, building it once if it is not there yet."""
@@ -4689,10 +4870,7 @@ def make_handler(
                 idea_ids = [str(x) for x in raw_ids] if isinstance(raw_ids, list) else []
                 if not idea_ids:
                     return {"ok": False, "error": "select at least one idea"}, 400
-                code_root = pr.get_code_root(project_id) or root
-                spawned, errors = _ar_spawn_children(
-                    root, slug, state, idea_ids, code_root
-                )
+                spawned, errors = _ar_spawn_children(root, slug, state, idea_ids)
                 payload = self._ar_payload(root, project_id, slug)
                 payload["spawned"] = spawned
                 payload["errors"] = errors
@@ -4914,10 +5092,14 @@ def make_handler(
             parsed = urlparse(self.path)
             path = parsed.path
 
-            if path in ("/", "/index.html"):
-                idx = static_root / "index.html"
+            # The Research Factory is a second entry document over the same
+            # API: a dedicated view of the AR fleet, rather than AR squeezed
+            # into a task panel beside everything else Loom does.
+            if path in ("/", "/index.html", "/factory", "/factory.html"):
+                name = "factory.html" if path.startswith("/factory") else "index.html"
+                idx = static_root / name
                 if not idx.is_file():
-                    st, b, h = _text_bytes("missing index.html", 500)
+                    st, b, h = _text_bytes(f"missing {name}", 500)
                     self._send(st, b, h)
                     return
                 st, b, h = _text_bytes(
@@ -5141,7 +5323,24 @@ def make_handler(
                 return
 
             if path == "/api/ar/catalog":
-                st, b, h = _json_bytes(ar.catalog())
+                data = ar.catalog()
+                # The Research Factory is a standalone page, so it needs to be
+                # told which project holds the AR tasks rather than inheriting
+                # a selection from Loom's sidebar.
+                for project in pr.list_projects():
+                    if project.get("path") == str(ar.ar_root()):
+                        data["project"] = project.get("id", "")
+                        break
+                st, b, h = _json_bytes(data)
+                self._send(st, b, h)
+                return
+
+            if path == "/api/ar/overview":
+                root, pid = self._resolve_scope(parsed)
+                if root is None or pid is None:
+                    self._bad_project()
+                    return
+                st, b, h = _json_bytes(self._ar_overview(root, pid))
                 self._send(st, b, h)
                 return
 
@@ -6129,9 +6328,14 @@ def make_handler(
                 if ar_state is not None:
                     ar.write_ar_state(root, meta.slug, ar_state)
                 code_root = pr.get_code_root(project_id) or root
-                wt, _branch, auto_msg = prepare_task_worktree_from(
-                    root, meta.slug, code_root
-                )
+                if ar_state is not None:
+                    # A studio only mines and spawns; it has no code of its own,
+                    # so a worktree of the project would sit there unused.
+                    wt, _branch, auto_msg = None, "", "AR studio: no worktree needed"
+                else:
+                    wt, _branch, auto_msg = prepare_task_worktree_from(
+                        root, meta.slug, code_root
+                    )
                 meta = read_meta(root, meta.slug) or meta
                 cands = _project_worktree_candidates(pr, root, project_id)
                 hint = ""
@@ -7480,6 +7684,11 @@ def serve(
     web_project_registry = WebProjectRegistry()
     if multi_project_workspace:
         web_project_registry.prune_redundant_parent_projects(project_root)
+    # AR tasks belong to no code project, so they get a root of their own that
+    # is always there - registering it means a new AR task has somewhere to go
+    # without the user creating a folder first.
+    _ar_root, _ar_created = ar.ensure_ar_root()
+    web_project_registry.ensure_project(_ar_root, name=_ar_root.name)
     claude_registry = ClaudeRegistry()
     openclaw_client = OpenClawClient(openclaw_config)
     monitor_manager = TaskMonitorManager(openclaw_client)
@@ -7542,6 +7751,12 @@ def serve(
     print(f"  Project registry: {web_project_registry.persist_path}", flush=True)
     print(f"  Task root:        {rud_root}", flush=True)
     print(f"  Project notes:    {rud_root}/NOTES.md", flush=True)
+    print(
+        f"  AR root:          {_ar_root}"
+        f"{'  (created)' if _ar_created else ''}"
+        f"  [override with {AR_ROOT_ENV}]",
+        flush=True,
+    )
     print(f"  Static assets:    {web_static_dir().resolve()}", flush=True)
     print(f"  Default skills:   {sk}", flush=True)
     print("  Tabs:             Claude, PLAN.md (per task) + Notes button (per project)", flush=True)

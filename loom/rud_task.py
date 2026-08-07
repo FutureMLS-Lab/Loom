@@ -736,9 +736,16 @@ def create_task(
     kind: str = "agent",
     *,
     auto_worktree: bool = True,
+    slug: str = "",
 ) -> TaskMeta:
+    """Create a task directory and its metadata.
+
+    *slug* overrides the one derived from the title, for callers that need the
+    directory name to encode something the title does not - AR prefixes a paper
+    task's slug with its studio's so the two group together on disk.
+    """
     project_root = project_root.resolve()
-    base = slugify(title)
+    base = slugify(slug) if slug else slugify(title)
     slug = ensure_unique_slug(project_root, base)
     root = task_root(project_root, slug)
     root.mkdir(parents=True, exist_ok=True)
