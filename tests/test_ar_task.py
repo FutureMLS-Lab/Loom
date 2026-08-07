@@ -132,6 +132,38 @@ def test_normalize_idea_fills_missing_fields() -> None:
     assert blank["score"] == 0.0
 
 
+def test_normalize_edge() -> None:
+    edge = ar.normalize_edge({"paper": "2210.17323", "title": "GPTQ", "relation": "Extends"})
+    assert edge == {"paper": "2210.17323", "title": "GPTQ", "relation": "extends"}
+
+    # A bare id is a valid edge; an unknown relation degrades rather than fails.
+    assert ar.normalize_edge("2402.02750")["paper"] == "2402.02750"
+    assert ar.normalize_edge({"title": "KIVI", "relation": "vibes"})["relation"] == (
+        ar.DEFAULT_RELATION
+    )
+    # Nothing to point at is not an edge.
+    assert ar.normalize_edge({}) is None
+    assert ar.normalize_edge({"relation": "extends"}) is None
+    assert ar.normalize_edge(42) is None
+
+
+def test_normalize_idea_carries_edges() -> None:
+    idea = ar.normalize_idea(
+        {
+            "title": "T",
+            "derived_from": [
+                {"paper": "2510.11696", "title": "QeRL", "relation": "contradicts"},
+                {"nothing": "here"},
+            ],
+        }
+    )
+    assert idea["derived_from"] == [
+        {"paper": "2510.11696", "title": "QeRL", "relation": "contradicts"}
+    ]
+    # An idea generated before the field existed simply has no edges.
+    assert ar.normalize_idea({"title": "T"})["derived_from"] == []
+
+
 def test_idea_summary_includes_experiments() -> None:
     text = ar.idea_summary(
         {"title": "T", "hypothesis": "H", "experiments": ["a", "b"], "risk": "R"}

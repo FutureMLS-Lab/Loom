@@ -4529,6 +4529,84 @@ def make_handler(
                         pass
             return payload
 
+        def _ar_overview(self, root: Path, project_id: str) -> dict[str, Any]:
+            """Every AR task in one payload, studios with their papers nested.
+
+            The Factory dashboard needs the whole fleet at a glance; fetching
+            each task separately would be one request per paper per poll.
+            """
+            studios: dict[str, dict[str, Any]] = {}
+            papers: list[dict[str, Any]] = []
+            for meta in list_tasks(root):
+                if not ar.is_ar_kind(meta.kind):
+                    continue
+                state = ar.read_ar_state(root, meta.slug)
+                if not state:
+                    continue
+                common = {
+                    "slug": meta.slug,
+                    "title": meta.title,
+                    "venue": ar.venue_entry(
+                        str(state.get("venue") or ar.DEFAULT_VENUE)
+                    )["label"],
+                    "cost_usd": float(state.get("cost_usd") or 0.0),
+                    "updated_at": state.get("updated_at", ""),
+                }
+                if ar.is_studio(state):
+                    studios[meta.slug] = {
+                        **common,
+                        "direction": ar.direction_label(state),
+                        "mode": state.get("mode", ""),
+                        "papers_found": len(state.get("papers") or []),
+                        "ideas": len(state.get("ideas") or []),
+                        "papers_status": state.get("papers_status", ""),
+                        "ideas_status": state.get("ideas_status", ""),
+                        "children": [],
+                    }
+                elif ar.is_paper(state):
+                    papers.append(
+                        {
+                            **common,
+                            "parent_slug": state.get("parent_slug", ""),
+                            "stage": state.get("stage", ""),
+                            "stage_label": ar.progress_summary(state),
+                            "round": ar.current_round(state),
+                            "max_rounds": ar.max_rounds(state),
+                            "best_rating": ar.best_rating(state),
+                            "plateaued": ar.is_plateaued(state),
+                            "loop_running": bool(state.get("loop_running")),
+                            "pdf_available": (
+                                ar.paper_root(root, meta.slug) / "main.pdf"
+                            ).is_file(),
+                            "awaiting_you": state.get("stage")
+                            in (ar.STAGE_AWAIT_DRAFT_REVIEW, ar.STAGE_AWAIT_FINAL_REVIEW),
+                        }
+                    )
+
+            orphans: list[dict[str, Any]] = []
+            for paper in papers:
+                parent = studios.get(str(paper.get("parent_slug")))
+                (parent["children"] if parent else orphans).append(paper)
+
+            return {
+                "ok": True,
+                "project": project_id,
+                "root": str(root),
+                "studios": list(studios.values()),
+                "orphans": orphans,
+                "totals": {
+                    "studios": len(studios),
+                    "papers": len(papers),
+                    "awaiting_you": sum(1 for p in papers if p["awaiting_you"]),
+                    "running": sum(1 for p in papers if p["loop_running"]),
+                    "cost_usd": round(
+                        sum(s["cost_usd"] for s in studios.values())
+                        + sum(p["cost_usd"] for p in papers),
+                        2,
+                    ),
+                },
+            }
+
         def _ar_resolve_pdf(self, root: Path, slug: str) -> tuple[Path | None, str]:
             """The task's compiled PDF, building it once if it is not there yet."""
             paper_dir = ar.paper_root(root, slug)
@@ -4842,10 +4920,14 @@ def make_handler(
             parsed = urlparse(self.path)
             path = parsed.path
 
-            if path in ("/", "/index.html"):
-                idx = static_root / "index.html"
+            # The Research Factory is a second entry document over the same
+            # API: a dedicated view of the AR fleet, rather than AR squeezed
+            # into a task panel beside everything else Loom does.
+            if path in ("/", "/index.html", "/factory", "/factory.html"):
+                name = "factory.html" if path.startswith("/factory") else "index.html"
+                idx = static_root / name
                 if not idx.is_file():
-                    st, b, h = _text_bytes("missing index.html", 500)
+                    st, b, h = _text_bytes(f"missing {name}", 500)
                     self._send(st, b, h)
                     return
                 st, b, h = _text_bytes(
@@ -5069,7 +5151,24 @@ def make_handler(
                 return
 
             if path == "/api/ar/catalog":
-                st, b, h = _json_bytes(ar.catalog())
+                data = ar.catalog()
+                # The Research Factory is a standalone page, so it needs to be
+                # told which project holds the AR tasks rather than inheriting
+                # a selection from Loom's sidebar.
+                for project in pr.list_projects():
+                    if project.get("path") == str(ar.ar_root()):
+                        data["project"] = project.get("id", "")
+                        break
+                st, b, h = _json_bytes(data)
+                self._send(st, b, h)
+                return
+
+            if path == "/api/ar/overview":
+                root, pid = self._resolve_scope(parsed)
+                if root is None or pid is None:
+                    self._bad_project()
+                    return
+                st, b, h = _json_bytes(self._ar_overview(root, pid))
                 self._send(st, b, h)
                 return
 

@@ -56,7 +56,11 @@ Return **JSON only** — an array of objects, no prose around it:
       "Throughput and memory measurement to show the overhead is under 5 percent"
     ],
     "risk": "The outlier structure may be model-specific, so the result may not transfer beyond one family.",
-    "score": 0.78
+    "score": 0.78,
+    "derived_from": [
+      {"paper": "2210.17323", "title": "GPTQ", "relation": "extends"},
+      {"paper": "2402.02750", "title": "KIVI", "relation": "contradicts"}
+    ]
   }
 ]
 ```
@@ -77,6 +81,22 @@ Field rules:
   risk you cannot name has not been thought through.
 - `score` — your own 0-1 estimate of (impact x confidence) / cost. Rank honestly;
   the user reads these in order.
+- `derived_from` — the specific prior work this idea stands on or against, as
+  the edges of a knowledge graph. Two to four entries. Use the arXiv id in
+  `paper` when you have one (bare, like `2210.17323`) and always give a short
+  `title`. `relation` must be one of:
+  - `extends` — takes a method further, or to a case it did not cover
+  - `contradicts` — predicts the paper's claim fails, or that its explanation
+    is wrong
+  - `combines` — composes it with another line of work
+  - `ports` — moves it to a different setting, scale or modality
+  - `controls-for` — tests whether the paper's result survives a control it
+    never ran
+
+  This is not decoration. An idea whose `novelty` names prior work but whose
+  `derived_from` is empty has not been grounded, and the graph will show it
+  floating unattached - which is the honest signal that you asserted novelty
+  without checking against anything.
 
 ## 4. Calibration
 

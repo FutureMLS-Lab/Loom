@@ -307,6 +307,8 @@ def direction_label(state: dict[str, Any]) -> str:
 def catalog() -> dict[str, Any]:
     """Everything the create-task UI needs to render the AR fields."""
     return {
+        "root": str(ar_root()),
+        "relations": list(IDEA_RELATIONS),
         "directions": [{"id": d["id"], "label": d["label"]} for d in DIRECTIONS],
         "venues": [{"id": v["id"], "label": v["label"]} for v in VENUES],
         "default_venue": DEFAULT_VENUE,
@@ -498,6 +500,35 @@ def is_paper(state: dict[str, Any]) -> bool:
 IDEA_STATUS_PROPOSED = "proposed"
 IDEA_STATUS_SPAWNED = "spawned"
 
+# How an idea stands relative to the work it came from. A small closed
+# vocabulary keeps the knowledge graph readable and makes a novelty claim
+# checkable: "extends" and "contradicts" are very different bets.
+IDEA_RELATIONS = (
+    "extends",
+    "contradicts",
+    "combines",
+    "ports",
+    "controls-for",
+    "relates-to",
+)
+DEFAULT_RELATION = "relates-to"
+
+
+def normalize_edge(raw: Any) -> dict[str, str] | None:
+    """One ``idea -> prior work`` link, as the knowledge graph draws it."""
+    if isinstance(raw, str):
+        raw = {"paper": raw}
+    if not isinstance(raw, dict):
+        return None
+    paper = str(raw.get("paper") or raw.get("arxiv_id") or raw.get("id") or "").strip()
+    title = str(raw.get("title") or "").strip()
+    if not paper and not title:
+        return None
+    relation = str(raw.get("relation") or "").strip().lower().replace(" ", "-")
+    if relation not in IDEA_RELATIONS:
+        relation = DEFAULT_RELATION
+    return {"paper": paper, "title": title, "relation": relation}
+
 
 def normalize_idea(raw: Any, index: int = 0) -> dict[str, Any]:
     """Coerce a model-proposed idea into the card shape the UI renders."""
@@ -511,9 +542,16 @@ def normalize_idea(raw: Any, index: int = 0) -> dict[str, Any]:
         score = float(d.get("score", 0) or 0)
     except (TypeError, ValueError):
         score = 0.0
+    raw_edges = d.get("derived_from")
+    if isinstance(raw_edges, (str, dict)):
+        raw_edges = [raw_edges]
+    edges = [e for e in (normalize_edge(x) for x in (raw_edges or [])) if e] \
+        if isinstance(raw_edges, list) else []
+
     idea_id = str(d.get("id") or "").strip() or f"idea-{index + 1}"
     return {
         "id": idea_id,
+        "derived_from": edges,
         "title": str(d.get("title") or "").strip() or f"Idea {index + 1}",
         "hypothesis": str(d.get("hypothesis") or "").strip(),
         "novelty": str(d.get("novelty") or "").strip(),

@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Research Factory</title>
+  <link rel="icon" type="image/png" href="/static/loom-logo.png" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260807-1" />
+</head>
+<body>
+
+<header class="rf-top">
+  <a class="rf-brand" href="/factory">
+    <span class="rf-brand__mark" aria-hidden="true"></span>
+    <span class="rf-brand__name">Research Factory</span>
+  </a>
+  <nav class="rf-top__nav">
+    <span class="rf-stat" id="stat-studios"><b>—</b> studios</span>
+    <span class="rf-stat" id="stat-papers"><b>—</b> papers</span>
+    <span class="rf-stat rf-stat--alert" id="stat-waiting" hidden><b>—</b> waiting on you</span>
+    <span class="rf-stat" id="stat-cost"><b>—</b> spent</span>
+    <button type="button" class="rf-btn rf-btn--ghost" id="btn-refresh">Refresh</button>
+    <a class="rf-btn rf-btn--ghost" href="/">Loom</a>
+  </nav>
+</header>
+
+<!-- ============ Fleet: every studio and its papers ============ -->
+<main class="rf-main" id="view-fleet">
+  <section class="rf-hero">
+    <p class="rf-eyebrow">Autonomous paper pipeline</p>
+    <h1>An idea becomes a paper<br />while you sleep.</h1>
+    <p class="rf-lede">
+      Pick a direction. The studio mines what the field just published and proposes
+      ideas grounded in it. Each idea you keep becomes a paper that drafts itself,
+      runs its own experiments, and argues with a reviewer until the score stops
+      moving — pausing only at the two gates where your judgement is required.
+    </p>
+    <div class="rf-hero__actions">
+      <button type="button" class="rf-btn rf-btn--primary" id="btn-new-studio">Start a studio</button>
+      <span class="rf-hint" id="fleet-root"></span>
+    </div>
+  </section>
+
+  <section class="rf-section">
+    <div class="rf-section__head">
+      <h2>Studios</h2>
+      <span class="rf-hint">A studio owns a direction and the papers spawned from it.</span>
+    </div>
+    <div class="rf-fleet" id="fleet-list"></div>
+  </section>
+</main>
+
+<!-- ============ Studio: mining, ideas, knowledge graph ============ -->
+<main class="rf-main" id="view-studio" hidden>
+  <button type="button" class="rf-back" data-back>← All studios</button>
+  <section class="rf-studio-head">
+    <div>
+      <p class="rf-eyebrow" id="studio-eyebrow">Studio</p>
+      <h1 id="studio-title">…</h1>
+      <p class="rf-lede" id="studio-sub"></p>
+    </div>
+    <div class="rf-studio-actions">
+      <label class="rf-check"><input type="checkbox" id="studio-venue-only" /> venue-tagged only</label>
+      <button type="button" class="rf-btn" id="btn-mine">Mine arXiv</button>
+      <label class="rf-check">ideas <input type="number" id="studio-count" min="1" max="12" value="6" /></label>
+      <button type="button" class="rf-btn" id="btn-ideas">Generate ideas</button>
+      <button type="button" class="rf-btn rf-btn--primary" id="btn-spawn">Create papers</button>
+    </div>
+  </section>
+
+  <section class="rf-section">
+    <div class="rf-section__head">
+      <h2>Knowledge graph</h2>
+      <span class="rf-hint">
+        What the field published, and how each idea stands against it.
+        Drag a node. Click to open.
+      </span>
+    </div>
+    <div class="rf-graph-wrap">
+      <svg id="graph" class="rf-graph" role="img" aria-label="Papers and the ideas derived from them"></svg>
+      <div class="rf-graph-legend" id="graph-legend"></div>
+      <div class="rf-graph-empty" id="graph-empty">
+        Mine papers and generate ideas to draw the graph.
+      </div>
+    </div>
+  </section>
+
+  <section class="rf-split">
+    <div class="rf-section">
+      <div class="rf-section__head">
+        <h2>Ideas</h2>
+        <span class="rf-hint" id="ideas-status"></span>
+      </div>
+      <pre class="rf-log" id="ideas-log" hidden></pre>
+      <div class="rf-ideas" id="ideas-list"></div>
+    </div>
+    <div class="rf-section">
+      <div class="rf-section__head">
+        <h2>Recent work</h2>
+        <span class="rf-hint" id="papers-status"></span>
+      </div>
+      <pre class="rf-log" id="papers-log" hidden></pre>
+      <ul class="rf-papers" id="papers-list"></ul>
+    </div>
+  </section>
+</main>
+
+<!-- ============ Paper: the pipeline for one idea ============ -->
+<main class="rf-main" id="view-paper" hidden>
+  <button type="button" class="rf-back" data-back>← Back to studio</button>
+  <section class="rf-paper-head">
+    <div>
+      <p class="rf-eyebrow" id="paper-eyebrow">Paper</p>
+      <h1 id="paper-title">…</h1>
+      <p class="rf-lede" id="paper-hypothesis"></p>
+    </div>
+    <div class="rf-paper-actions">
+      <button type="button" class="rf-btn" id="btn-paper-build">Rebuild PDF</button>
+      <button type="button" class="rf-btn" id="btn-paper-pdf">Download PDF</button>
+      <button type="button" class="rf-btn" id="btn-paper-submission">Prepare submission</button>
+    </div>
+  </section>
+
+  <ol class="rf-pipeline" id="paper-pipeline"></ol>
+  <p class="rf-hint rf-paper-meta" id="paper-meta"></p>
+
+  <section class="rf-gate" id="paper-gate" hidden>
+    <h2 id="gate-title">Your review</h2>
+    <p class="rf-lede" id="gate-hint"></p>
+    <textarea id="gate-note" rows="3" placeholder="Optional instruction for the author — carried into the next round."></textarea>
+    <div class="rf-gate__actions">
+      <button type="button" class="rf-btn rf-btn--primary" id="btn-gate-approve">Approve</button>
+      <button type="button" class="rf-btn rf-btn--danger" id="btn-gate-reject">Request changes</button>
+    </div>
+  </section>
+
+  <section class="rf-section">
+    <div class="rf-section__head">
+      <h2>Rounds</h2>
+      <div class="rf-section__actions">
+        <button type="button" class="rf-btn rf-btn--sm" id="btn-loop-start">Start loop</button>
+        <button type="button" class="rf-btn rf-btn--sm" id="btn-loop-stop">Stop loop</button>
+        <button type="button" class="rf-btn rf-btn--sm" id="btn-review-now">Review now</button>
+      </div>
+    </div>
+    <p class="rf-hint" id="loop-status"></p>
+    <div class="rf-scores" id="score-chart"></div>
+    <pre class="rf-log" id="review-log" hidden></pre>
+    <ol class="rf-rounds" id="rounds-list"></ol>
+  </section>
+
+  <section class="rf-section" id="submission-section" hidden>
+    <div class="rf-section__head"><h2>Submission readiness</h2></div>
+    <ul class="rf-checklist" id="submission-checks"></ul>
+    <p class="rf-hint">Loom never posts to OpenReview. Run this yourself, signed in as you:</p>
+    <pre class="rf-log" id="submission-command"></pre>
+  </section>
+</main>
+
+<!-- ============ New studio ============ -->
+<div class="rf-modal" id="studio-modal" hidden>
+  <div class="rf-modal__card" role="dialog" aria-modal="true" aria-labelledby="studio-modal-title">
+    <h2 id="studio-modal-title">Start a studio</h2>
+    <label for="new-title">Name</label>
+    <input type="text" id="new-title" placeholder="e.g. low bit RL" />
+    <div class="rf-row">
+      <div>
+        <label for="new-direction">Direction</label>
+        <select id="new-direction"></select>
+      </div>
+      <div>
+        <label for="new-venue">Venue</label>
+        <select id="new-venue"></select>
+      </div>
+    </div>
+    <input type="text" id="new-custom-direction" placeholder="Describe the direction yourself" hidden />
+    <div class="rf-modes">
+      <label class="rf-mode"><input type="radio" name="new-mode" value="auto" checked />
+        <span><b>Auto direction</b><small>Mine the field, then propose ideas from what it finds.</small></span></label>
+      <label class="rf-mode"><input type="radio" name="new-mode" value="seed" />
+        <span><b>My idea</b><small>Start from something you describe and sharpen it.</small></span></label>
+    </div>
+    <label for="new-seed" id="new-seed-label">What the paper should be about (optional)</label>
+    <textarea id="new-seed" rows="3" placeholder="Constraints, a dataset you must use, an angle you want covered."></textarea>
+    <label for="new-rounds">Author / reviewer rounds per paper</label>
+    <input type="number" id="new-rounds" min="1" max="50" value="10" />
+    <div class="rf-modal__foot">
+      <span class="rf-hint" id="studio-modal-status"></span>
+      <button type="button" class="rf-btn" id="btn-studio-cancel">Cancel</button>
+      <button type="button" class="rf-btn rf-btn--primary" id="btn-studio-create">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Review reader ============ -->
+<div class="rf-modal" id="review-modal" hidden>
+  <div class="rf-modal__card rf-modal__card--wide" role="dialog" aria-modal="true" aria-labelledby="review-modal-title">
+    <div class="rf-modal__head">
+      <h2 id="review-modal-title">Review</h2>
+      <button type="button" class="rf-x" id="btn-review-close" aria-label="Close">×</button>
+    </div>
+    <div class="rf-prose" id="review-body"></div>
+  </div>
+</div>
+
+<div class="rf-toasts" id="toasts" aria-live="polite"></div>
+
+<script src="/static/factory.js?v=20260807-1"></script>
+</body>
+</html>
