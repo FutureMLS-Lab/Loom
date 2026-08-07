@@ -2097,6 +2097,60 @@ def ar_skills_dir() -> Path:
     return bundled_skills_path().parent / "ar"
 
 
+FIGURE_SKILLS_SUBDIR = "figures"
+
+
+def figure_skills() -> list[dict[str, str]]:
+    """Paper-figure skills available to the author, newest listing each time.
+
+    Only the name, the one-line description and the path go into a prompt: the
+    five SKILL.md files together are ~38k characters, so the author is pointed
+    at them and reads the one it needs, rather than carrying all five into
+    every round.
+    """
+    root = ar_skills_dir() / FIGURE_SKILLS_SUBDIR
+    if not root.is_dir():
+        return []
+    out: list[dict[str, str]] = []
+    for skill in sorted(root.iterdir()):
+        doc = skill / "SKILL.md"
+        if not doc.is_file():
+            continue
+        name, description = skill.name, ""
+        try:
+            head = doc.read_text(encoding="utf-8", errors="replace")[:4000]
+        except OSError:
+            head = ""
+        if head.startswith("---"):
+            block = head.split("---", 2)[1] if head.count("---") >= 2 else ""
+            for line in block.splitlines():
+                key, _, value = line.partition(":")
+                if key.strip() == "name" and value.strip():
+                    name = value.strip()
+                elif key.strip() == "description" and value.strip():
+                    description = value.strip()
+        # The first sentence carries what it makes; the rest is trigger phrasing.
+        description = description.split(". ")[0].strip().rstrip(".")
+        out.append({"name": name, "description": description, "path": str(doc)})
+    return out
+
+
+def figure_skills_block() -> str:
+    """The figure-skill menu as it appears in an author prompt."""
+    skills = figure_skills()
+    if not skills:
+        return ""
+    lines = [
+        "Figure skills are installed. Read the SKILL.md before drawing - each",
+        "carries a house style, a drawing kit under its scripts/, and a worked",
+        "example you can run:",
+    ]
+    for skill in skills:
+        lines.append(f"  {skill['name']} - {skill['description']}")
+        lines.append(f"      {skill['path']}")
+    return "\n".join(lines)
+
+
 def ar_skill_text(name: str, limit: int = 24000) -> str:
     path = ar_skills_dir() / name
     if not path.is_file():
@@ -2175,6 +2229,8 @@ The idea this paper must establish:
 {ar_skill_text(SKILL_AUTHOR) or "(AR author skill missing)"}
 === end methodology ===
 
+{figure_skills_block()}
+
 This round you are writing the SKELETON, not results. Finish the title,
 abstract arc, introduction with its contribution list, related work with real
 citations, and a method section precise enough to reimplement from. Build out
@@ -2236,6 +2292,8 @@ The idea this paper must establish:
 === AR author methodology - follow this exactly ===
 {ar_skill_text(SKILL_AUTHOR) or "(AR author skill missing)"}
 === end methodology ===
+
+{figure_skills_block()}
 {stuck_block}
 {feedback}
 

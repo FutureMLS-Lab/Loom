@@ -49,6 +49,28 @@ wastes the reviewer's turn.
 A figure belongs in `manuscript/figures/` and the script that drew it in
 `code/`. Never hand-place a number that no script emitted.
 
+## Figures
+
+Dedicated skills are installed under `loom/skills/ar/figures/`, and the round
+prompt lists them with their paths. Read the relevant `SKILL.md` before drawing
+rather than reaching for default matplotlib — each one carries a house style, a
+drawing kit in its `scripts/`, and a runnable example.
+
+- **teaser-figure** and **teaser-figure-plain** — the page-one overview. Use the
+  plain variant when the paper has something concrete to draw and a real
+  measurement to plot; the tinted-panel variant when the contribution is a
+  mechanism with no drawable object.
+- **results-figure** and **results-figure-replicates** — the evidence plots. Use
+  the replicates variant whenever you have more than one seed, which for this
+  pipeline is most of the time: showing the spread is what makes a small-scale
+  result credible.
+- **checkbib** — run it before every gate. The reviewer challenges citations,
+  and a bibliography that cites something the paper never uses, or misattributes
+  a claim, costs more soundness than it saves effort.
+
+The red line in those skills is the same as the one here: every number and claim
+in a figure comes from the paper's own results, never from what would look good.
+
 ## Stage 1 — the first draft
 
 You are writing the *skeleton*, not the results. Deliver:

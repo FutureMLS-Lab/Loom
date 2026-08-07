@@ -2678,7 +2678,12 @@ def _build_ar_prompt(
         return ar.author_draft_prompt(task_dir, paper_dir, state)
 
     base = ar.studio_prompt(task_dir, state, meta.general_goal)
-    if skills.strip():
+    # Only skills the user deliberately picked. A task that never chose any
+    # carries the bundled default, and pasting an unrelated host runbook into a
+    # research prompt is noise at best - and leaks whatever happens to be in
+    # that file at worst.
+    chosen = (meta.skills_path or "").strip()
+    if skills.strip() and chosen and chosen != str(bundled_skills_path()):
         base += f"\nDomain skills selected for this task:\n---\n{skills}\n---\n"
     return base
 
