@@ -213,8 +213,9 @@ function renderLog(id, lines, running) {
 // ===== studio =====
 
 function renderStudio(d, state) {
-  el('studio-title').textContent = (S.data && S.data.state && d.title) || d.direction_label || S.slug;
-  el('studio-eyebrow').textContent = `Studio · ${esc(state.venue || '').toUpperCase()}`;
+  el('studio-title').textContent = d.title || S.slug;
+  el('studio-eyebrow').textContent =
+    `Studio · ${String(state.venue || '').toUpperCase()} · ${d.direction_label || ''}`;
   el('studio-sub').textContent = state.seed_idea
     || `Mining ${d.direction_label} and proposing ideas grounded in what it finds.`;
 
@@ -283,13 +284,21 @@ function updateSpawnLabel() {
 // node kinds and one edge kind, and 120 lines of Verlet-ish relaxation keeps
 // the page dependency-free and instant to load.
 
+// Readable on the paper-white ground, and distinguishable under the common
+// colour-vision deficiencies.
 const RELATION_COLOR = {
-  extends: '#4ade80',
-  contradicts: '#fb7185',
-  combines: '#a78bfa',
-  ports: '#38bdf8',
-  'controls-for': '#fbbf24',
-  'relates-to': '#6b7280',
+  extends: '#15803d',
+  contradicts: '#be123c',
+  combines: '#7c3aed',
+  ports: '#0369a1',
+  'controls-for': '#b45309',
+  'relates-to': '#8a8f97',
+};
+
+const NODE_STYLE = {
+  idea: { fill: '#4f46e5', stroke: '#312e81', width: '2' },
+  paper: { fill: '#ffffff', stroke: '#8a8f97', width: '1.4' },
+  external: { fill: '#f5f3ed', stroke: '#cfc9bb', width: '1.2' },
 };
 
 let GRAPH = { nodes: [], links: [], raf: 0, drag: null };
@@ -378,18 +387,19 @@ function drawGraph(papers, ideas) {
     link.line = document.createElementNS(ns, 'line');
     link.line.setAttribute('class', 'rf-edge-line');
     link.line.setAttribute('stroke', RELATION_COLOR[link.relation] || RELATION_COLOR['relates-to']);
-    link.line.setAttribute('stroke-opacity', '0.5');
+    link.line.setAttribute('stroke-opacity', '0.65');
     gLinks.appendChild(link.line);
   });
 
   nodes.forEach((node) => {
     const g = document.createElementNS(ns, 'g');
     g.setAttribute('class', `rf-node is-${node.kind}`);
+    const style = NODE_STYLE[node.kind] || NODE_STYLE.paper;
     const c = document.createElementNS(ns, 'circle');
     c.setAttribute('r', String(node.r));
-    c.setAttribute('fill', node.kind === 'idea' ? '#7c9cff' : (node.kind === 'paper' ? '#252b38' : '#1b1f28'));
-    c.setAttribute('stroke', node.kind === 'idea' ? '#c7d2fe' : '#4b5563');
-    c.setAttribute('stroke-width', node.kind === 'idea' ? '2' : '1.2');
+    c.setAttribute('fill', style.fill);
+    c.setAttribute('stroke', style.stroke);
+    c.setAttribute('stroke-width', style.width);
     const label = document.createElementNS(ns, 'text');
     const short = node.label.length > 34 ? node.label.slice(0, 33) + '…' : node.label;
     label.textContent = short;

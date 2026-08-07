@@ -4502,9 +4502,11 @@ def make_handler(
             state = ar.read_ar_state(root, slug)
             paper_dir = ar.paper_root(root, slug)
             pdf = paper_dir / "main.pdf"
+            meta = read_meta(root, slug)
             payload: dict[str, Any] = {
                 "ok": True,
                 "slug": slug,
+                "title": meta.title if meta else slug,
                 "state": state,
                 "catalog": ar.catalog(),
                 "direction_label": ar.direction_label(state) if state else "",
