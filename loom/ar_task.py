@@ -27,8 +27,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from loom.paths import bundled_skills_path, paper_templates_dir
@@ -87,6 +89,18 @@ MAX_ROUNDS_LIMIT = 50
 
 MODE_AUTO = "auto"
 MODE_SEED = "seed"
+
+# Cursor's account-scoped model catalog exposes these as the strongest
+# non-fast variants currently available for the requested reviewer families.
+# Fable has an explicit Thinking variant. GPT-5.6 Sol and Cursor Grok do not
+# expose a separate Thinking switch; max/high is their strongest reasoning
+# preset, and Cursor intentionally suppresses private reasoning in print mode.
+CURSOR_REVIEWER_MODELS: tuple[str, ...] = (
+    "gpt-5.6-sol-max",
+    "claude-fable-5-thinking-max",
+    "cursor-grok-4.5-high",
+)
+CURSOR_REVIEWER_PANEL = "cursor-reviewer-panel"
 
 
 # --- Catalogs ---------------------------------------------------------------
@@ -425,6 +439,7 @@ def new_paper_state(
     max_rounds: Any = DEFAULT_MAX_ROUNDS,
     author_model: str = "",
     reviewer_model: str = "",
+    reviewer_models: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     v = (venue or "").strip().lower()
     if v not in VENUE_IDS:
@@ -443,7 +458,11 @@ def new_paper_state(
         "gates": [],
         "loop_running": False,
         "author_model": author_model,
+        # Keep the singular field so old ar.json readers remain compatible.
         "reviewer_model": reviewer_model,
+        "reviewer_models": list(
+            CURSOR_REVIEWER_MODELS if reviewer_models is None else reviewer_models
+        ),
         "paper_dir": "",
         "pdf_path": "",
         "pdf_built_at": "",
@@ -1322,6 +1341,180 @@ def review_headline(scores: dict[str, Any]) -> str:
     return " · ".join(bits) or "no scores parsed"
 
 
+def _cursor_models(timeout: int = 30) -> dict[str, Any]:
+    """Return the model ids advertised by the logged-in Cursor CLI account."""
+    try:
+        proc = subprocess.run(
+            ["agent", "models"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "error": "Cursor CLI `agent` is not on PATH", "models": []}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "error": f"could not list Cursor models: {exc}", "models": []}
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "unknown error").strip()
+        return {
+            "ok": False,
+            "error": f"`agent models` failed: {detail[-1000:]}",
+            "models": [],
+        }
+    models: list[str] = []
+    for line in (proc.stdout or "").splitlines():
+        match = re.match(r"^([a-zA-Z0-9][a-zA-Z0-9._-]*)\s+-\s+", line.strip())
+        if match:
+            models.append(match.group(1))
+    return {"ok": True, "models": models}
+
+
+def _run_cursor_headless(
+    prompt: str,
+    model: str,
+    workspace: Path,
+    *,
+    timeout: int = 900,
+    on_line: Any = None,
+) -> dict[str, Any]:
+    """Run one read-only Cursor reviewer and return its final Markdown.
+
+    Cursor's print mode never exposes private thinking tokens. The selected
+    model id controls the maximum available reasoning budget; Ask mode and the
+    absence of ``--force`` keep this reviewer read-only.
+    """
+    cmd = [
+        "agent",
+        "--print",
+        "--workspace",
+        str(workspace),
+        "--mode",
+        "ask",
+        "--trust",
+        "--model",
+        model,
+        "--output-format",
+        "json",
+        prompt,
+    ]
+    if on_line is not None:
+        on_line(f"{model}: reviewing compiled PDF")
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(workspace),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "model": model, "error": "Cursor CLI `agent` is not on PATH"}
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "model": model,
+            "error": f"Cursor review timed out after {timeout}s",
+        }
+    except OSError as exc:
+        return {"ok": False, "model": model, "error": str(exc)}
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "unknown error").strip()
+        return {
+            "ok": False,
+            "model": model,
+            "error": f"Cursor reviewer exited {proc.returncode}: {detail[-1500:]}",
+        }
+    try:
+        payload = json.loads(proc.stdout or "")
+    except json.JSONDecodeError as exc:
+        return {
+            "ok": False,
+            "model": model,
+            "error": f"Cursor reviewer returned invalid JSON: {exc}",
+            "raw": (proc.stdout or "")[-1500:],
+        }
+    if not isinstance(payload, dict):
+        return {"ok": False, "model": model, "error": "Cursor reviewer JSON is not an object"}
+    if payload.get("is_error") is True or payload.get("subtype") == "error":
+        return {
+            "ok": False,
+            "model": model,
+            "error": str(payload.get("result") or payload.get("error") or "Cursor review failed"),
+        }
+    text = str(payload.get("result") or "").strip()
+    if not text:
+        return {"ok": False, "model": model, "error": "Cursor reviewer returned no result"}
+    scores = parse_review_scores(text)
+    elapsed = round(time.monotonic() - started, 1)
+    if on_line is not None:
+        on_line(f"{model}: {review_headline(scores)} ({elapsed}s)")
+    return {
+        "ok": True,
+        "model": model,
+        "review": text,
+        "scores": scores,
+        "headline": review_headline(scores),
+        "duration_seconds": elapsed,
+    }
+
+
+def _panel_scores(reviewers: list[dict[str, Any]]) -> dict[str, Any]:
+    """Deterministically summarize three independent reviewer score blocks."""
+    aggregate: dict[str, Any] = {}
+    for field in _SCORE_FIELDS:
+        values = sorted(
+            float(scores[field])
+            for item in reviewers
+            if isinstance((scores := item.get("scores")), dict) and field in scores
+        )
+        if values:
+            value = values[len(values) // 2]
+            aggregate[field] = int(value) if value.is_integer() else value
+    recommendations = [
+        str((item.get("scores") or {}).get("recommendation") or "")
+        for item in reviewers
+    ]
+    ranked = sorted(
+        (RECOMMENDATIONS.index(rec), rec)
+        for rec in recommendations
+        if rec in RECOMMENDATIONS
+    )
+    if ranked:
+        aggregate["recommendation"] = ranked[len(ranked) // 2][1]
+    return aggregate
+
+
+def _cursor_pdf_review_prompt(
+    skill_text: str,
+    *,
+    pdf_path: Path,
+    venue: str,
+    round_n: int,
+) -> str:
+    """Prompt one independent reviewer to judge only the compiled PDF."""
+    return (
+        f"{skill_text}\n\n"
+        "=== end reviewer instructions ===\n\n"
+        f"Venue: {venue_entry(venue).get('label')}\n"
+        f"Review round: {round_n}\n\n"
+        "You are one member of a three-model independent reviewer panel. Use the "
+        "full reasoning budget configured by your model and think deeply before "
+        "returning the report. Do not reveal private chain-of-thought; return only "
+        "the required review.\n\n"
+        "The sole paper artifact for this review is the compiled PDF below:\n"
+        f"{pdf_path}\n\n"
+        "Open and inspect every page of that PDF. Judge both the scientific content "
+        "and the rendered artifact (tables, figures, equations, clipping, legibility, "
+        "and page-level presentation). The PDF is the source of truth. Do not search "
+        "for, open, or infer from LaTeX source files, author notes, experiment code, "
+        "or another review. Review the submission cold and independently.\n\n"
+        "Write your review now, in exactly the required markdown structure."
+    )
+
+
 def run_reviewer(
     paper_dir: Path,
     skill_text: str,
@@ -1331,59 +1524,126 @@ def run_reviewer(
     round_n: int = 1,
     author_note: str = "",
     build: dict[str, Any] | None = None,
-    model: str = "",
+    models: list[str] | tuple[str, ...] | None = None,
     timeout: int = 900,
     on_line: Any = None,
 ) -> dict[str, Any]:
-    """Review the current state of the paper as a program committee member."""
-    source = paper_source_text(paper_dir)
-    if not source:
-        return {"ok": False, "error": f"no LaTeX sources under {paper_dir}"}
+    """Review a compiled PDF with the fixed three-model Cursor panel.
 
+    ``idea`` and ``author_note`` remain accepted for API compatibility, but are
+    deliberately not included: reviewers see the same PDF a human reviewer
+    would receive, not the author's framing or raw LaTeX.
+    """
+    del idea, author_note
     build = build or {}
-    if build.get("ok"):
-        build_line = (
-            "The paper compiles."
-            if build.get("clean")
-            else "The paper compiles with LaTeX warnings/errors."
-        )
-    else:
-        build_line = f"The paper does NOT compile: {build.get('error', 'unknown error')}"
+    pdf_value = str(build.get("pdf") or "").strip()
+    pdf = Path(pdf_value) if pdf_value else paper_dir / "main.pdf"
+    if not build.get("ok") or not pdf.is_file():
+        error = str(build.get("error") or f"compiled PDF not found at {pdf}")
+        return {"ok": False, "error": f"cannot review without a compiled PDF: {error}"}
 
-    idea_block = idea_summary(idea) if idea else "(not recorded)"
-    author_block = (author_note or "").strip() or "(the author left no note this round)"
+    selected = tuple(models or CURSOR_REVIEWER_MODELS)
+    if selected != CURSOR_REVIEWER_MODELS:
+        return {
+            "ok": False,
+            "error": (
+                "reviewer panel must use exactly: "
+                + ", ".join(CURSOR_REVIEWER_MODELS)
+            ),
+        }
+    catalog = _cursor_models()
+    if not catalog.get("ok"):
+        return catalog
+    available = set(catalog.get("models") or [])
+    missing = [model for model in selected if model not in available]
+    if missing:
+        return {
+            "ok": False,
+            "error": "required Cursor reviewer model(s) unavailable: " + ", ".join(missing),
+            "available_models": sorted(available),
+        }
 
-    prompt = (
-        f"{skill_text}\n\n"
-        "=== end reviewer instructions ===\n\n"
-        f"Venue: {venue_entry(venue).get('label')}\n"
-        f"Review round: {round_n}\n"
-        f"Build status: {build_line}\n\n"
-        f"The idea this submission is meant to establish:\n{idea_block}\n\n"
-        f"What the authors say they did this round:\n{author_block}\n\n"
-        "LaTeX sources of the submission follow. Markers such as \\ARTODO{...}, "
-        "\\ARnum{} and \\ARfig{...} are deliberate placeholders for work that has "
-        "not been done yet - treat them as honest gaps, not as claims.\n\n"
-        f"{source}\n\n"
-        "Write your review now, in exactly the required markdown structure."
-    )
     if on_line is not None:
         on_line(
-            f"reviewing round {round_n} as {venue_entry(venue).get('label')} "
-            f"({len(source)} chars of LaTeX)"
+            f"reviewing compiled PDF with Cursor panel: {', '.join(selected)}"
         )
-    res = _run_headless(prompt, model=model, timeout=timeout, on_line=on_line)
-    if not res.get("ok"):
-        return res
-    text = str(res.get("text") or "").strip()
-    scores = parse_review_scores(text)
-    if on_line is not None:
-        on_line(review_headline(scores))
+
+    with TemporaryDirectory(prefix="loom-ar-pdf-review-") as tmp:
+        workspace = Path(tmp)
+        review_pdf = workspace / "submission.pdf"
+        try:
+            shutil.copy2(pdf, review_pdf)
+        except OSError as exc:
+            return {"ok": False, "error": f"could not isolate compiled PDF: {exc}"}
+        prompt = _cursor_pdf_review_prompt(
+            skill_text,
+            pdf_path=review_pdf,
+            venue=venue,
+            round_n=round_n,
+        )
+        by_model: dict[str, dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=len(selected)) as pool:
+            futures = {
+                pool.submit(
+                    _run_cursor_headless,
+                    prompt,
+                    model,
+                    workspace,
+                    timeout=timeout,
+                    on_line=on_line,
+                ): model
+                for model in selected
+            }
+            for future in as_completed(futures):
+                model = futures[future]
+                try:
+                    by_model[model] = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    by_model[model] = {"ok": False, "model": model, "error": str(exc)}
+
+    reviewers = [by_model[model] for model in selected]
+    failures = [item for item in reviewers if not item.get("ok")]
+    if failures:
+        detail = "; ".join(
+            f"{item.get('model')}: {item.get('error', 'unknown error')}"
+            for item in failures
+        )
+        return {
+            "ok": False,
+            "error": f"Cursor reviewer panel incomplete: {detail}",
+            "reviewers": reviewers,
+        }
+
+    scores = _panel_scores(reviewers)
+    headline = f"{len(reviewers)} reviewers · {review_headline(scores)}"
+    sections = [
+        "# Cursor Reviewer Panel",
+        "",
+        f"**Round:** {round_n}",
+        f"**Input:** compiled PDF only (`{pdf.name}`)",
+        f"**Models:** {', '.join(selected)}",
+        f"**Panel summary:** {review_headline(scores)}",
+    ]
+    for item in reviewers:
+        sections.extend(
+            [
+                "",
+                "---",
+                "",
+                f"# Reviewer: `{item['model']}`",
+                "",
+                str(item["review"]).strip(),
+            ]
+        )
+    text = "\n".join(sections).strip() + "\n"
     return {
         "ok": True,
         "review": text,
         "scores": scores,
-        "headline": review_headline(scores),
+        "headline": headline,
+        "models": list(selected),
+        "reviewers": reviewers,
+        "input_pdf": str(pdf),
     }
 
 
