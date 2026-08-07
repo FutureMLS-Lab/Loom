@@ -3722,9 +3722,30 @@ def _ar_review_job(root: Path, slug: str) -> None:
     )
     if not res.get("ok"):
         log(f"failed: {res.get('error')}")
-        ar.update_ar_state(
-            root, slug, review_status="error", review_error=str(res.get("error") or "")
-        )
+        readiness = res.get("readiness")
+        if isinstance(readiness, dict):
+            report_path = ar.round_dir(root, slug, n) / "readiness.md"
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                report_path.write_text(
+                    ar.review_readiness_markdown(readiness), encoding="utf-8"
+                )
+                readiness["report_path"] = str(report_path)
+            except OSError:
+                pass
+            state = ar.read_ar_state(root, slug)
+            rec = ar.ensure_round(state, n)
+            rec["readiness"] = readiness
+            state["review_status"] = "error"
+            state["review_error"] = str(res.get("error") or "")
+            ar.write_ar_state(root, slug, state)
+        else:
+            ar.update_ar_state(
+                root,
+                slug,
+                review_status="error",
+                review_error=str(res.get("error") or ""),
+            )
         return
     path = ar.review_note_path(root, slug, n)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -3995,6 +4016,17 @@ class _ARLoopDriver:
             self._start_round(state, n + 1)
             return
 
+        readiness = rec.get("readiness")
+        if isinstance(readiness, dict) and not readiness.get("ready"):
+            # A failed completion note is archived. Wait for the author to
+            # write a new one after receiving the deterministic failure list.
+            note = ar.author_note_path(self.project_root, self.slug, n)
+            if note.is_file():
+                self._close_round(state, n, note)
+            elif not readiness.get("repair_prompt_sent_at"):
+                self._send_readiness_prompt(state, n)
+            return
+
         # The author's note is the authoritative end-of-round signal, so check
         # it before the prompt bookkeeping: a round driven by hand, or one whose
         # prompt failed to paste and was sent another way, still closes.
@@ -4070,18 +4102,117 @@ class _ARLoopDriver:
         self._save(state)
         self._note(f"round {n} prompt sent to the agent pane")
 
+    def _send_readiness_prompt(self, state: dict[str, Any], n: int) -> None:
+        rec = ar.round_record(state, n) or {}
+        readiness = (
+            rec.get("readiness")
+            if isinstance(rec.get("readiness"), dict)
+            else {}
+        )
+        report_value = str(readiness.get("report_path") or "")
+        prompt = ar.author_readiness_repair_prompt(
+            task_root(self.project_root, self.slug),
+            self._paper_dir(),
+            state,
+            n,
+            readiness,
+            report_path=Path(report_value) if report_value else None,
+        )
+        ok, err = self._paste(prompt)
+        if not ok:
+            self.last_error = err
+            return
+        self.last_error = ""
+        state = self._state()
+        rec = ar.ensure_round(state, n)
+        latest = dict(rec.get("readiness") or {})
+        latest["repair_prompt_sent_at"] = _iso_now()
+        rec["readiness"] = latest
+        self._save(state)
+        self._note(f"round {n} readiness failures returned to the author")
+
     def _close_round(self, state: dict[str, Any], n: int, note: Path) -> None:
-        self._note(f"round {n} author finished - building and reviewing")
+        self._note(f"round {n} author finished - checking submission readiness")
         build = self._build()
 
         state = self._state()
         rec = ar.ensure_round(state, n)
+        readiness = ar.review_readiness(
+            self._paper_dir(),
+            venue=str(state.get("venue") or ar.DEFAULT_VENUE),
+            build=build,
+        )
+        attempts = rec.setdefault("readiness_attempts", [])
+        attempt_n = len(attempts) + 1
+        report_path = (
+            ar.round_dir(self.project_root, self.slug, n)
+            / (
+                "readiness.md"
+                if readiness.get("ready")
+                else f"readiness-attempt-{attempt_n:02d}.md"
+            )
+        )
+        try:
+            report_path.write_text(
+                ar.review_readiness_markdown(readiness), encoding="utf-8"
+            )
+        except OSError as exc:
+            self.last_error = f"could not write readiness report: {exc}"
+            rec["review_error"] = self.last_error
+            self._save(state)
+            self.stop()
+            return
+        readiness["report_path"] = str(report_path)
+
+        if not readiness.get("ready"):
+            attempt_note = (
+                ar.round_dir(self.project_root, self.slug, n)
+                / f"author-attempt-{attempt_n:02d}.md"
+            )
+            summary = _ar_read_head(note)
+            attempts.append(
+                {
+                    "attempt": attempt_n,
+                    "ended_at": _iso_now(),
+                    "note": str(attempt_note),
+                    "summary": summary,
+                    "report": str(report_path),
+                    "failed": readiness.get("failed") or [],
+                }
+            )
+            rec["readiness"] = readiness
+            rec.pop("author", None)
+            rec.pop("review_error", None)
+            self._save(state)
+            # Persist the blocked state before consuming author.md. If Loom
+            # dies between these operations, restart sees the failed gate and
+            # safely rechecks the still-present note instead of wedging.
+            try:
+                note.replace(attempt_note)
+            except OSError as exc:
+                self.last_error = f"could not archive blocked author note: {exc}"
+                state = self._state()
+                rec = ar.ensure_round(state, n)
+                rec["review_error"] = self.last_error
+                self._save(state)
+                self.stop()
+                return
+            self._note(
+                f"round {n} review blocked by {len(readiness.get('failed') or [])} "
+                "readiness check(s)"
+            )
+            self._send_readiness_prompt(self._state(), n)
+            return
+
         rec["author"] = {
             "ended_at": _iso_now(),
             "note": str(note),
             "summary": _ar_read_head(note),
         }
+        rec["readiness"] = readiness
+        rec.pop("review_error", None)
         self._save(state)
+        self._note(f"round {n} readiness passed - starting reviewer panel")
 
         result = ar.run_reviewer(
             self._paper_dir(),
@@ -4089,6 +4220,7 @@ class _ARLoopDriver:
             venue=str(state.get("venue") or ar.DEFAULT_VENUE),
             round_n=n,
             build=build,
+            readiness=readiness,
             models=ar.CURSOR_REVIEWER_MODELS,
             on_line=_ar_logger(self.project_root, self.slug, ar.JOB_REVIEW),
         )

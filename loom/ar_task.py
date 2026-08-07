@@ -33,6 +33,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+from pypdf import PdfReader
+
 from loom.paths import bundled_skills_path, paper_templates_dir
 from loom.rud_task import WORK_SUBDIR, task_root, task_worktree_path
 
@@ -1524,6 +1526,7 @@ def run_reviewer(
     round_n: int = 1,
     author_note: str = "",
     build: dict[str, Any] | None = None,
+    readiness: dict[str, Any] | None = None,
     models: list[str] | tuple[str, ...] | None = None,
     timeout: int = 900,
     on_line: Any = None,
@@ -1541,6 +1544,19 @@ def run_reviewer(
     if not build.get("ok") or not pdf.is_file():
         error = str(build.get("error") or f"compiled PDF not found at {pdf}")
         return {"ok": False, "error": f"cannot review without a compiled PDF: {error}"}
+
+    gate = readiness or review_readiness(paper_dir, venue=venue, build=build)
+    if not gate.get("ready"):
+        failed = ", ".join(
+            str(item.get("label") or "readiness check")
+            for item in (gate.get("failed") or [])
+        )
+        return {
+            "ok": False,
+            "error": "review readiness gate blocked the reviewer panel"
+            + (f": {failed}" if failed else ""),
+            "readiness": gate,
+        }
 
     selected = tuple(models or CURSOR_REVIEWER_MODELS)
     if selected != CURSOR_REVIEWER_MODELS:
@@ -1892,16 +1908,48 @@ def extract_paper_fields(paper_dir: Path) -> dict[str, Any]:
     }
 
 
-def count_placeholder_markers(paper_dir: Path) -> int:
-    """Unfilled \\ARTODO / \\ARnum / \\ARfig slots left in the paper body."""
-    total = 0
-    sections = paper_dir / "sections"
-    files = list(sections.glob("*.tex")) if sections.is_dir() else []
-    for path in files:
+def _active_tex(text: str) -> str:
+    """Drop LaTeX comments while preserving line numbers for diagnostics."""
+    return re.sub(r"(?<!\\)%.*$", "", text or "", flags=re.MULTILINE)
+
+
+def _paper_tex_sources(paper_dir: Path) -> list[Path]:
+    """Authored TeX inputs, excluding the file that defines AR markers."""
+    if not paper_dir.is_dir():
+        return []
+    return [
+        path
+        for path in sorted(paper_dir.rglob("*.tex"))
+        if path.name != "ar_macros.tex"
+    ]
+
+
+def _source_findings(
+    paper_dir: Path, pattern: re.Pattern[str], limit: int = 12
+) -> list[str]:
+    findings: list[str] = []
+    for path in _paper_tex_sources(paper_dir):
         try:
-            total += len(_MARKER_RE.findall(path.read_text(encoding="utf-8", errors="replace")))
+            text = _active_tex(path.read_text(encoding="utf-8", errors="replace"))
         except OSError:
             continue
+        for match in pattern.finditer(text):
+            line = text.count("\n", 0, match.start()) + 1
+            findings.append(f"{path.relative_to(paper_dir)}:{line} ({match.group(0)})")
+            if len(findings) >= limit:
+                return findings
+    return findings
+
+
+def count_placeholder_markers(paper_dir: Path) -> int:
+    """Active ``\\ARTODO`` / ``\\ARnum`` / ``\\ARfig`` uses in paper sources."""
+    total = 0
+    for path in _paper_tex_sources(paper_dir):
+        try:
+            text = _active_tex(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        total += len(_MARKER_RE.findall(text))
     return total
 
 
@@ -1909,13 +1957,9 @@ def pdf_page_count(pdf: Path) -> int | None:
     if not pdf.is_file():
         return None
     try:
-        proc = subprocess.run(
-            ["pdfinfo", str(pdf)], capture_output=True, text=True, timeout=30
-        )
-    except (OSError, subprocess.TimeoutExpired):
+        return len(PdfReader(str(pdf), strict=False).pages)
+    except Exception:  # noqa: BLE001 - malformed third-party PDF input
         return None
-    match = re.search(r"^Pages:\s+(\d+)", proc.stdout or "", re.MULTILINE)
-    return int(match.group(1)) if match else None
 
 
 def _has_real_results(paper_dir: Path) -> bool:
@@ -1944,6 +1988,257 @@ def _bib_entry_count(paper_dir: Path) -> int:
 
 # The three entries the template ships so the bibliography compiles from day one.
 SEED_BIB_ENTRIES = 3
+
+
+_TEXT_PLACEHOLDER_RE = re.compile(r"\b(?:TODO|TBD|FIXME|XXX)\b", re.IGNORECASE)
+_QUESTION_PLACEHOLDER_RE = re.compile(r"\?{2,}")
+_INCLUDEGRAPHICS_RE = re.compile(
+    r"\\includegraphics\s*(?:\[[^\]]*\])?\s*\{([^{}]+)\}",
+    re.IGNORECASE,
+)
+_GRAPHIC_EXTENSIONS = (".pdf", ".png", ".jpg", ".jpeg", ".eps")
+_REQUIRED_SECTIONS = (
+    "00_abstract.tex",
+    "01_introduction.tex",
+    "02_related_work.tex",
+    "03_method.tex",
+    "04_experiments.tex",
+    "05_conclusion.tex",
+)
+_LATEX_BLOCKING_WARNING_RE = re.compile(
+    r"(undefined references?|undefined citations?|"
+    r"(?:Citation|Reference)\s+.+?\s+undefined|"
+    r"Rerun to get cross-references right|"
+    r"Label\(s\) may have changed|multiply defined)",
+    re.IGNORECASE,
+)
+
+
+def _missing_graphics(paper_dir: Path) -> list[str]:
+    missing: list[str] = []
+    seen: set[str] = set()
+    for source in _paper_tex_sources(paper_dir):
+        try:
+            text = _active_tex(source.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        for match in _INCLUDEGRAPHICS_RE.finditer(text):
+            raw = match.group(1).strip()
+            if raw in seen:
+                continue
+            seen.add(raw)
+            target = Path(raw)
+            roots = (paper_dir, source.parent)
+            candidates: list[Path] = []
+            for root in roots:
+                base = target if target.is_absolute() else root / target
+                if target.suffix:
+                    candidates.append(base)
+                else:
+                    candidates.extend(base.with_suffix(ext) for ext in _GRAPHIC_EXTENSIONS)
+            if not any(path.is_file() for path in candidates):
+                missing.append(raw)
+    return missing
+
+
+def _pdf_text(pdf: Path, timeout: int = 60) -> dict[str, Any]:
+    """Extract the rendered PDF text so visible placeholders cannot hide."""
+    del timeout  # Kept for compatibility with the previous subprocess helper.
+    try:
+        reader = PdfReader(str(pdf), strict=False)
+        text = "\n\f\n".join((page.extract_text() or "") for page in reader.pages)
+    except Exception as exc:  # noqa: BLE001 - malformed third-party PDF input
+        return {"ok": False, "error": f"could not inspect rendered PDF: {exc}"}
+    return {"ok": True, "text": text}
+
+
+def _latex_log(paper_dir: Path, build: dict[str, Any]) -> str:
+    try:
+        return (paper_dir / "main.log").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return str(build.get("log") or "")
+
+
+def review_readiness(
+    paper_dir: Path,
+    *,
+    venue: str = DEFAULT_VENUE,
+    build: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Hard gate before a paper may consume a reviewer turn.
+
+    This deliberately checks submission completeness rather than research
+    quality. A passing paper is compiled, fully rendered, free of placeholders
+    and unresolved references, and contains real results; only the reviewer
+    decides whether that complete submission is scientifically good.
+    """
+    build = build or {}
+    entry = venue_entry(venue)
+    pdf_value = str(build.get("pdf") or "").strip()
+    pdf = Path(pdf_value) if pdf_value else paper_dir / "main.pdf"
+    checks: list[dict[str, Any]] = []
+
+    def check(ok: bool, label: str, detail: str = "") -> None:
+        checks.append({"ok": bool(ok), "label": label, "detail": detail})
+
+    pdf_exists = pdf.is_file()
+    check(
+        bool(build.get("ok")) and pdf_exists,
+        "Compiled PDF exists",
+        str(pdf) if pdf_exists else str(build.get("error") or f"missing {pdf}"),
+    )
+    check(
+        bool(build.get("clean")),
+        "LaTeX build is clean",
+        "latexmk exited 0" if build.get("clean") else "fix every LaTeX build error",
+    )
+
+    marker_locations = _source_findings(paper_dir, _MARKER_RE)
+    marker_count = count_placeholder_markers(paper_dir)
+    check(
+        marker_count == 0,
+        "No AR placeholders remain",
+        "none"
+        if marker_count == 0
+        else f"{marker_count} marker(s): " + ", ".join(marker_locations),
+    )
+
+    text_placeholders = _source_findings(paper_dir, _TEXT_PLACEHOLDER_RE)
+    check(
+        not text_placeholders,
+        "No TODO/TBD/FIXME/XXX text remains",
+        "none" if not text_placeholders else ", ".join(text_placeholders),
+    )
+    question_placeholders = _source_findings(paper_dir, _QUESTION_PLACEHOLDER_RE)
+    check(
+        not question_placeholders,
+        "No unresolved ?? markers remain in sources",
+        "none" if not question_placeholders else ", ".join(question_placeholders),
+    )
+
+    incomplete_sections: list[str] = []
+    sections = paper_dir / "sections"
+    for name in _REQUIRED_SECTIONS:
+        path = sections / name
+        try:
+            active = _active_tex(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            incomplete_sections.append(f"{name} missing")
+            continue
+        if len(_delatex(active)) < 40:
+            incomplete_sections.append(f"{name} is empty or too short")
+    check(
+        not incomplete_sections,
+        "All core paper sections are substantive",
+        "complete" if not incomplete_sections else "; ".join(incomplete_sections),
+    )
+
+    fields = extract_paper_fields(paper_dir)
+    check(
+        bool(fields["title"]) and len(fields["title"]) <= MAX_TITLE_CHARS,
+        "Title is written and within length",
+        fields["title"] or "no paper title found",
+    )
+    abstract = str(fields["abstract"] or "")
+    check(
+        bool(abstract)
+        and fields["abstract_markers"] == 0
+        and len(abstract) <= MAX_ABSTRACT_CHARS,
+        "Abstract is complete",
+        f"{len(abstract)} chars, {fields['abstract_markers']} marker(s)",
+    )
+    check(
+        _has_real_results(paper_dir),
+        "Experiments contain a real table or figure",
+        "found" if _has_real_results(paper_dir) else "add measured results",
+    )
+    bib = _bib_entry_count(paper_dir)
+    check(
+        bib > SEED_BIB_ENTRIES,
+        "Bibliography goes beyond template seeds",
+        f"{bib} entries",
+    )
+
+    missing_graphics = _missing_graphics(paper_dir)
+    check(
+        not missing_graphics,
+        "Every referenced figure file exists",
+        "all present" if not missing_graphics else "missing: " + ", ".join(missing_graphics),
+    )
+
+    warnings = _LATEX_BLOCKING_WARNING_RE.findall(_latex_log(paper_dir, build))
+    check(
+        not warnings,
+        "No unresolved citations, references, or labels",
+        "none" if not warnings else ", ".join(dict.fromkeys(warnings)),
+    )
+
+    pages = pdf_page_count(pdf) if pdf_exists else None
+    page_limit = int(entry.get("page_limit") or 0)
+    page_ok = pages is not None and (not page_limit or pages <= page_limit + 2)
+    check(
+        page_ok,
+        f"PDF page count is inspectable and within {entry['label']} allowance",
+        (
+            f"{pages} pages (main-text limit {page_limit}, +2 allowance for references)"
+            if pages is not None
+            else "pdfinfo could not read the PDF"
+        ),
+    )
+
+    rendered = _pdf_text(pdf) if pdf_exists else {"ok": False, "error": "PDF missing"}
+    if rendered.get("ok"):
+        pdf_text = str(rendered.get("text") or "")
+        visible = []
+        if _QUESTION_PLACEHOLDER_RE.search(pdf_text):
+            visible.append("??")
+        for match in _TEXT_PLACEHOLDER_RE.finditer(pdf_text):
+            token = match.group(0).upper()
+            if token not in visible:
+                visible.append(token)
+        if "FIGURE PLACEHOLDER" in pdf_text.upper():
+            visible.append("FIGURE PLACEHOLDER")
+        check(
+            not visible,
+            "Rendered PDF has no visible placeholders or question marks",
+            "none" if not visible else ", ".join(visible),
+        )
+    else:
+        check(
+            False,
+            "Rendered PDF can be inspected for visible placeholders",
+            str(rendered.get("error") or "PDF text extraction failed"),
+        )
+
+    return {
+        "ready": all(item["ok"] for item in checks),
+        "checks": checks,
+        "failed": [item for item in checks if not item["ok"]],
+        "pdf": str(pdf),
+        "venue": str(entry.get("id") or venue),
+        "checked_at": _now_iso(),
+    }
+
+
+def review_readiness_markdown(result: dict[str, Any]) -> str:
+    status = "PASS — reviewer may run" if result.get("ready") else "BLOCKED — return to author"
+    lines = [
+        "# Review Readiness Gate",
+        "",
+        f"**Status:** {status}",
+        f"**Checked:** {result.get('checked_at', '')}",
+        f"**PDF:** `{result.get('pdf', '')}`",
+        "",
+        "## Checks",
+    ]
+    for item in result.get("checks") or []:
+        mark = "x" if item.get("ok") else " "
+        detail = str(item.get("detail") or "").strip()
+        lines.append(
+            f"- [{mark}] **{item.get('label', 'check')}**"
+            + (f" — {detail}" if detail else "")
+        )
+    return "\n".join(lines).strip() + "\n"
 
 
 def build_submission(
@@ -2229,11 +2524,88 @@ The idea this paper must establish:
 Run the experiments first, then fold the real numbers into the paper, then
 rebuild the PDF. Never write a number an experiment did not produce.
 
+This is a hard review-readiness gate: do not write the completion note until
+the paper is a complete, ready-to-submit artifact. Every \\ARTODO, \\ARnum,
+\\ARfig, TODO/TBD/FIXME/XXX, unresolved ??, missing figure, undefined
+citation/reference, build error, and empty core section must be gone from both
+the sources and the rendered PDF. The experiments section must contain real
+measured results and the bibliography must go beyond the template seeds.
+
 When the round is finished, write your summary to:
 {note}
 
 Writing that file is how Loom knows the round is over and hands the paper to
-the reviewer, so make it the last thing you do, then stop.
+the deterministic readiness gate. Only a passing gate hands the PDF to the
+reviewers. Make the note the last thing you do, then stop.
+"""
+
+
+def author_readiness_repair_prompt(
+    task_dir: Path,
+    paper_dir: Path,
+    state: dict[str, Any],
+    round_n: int,
+    readiness: dict[str, Any],
+    *,
+    report_path: Path | None = None,
+) -> str:
+    """Return a blocked round to the author with deterministic failures."""
+    venue = venue_entry(str(state.get("venue") or DEFAULT_VENUE)).get("label")
+    note = author_note_path_for(task_dir, round_n)
+    failures = readiness.get("failed") or []
+    failure_lines = "\n".join(
+        f"- {item.get('label', 'check')}: {item.get('detail', '')}"
+        for item in failures
+    ) or "- The gate did not provide details; rerun every readiness check."
+    report = str(report_path) if report_path is not None else "(not written)"
+    return f"""You are still the author of Loom AR paper ROUND {round_n}.
+
+The reviewer panel was NOT called. The deterministic Review Readiness Gate
+blocked this paper because it is not yet a complete, ready-to-submit {venue}
+submission.
+
+Task directory:
+{task_dir}
+
+Paper directory:
+{paper_dir}
+
+Idea this paper must establish:
+{idea_summary(state.get("idea") or {})}
+
+Full gate report:
+{report}
+
+Failures that must all be fixed:
+{failure_lines}
+
+Continue the SAME round. Follow the AR author methodology exactly:
+{ar_skill_text(SKILL_AUTHOR) or "(AR author skill missing)"}
+
+Before signalling completion again, make the whole submission complete:
+
+1. Replace every active \\ARTODO, \\ARnum and \\ARfig with finished prose,
+   measured numbers and real generated figures.
+2. Remove every TODO/TBD/FIXME/XXX and unresolved ?? marker from both the
+   source and rendered PDF. Ordinary question-mark punctuation is allowed;
+   unresolved double-question-mark placeholders are not.
+3. Finish every core section: abstract, introduction, related work, method,
+   experiments and conclusion.
+4. Include real measured results, required baselines, ablations, analysis,
+   seeds/variance where applicable, and cost measurements.
+5. Ensure every \\includegraphics target exists and every figure/table is
+   readable in the compiled PDF.
+6. Resolve every citation, reference and label warning.
+7. Expand the bibliography beyond the three template seed entries.
+8. Run latexmk until it exits cleanly, inspect every PDF page, and stay within
+   the venue page allowance.
+
+Do not ask the reviewers to evaluate unfinished work. When and only when every
+failure above is fixed, write a NEW completion note to:
+{note}
+
+Writing that file is the final action. Loom will rerun the deterministic gate;
+the reviewer panel runs only after it passes.
 """
 
 

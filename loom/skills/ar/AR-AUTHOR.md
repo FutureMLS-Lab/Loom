@@ -72,8 +72,15 @@ Each round you get the previous round's `review.md`. Work in this order:
    that are now measured, and update the abstract and introduction so the
    claims match what the tables actually show. Claims shrink when results are
    weaker than hoped; that is the correct outcome, not a failure.
-5. **Rebuild the PDF** and fix any LaTeX errors.
-6. **Write `rounds/round-NN/author.md`** and stop. This file is how Loom knows
+5. **Finish the whole submission before review.** Replace every `\ARTODO`,
+   `\ARnum` and `\ARfig`; remove TODO/TBD/FIXME/XXX and unresolved `??`
+   markers; generate every promised figure; finish every core section; resolve
+   every citation/reference; and make every table and figure readable. A
+   reviewer turn is never spent on an unfinished paper.
+6. **Rebuild and inspect the PDF.** Run `latexmk` until it exits cleanly, then
+   inspect every rendered page for visible placeholders, clipping, broken
+   references, unreadable figures and page-limit problems.
+7. **Write `rounds/round-NN/author.md`** and stop. This file is how Loom knows
    the round is over, so it must be the last thing you do.
 
 `author.md` format:
@@ -88,11 +95,20 @@ Each round you get the previous round's `review.md`. Work in this order:
 - <command> -> <result vs baseline> -> <where it landed in the paper>
 
 ## Still open
-- <point you could not address, and what it would take>
+- None. If anything remains open, do not write `author.md`; keep working.
 
 ## Build
 - latexmk: <clean | errors, with the first one>
 ```
+
+`author.md` enters a deterministic Review Readiness Gate before any reviewer is
+called. The gate requires a clean compiled PDF, no active or rendered
+placeholders, substantive core sections, real results, non-template
+bibliography entries, existing figure files, resolved citations/references and
+an inspectable page count within the venue allowance. If it fails, Loom archives
+the completion note, returns the exact failures to you, and keeps you in the
+same round. Fix every failure and write a new `author.md`; never ask reviewers
+to judge work you already know is incomplete.
 
 ## Experiments run locally
 

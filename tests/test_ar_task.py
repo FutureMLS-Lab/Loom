@@ -389,6 +389,7 @@ def test_cursor_reviewer_panel_reads_only_isolated_pdf(
         venue="iclr",
         round_n=3,
         build={"ok": True, "clean": True, "pdf": str(pdf)},
+        readiness={"ready": True, "failed": []},
     )
 
     assert result["ok"] is True
@@ -420,6 +421,107 @@ def test_cursor_reviewer_refuses_missing_compiled_pdf(
     assert result["ok"] is False
     assert "compiled PDF" in result["error"]
     assert "latexmk failed" in result["error"]
+
+
+def test_cursor_reviewer_refuses_incomplete_paper_before_model_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pdf = tmp_path / "main.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+
+    def should_not_run(*args, **kwargs):
+        raise AssertionError("Cursor models must not run when readiness fails")
+
+    monkeypatch.setattr(ar.subprocess, "run", should_not_run)
+    result = ar.run_reviewer(
+        tmp_path,
+        "# reviewer methodology",
+        build={"ok": True, "clean": True, "pdf": str(pdf)},
+        readiness={
+            "ready": False,
+            "failed": [
+                {
+                    "ok": False,
+                    "label": "No AR placeholders remain",
+                    "detail": "3 markers",
+                }
+            ],
+        },
+    )
+    assert result["ok"] is False
+    assert "readiness gate blocked" in result["error"]
+    assert "No AR placeholders remain" in result["error"]
+
+
+def test_loop_driver_returns_failed_readiness_to_same_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from loom.web import _ARLoopDriver
+
+    root = _project(tmp_path)
+    meta = create_task(
+        root, "readiness", "goal", kind=ar.KIND_AR, auto_worktree=False
+    )
+    state = ar.new_paper_state(parent_slug="studio", idea={"title": "T"})
+    state["stage"] = ar.STAGE_LOOP
+    state["round"] = 1
+    ar.ensure_round(state, 1)
+    ar.write_ar_state(root, meta.slug, state)
+    note = ar.author_note_path(root, meta.slug, 1)
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("# Round 1\n\nclaimed complete", encoding="utf-8")
+
+    readiness = {
+        "ready": False,
+        "checks": [
+            {
+                "ok": False,
+                "label": "No AR placeholders remain",
+                "detail": "2 markers",
+            }
+        ],
+        "failed": [
+            {
+                "ok": False,
+                "label": "No AR placeholders remain",
+                "detail": "2 markers",
+            }
+        ],
+        "pdf": str(tmp_path / "main.pdf"),
+        "checked_at": "2026-08-07T00:00:00+00:00",
+    }
+    driver = _ARLoopDriver(object(), root, "project", meta.slug)
+    monkeypatch.setattr(
+        driver,
+        "_build",
+        lambda: {"ok": True, "clean": True, "pdf": str(tmp_path / "main.pdf")},
+    )
+    monkeypatch.setattr(ar, "review_readiness", lambda *args, **kwargs: readiness)
+
+    def reviewer_must_not_run(*args, **kwargs):
+        raise AssertionError("reviewer ran before the readiness gate passed")
+
+    monkeypatch.setattr(ar, "run_reviewer", reviewer_must_not_run)
+    repair_prompts: list[int] = []
+    monkeypatch.setattr(
+        driver,
+        "_send_readiness_prompt",
+        lambda current_state, round_n: repair_prompts.append(round_n),
+    )
+
+    driver._close_round(state, 1, note)
+
+    after = ar.read_ar_state(root, meta.slug)
+    rec = ar.round_record(after, 1)
+    assert rec is not None
+    assert rec["readiness"]["ready"] is False
+    assert rec["review"] is None
+    assert "author" not in rec
+    assert len(rec["readiness_attempts"]) == 1
+    assert Path(rec["readiness_attempts"][0]["note"]).is_file()
+    assert Path(rec["readiness_attempts"][0]["report"]).is_file()
+    assert not note.exists()
+    assert repair_prompts == [1]
 
 
 # --- gates and rounds -------------------------------------------------------
@@ -687,6 +789,143 @@ def test_bib_entry_count(tmp_path: Path) -> None:
     assert ar._bib_entry_count(paper) == ar.SEED_BIB_ENTRIES
 
 
+def _write_ready_paper(tmp_path: Path) -> Path:
+    paper = tmp_path / "paper"
+    ok, msg = ar.seed_paper_skeleton(
+        paper,
+        "iclr",
+        {"title": "A Complete Submission", "metric": "accuracy, latency"},
+    )
+    assert ok, msg
+    sections = {
+        "00_abstract.tex": (
+            "We introduce a concrete method for efficient inference and evaluate "
+            "it against matched baselines. Across repeated measurements, the method "
+            "improves accuracy while preserving latency, with limitations stated."
+        ),
+        "01_introduction.tex": (
+            "\\section{Introduction}\nThis paper studies an important efficiency "
+            "problem, identifies a precise gap, and contributes a reproducible "
+            "method plus controlled empirical evidence."
+        ),
+        "02_related_work.tex": (
+            "\\section{Related Work}\nPrior efficient inference and quantization "
+            "methods provide the closest comparisons. Our contribution differs in "
+            "its mechanism and matched-cost evaluation \\citep{vaswani2017attention}."
+        ),
+        "03_method.tex": (
+            "\\section{Method}\nWe define the transformation, objective, algorithm, "
+            "and assumptions in enough detail to reproduce every operation. The "
+            "runtime overhead is measured rather than asserted."
+        ),
+        "04_experiments.tex": (
+            "\\section{Experiments}\nWe evaluate three seeds against tuned baselines "
+            "using the same data and compute budget. "
+            "\\begin{table}[t]\\caption{Measured results over three seeds.}"
+            "\\begin{tabular}{lc}Baseline & 71.2\\\\Ours & 74.8\\end{tabular}"
+            "\\end{table}\n"
+            "\\begin{figure}[t]\\includegraphics{figures/result}"
+            "\\caption{Measured accuracy and latency.}\\end{figure}\n"
+            "Ablations isolate the proposed mechanism and the analysis reports "
+            "variance, failure cases, memory, and latency."
+        ),
+        "05_conclusion.tex": (
+            "\\section{Conclusion}\nThe measured evidence supports the narrow claim "
+            "that the method improves the tested setting. We state the principal "
+            "scope limitation and the next experiment needed for broader use."
+        ),
+        "06_appendix.tex": (
+            "\\section{Reproducibility}\nThe appendix records exact commands, "
+            "environments, hyperparameters, seeds, negative results, and additional "
+            "breakdowns needed to reproduce the reported measurements."
+        ),
+    }
+    for name, text in sections.items():
+        (paper / "sections" / name).write_text(text, encoding="utf-8")
+    figure = paper / "figures" / "result.pdf"
+    figure.write_bytes(b"%PDF-1.4\n% generated figure\n")
+    with (paper / "main.bib").open("a", encoding="utf-8") as fh:
+        fh.write(
+            "\n@inproceedings{extra2026complete,\n"
+            "  title={A Complete Baseline}, author={A. Author}, year={2026}\n}\n"
+        )
+    (paper / "main.pdf").write_bytes(b"%PDF-1.4\n% complete paper\n")
+    return paper
+
+
+def test_review_readiness_accepts_complete_rendered_paper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paper = _write_ready_paper(tmp_path)
+    monkeypatch.setattr(ar, "pdf_page_count", lambda pdf: 9)
+    monkeypatch.setattr(
+        ar,
+        "_pdf_text",
+        lambda pdf: {
+            "ok": True,
+            "text": "A Complete Submission\nMeasured results and real figures.",
+        },
+    )
+    result = ar.review_readiness(
+        paper,
+        venue="iclr",
+        build={"ok": True, "clean": True, "pdf": str(paper / "main.pdf"), "log": ""},
+    )
+    assert result["ready"] is True
+    assert result["failed"] == []
+    assert all(item["ok"] for item in result["checks"])
+    report = ar.review_readiness_markdown(result)
+    assert "PASS — reviewer may run" in report
+
+
+def test_review_readiness_rejects_fresh_draft(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if not ar.venue_is_available("iclr"):
+        pytest.skip("styles not vendored")
+    paper = tmp_path / "paper"
+    ar.seed_paper_skeleton(paper, "iclr", {"title": "Draft"})
+    (paper / "main.pdf").write_bytes(b"%PDF-1.4\n")
+    monkeypatch.setattr(ar, "pdf_page_count", lambda pdf: 7)
+    monkeypatch.setattr(
+        ar,
+        "_pdf_text",
+        lambda pdf: {"ok": True, "text": "TODO: unfinished result ?? FIGURE PLACEHOLDER"},
+    )
+    result = ar.review_readiness(
+        paper,
+        venue="iclr",
+        build={"ok": True, "clean": True, "pdf": str(paper / "main.pdf"), "log": ""},
+    )
+    labels = {item["label"]: item["ok"] for item in result["checks"]}
+    assert result["ready"] is False
+    assert labels["No AR placeholders remain"] is False
+    assert labels["Experiments contain a real table or figure"] is False
+    assert labels["Rendered PDF has no visible placeholders or question marks"] is False
+
+
+def test_review_readiness_rejects_missing_figure_and_question_mark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paper = _write_ready_paper(tmp_path)
+    (paper / "figures" / "result.pdf").unlink()
+    monkeypatch.setattr(ar, "pdf_page_count", lambda pdf: 9)
+    monkeypatch.setattr(
+        ar,
+        "_pdf_text",
+        lambda pdf: {"ok": True, "text": "Results are still ?? and TBD."},
+    )
+    result = ar.review_readiness(
+        paper,
+        venue="iclr",
+        build={"ok": True, "clean": True, "pdf": str(paper / "main.pdf"), "log": ""},
+    )
+    labels = {item["label"]: item["ok"] for item in result["checks"]}
+    assert result["ready"] is False
+    assert labels["Every referenced figure file exists"] is False
+    assert labels["Rendered PDF has no visible placeholders or question marks"] is False
+
+
 def test_build_submission_flags_an_unfinished_paper(tmp_path: Path) -> None:
     if not ar.venue_is_available("iclr"):
         pytest.skip("styles not vendored")
@@ -794,9 +1033,32 @@ def test_author_prompts_carry_the_contract(tmp_path: Path) -> None:
     assert "Rating: 4" in rnd
     assert "add a baseline" in rnd
     assert str(ar.author_note_path_for(task_dir, 3)) in rnd
+    assert "hard review-readiness gate" in rnd
+    assert "ready-to-submit artifact" in rnd
 
     first = ar.author_round_prompt(task_dir, paper_dir, state, 1)
     assert "no reviewer report yet" in first
+
+    repair = ar.author_readiness_repair_prompt(
+        task_dir,
+        paper_dir,
+        state,
+        3,
+        {
+            "ready": False,
+            "failed": [
+                {
+                    "label": "Every referenced figure file exists",
+                    "detail": "missing: figures/main.pdf",
+                }
+            ],
+        },
+        report_path=task_dir / "rounds" / "round-03" / "readiness-attempt-01.md",
+    )
+    assert "reviewer panel was NOT called" in repair
+    assert "missing: figures/main.pdf" in repair
+    assert "Continue the SAME round" in repair
+    assert str(ar.author_note_path_for(task_dir, 3)) in repair
 
 
 def test_studio_prompt_reflects_mode(tmp_path: Path) -> None:
