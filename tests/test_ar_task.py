@@ -317,6 +317,111 @@ def test_review_headline() -> None:
     assert "borderline" in headline
 
 
+def test_paper_state_defaults_to_cursor_reviewer_panel() -> None:
+    state = ar.new_paper_state(parent_slug="p", idea={"title": "T"})
+    assert state["reviewer_models"] == list(ar.CURSOR_REVIEWER_MODELS)
+    assert ar.CURSOR_REVIEWER_MODELS == (
+        "gpt-5.6-sol-max",
+        "claude-fable-5-thinking-max",
+        "cursor-grok-4.5-high",
+    )
+
+
+def test_cursor_reviewer_panel_reads_only_isolated_pdf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paper = tmp_path / "paper"
+    paper.mkdir()
+    pdf = paper / "main.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n% compiled artifact under test\n")
+    (paper / "main.tex").write_text("LATEX_SECRET_MUST_NOT_LEAK", encoding="utf-8")
+
+    ratings = {
+        "gpt-5.6-sol-max": (4, "weak reject"),
+        "claude-fable-5-thinking-max": (6, "borderline"),
+        "cursor-grok-4.5-high": (8, "weak accept"),
+    }
+    review_commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["agent", "models"]:
+            listing = "Available models\n" + "\n".join(
+                f"{model} - test model" for model in ar.CURSOR_REVIEWER_MODELS
+            )
+            return ar.subprocess.CompletedProcess(cmd, 0, stdout=listing, stderr="")
+
+        review_commands.append(cmd)
+        assert cmd[0:2] == ["agent", "--print"]
+        assert cmd[cmd.index("--mode") + 1] == "ask"
+        assert cmd[cmd.index("--output-format") + 1] == "json"
+        assert "--trust" in cmd
+        assert "--force" not in cmd
+        assert "--yolo" not in cmd
+
+        model = cmd[cmd.index("--model") + 1]
+        workspace = Path(cmd[cmd.index("--workspace") + 1])
+        assert (workspace / "submission.pdf").read_bytes() == pdf.read_bytes()
+        assert not (workspace / "main.tex").exists()
+        prompt = cmd[-1]
+        assert str(workspace / "submission.pdf") in prompt
+        assert "LATEX_SECRET_MUST_NOT_LEAK" not in prompt
+        assert "LaTeX sources of the submission follow" not in prompt
+
+        rating, recommendation = ratings[model]
+        review = SAMPLE_REVIEW.replace("Rating: 4", f"Rating: {rating}").replace(
+            "Recommendation: weak reject",
+            f"Recommendation: {recommendation}",
+        )
+        payload = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": review,
+        }
+        return ar.subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps(payload), stderr=""
+        )
+
+    monkeypatch.setattr(ar.subprocess, "run", fake_run)
+    result = ar.run_reviewer(
+        paper,
+        "# reviewer methodology",
+        venue="iclr",
+        round_n=3,
+        build={"ok": True, "clean": True, "pdf": str(pdf)},
+    )
+
+    assert result["ok"] is True
+    assert {cmd[cmd.index("--model") + 1] for cmd in review_commands} == set(
+        ar.CURSOR_REVIEWER_MODELS
+    )
+    assert len(review_commands) == 3
+    assert result["models"] == list(ar.CURSOR_REVIEWER_MODELS)
+    assert result["scores"]["rating"] == 6
+    assert result["scores"]["recommendation"] == "borderline"
+    assert result["headline"].startswith("3 reviewers")
+    assert result["input_pdf"] == str(pdf)
+    for model in ar.CURSOR_REVIEWER_MODELS:
+        assert f"# Reviewer: `{model}`" in result["review"]
+
+
+def test_cursor_reviewer_refuses_missing_compiled_pdf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def should_not_run(*args, **kwargs):
+        raise AssertionError("Cursor CLI must not run without a compiled PDF")
+
+    monkeypatch.setattr(ar.subprocess, "run", should_not_run)
+    result = ar.run_reviewer(
+        tmp_path,
+        "# reviewer methodology",
+        build={"ok": False, "error": "latexmk failed"},
+    )
+    assert result["ok"] is False
+    assert "compiled PDF" in result["error"]
+    assert "latexmk failed" in result["error"]
+
+
 # --- gates and rounds -------------------------------------------------------
 
 

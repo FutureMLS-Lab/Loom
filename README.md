@@ -209,8 +209,11 @@ Each of those is a **paper** task, and it walks a fixed pipeline:
 3. **Rounds** — by default ten of them. The author agent works in the task's tmux
    pane (revising the paper, running experiments locally in the worktree) and
    signals the end of its turn by writing `rounds/round-NN/author.md`. Loom then
-   compiles the PDF and runs a reviewer agent headlessly, with a different model,
-   against a top-conference rubric; its scores and report drive the next round.
+   compiles the PDF and runs three independent Cursor reviewers headlessly:
+   `gpt-5.6-sol-max`, `claude-fable-5-thinking-max`, and
+   `cursor-grok-4.5-high`. Each reviewer sees an isolated workspace containing
+   only the compiled PDF (never the LaTeX source); their reports and
+   deterministically aggregated scores drive the next round.
 4. **Final review** — a gate. Approve to deliver and download the PDF, or send it
    back for another batch of rounds.
 

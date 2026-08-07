@@ -3583,10 +3583,10 @@ def _ar_run_async(fn, *args: Any) -> None:
 
 
 def _ar_headless_model(meta: Any) -> str:
-    """Model for headless AR calls.
+    """Claude model for headless Studio idea generation.
 
-    These go through ``claude -p``, so a task configured for Cursor or Codex
-    cannot lend its model id; fall back to the Claude default in that case.
+    Idea generation still goes through ``claude -p``. Paper reviews use the
+    fixed Cursor PDF reviewer panel defined in ``ar_task.py``.
     """
     if meta is not None and normalize_agent(getattr(meta, "agent", "")) == AGENT_CLAUDE:
         model = str(getattr(meta, "interview_model", "") or "").strip()
@@ -3699,7 +3699,7 @@ def _ar_ideas_job(root: Path, slug: str, count: int, model: str) -> None:
         print(f"[ar] {slug}: idea generation failed - {res.get('error')}", flush=True)
 
 
-def _ar_review_job(root: Path, slug: str, model: str) -> None:
+def _ar_review_job(root: Path, slug: str) -> None:
     """One out-of-band review, triggered from the panel rather than the loop."""
     state = ar.read_ar_state(root, slug)
     paper_dir = ar.paper_root(root, slug)
@@ -3711,16 +3711,13 @@ def _ar_review_job(root: Path, slug: str, model: str) -> None:
         if build.get("ok")
         else f"PDF build failed: {build.get('error')}"
     )
-    author_note = _ar_read_text(ar.author_note_path(root, slug, n))
     res = ar.run_reviewer(
         paper_dir,
         ar.ar_skill_text(ar.SKILL_REVIEWER),
         venue=str(state.get("venue") or ar.DEFAULT_VENUE),
-        idea=state.get("idea") or {},
         round_n=max(1, n),
-        author_note=author_note,
         build=build,
-        model=model,
+        models=ar.CURSOR_REVIEWER_MODELS,
         on_line=log,
     )
     if not res.get("ok"):
@@ -3740,10 +3737,19 @@ def _ar_review_job(root: Path, slug: str, model: str) -> None:
     rec = ar.ensure_round(state, n)
     rec["review"] = {
         "created_at": _iso_now(),
-        "model": model,
+        "model": ar.CURSOR_REVIEWER_PANEL,
+        "models": res.get("models") or list(ar.CURSOR_REVIEWER_MODELS),
         "path": str(path),
         "scores": res.get("scores") or {},
         "headline": res.get("headline") or "",
+        "input_pdf": res.get("input_pdf") or str(paper_dir / "main.pdf"),
+        "reviewers": [
+            {
+                key: item.get(key)
+                for key in ("model", "scores", "headline", "duration_seconds")
+            }
+            for item in (res.get("reviewers") or [])
+        ],
     }
     state["review_status"] = "done"
     state["review_error"] = ""
@@ -3796,7 +3802,8 @@ def _ar_spawn_children(
                 custom_direction=str(state.get("custom_direction") or ""),
                 max_rounds=state.get("max_rounds", ar.DEFAULT_MAX_ROUNDS),
                 author_model=(parent.interview_model if parent else ""),
-                reviewer_model=_ar_headless_model(parent),
+                reviewer_model=ar.CURSOR_REVIEWER_PANEL,
+                reviewer_models=ar.CURSOR_REVIEWER_MODELS,
             )
             paper_state["paper_dir"] = str(paper_dir)
             ar.write_ar_state(root, child.slug, paper_state)
@@ -4066,7 +4073,6 @@ class _ARLoopDriver:
     def _close_round(self, state: dict[str, Any], n: int, note: Path) -> None:
         self._note(f"round {n} author finished - building and reviewing")
         build = self._build()
-        author_text = _ar_read_text(note)
 
         state = self._state()
         rec = ar.ensure_round(state, n)
@@ -4077,18 +4083,13 @@ class _ARLoopDriver:
         }
         self._save(state)
 
-        reviewer_model = str(state.get("reviewer_model") or "") or agent_default_model(
-            AGENT_CLAUDE
-        )
         result = ar.run_reviewer(
             self._paper_dir(),
             ar.ar_skill_text(ar.SKILL_REVIEWER),
             venue=str(state.get("venue") or ar.DEFAULT_VENUE),
-            idea=state.get("idea") or {},
             round_n=n,
-            author_note=author_text,
             build=build,
-            model=reviewer_model,
+            models=ar.CURSOR_REVIEWER_MODELS,
             on_line=_ar_logger(self.project_root, self.slug, ar.JOB_REVIEW),
         )
         state = self._state()
@@ -4112,10 +4113,19 @@ class _ARLoopDriver:
 
         rec["review"] = {
             "created_at": _iso_now(),
-            "model": reviewer_model,
+            "model": ar.CURSOR_REVIEWER_PANEL,
+            "models": result.get("models") or list(ar.CURSOR_REVIEWER_MODELS),
             "path": str(review_path),
             "scores": result.get("scores") or {},
             "headline": result.get("headline") or "",
+            "input_pdf": result.get("input_pdf") or str(self._paper_dir() / "main.pdf"),
+            "reviewers": [
+                {
+                    key: item.get(key)
+                    for key in ("model", "scores", "headline", "duration_seconds")
+                }
+                for item in (result.get("reviewers") or [])
+            ],
         }
         rec.pop("review_error", None)
         self._save(state)
@@ -4626,14 +4636,8 @@ def make_handler(
                     return {"ok": False, "error": err}, 400
                 if str(state.get("review_status")) == "running":
                     return {"ok": True, "status": "running"}, 202
-                meta = read_meta(root, slug)
-                model = (
-                    str(body.get("model", "")).strip()
-                    or str(state.get("reviewer_model") or "")
-                    or _ar_headless_model(meta)
-                )
                 ar.update_ar_state(root, slug, review_status="running", review_error="")
-                _ar_run_async(_ar_review_job, root, slug, model)
+                _ar_run_async(_ar_review_job, root, slug)
                 return {"ok": True, "status": "running"}, 202
 
             if action == "submission":
