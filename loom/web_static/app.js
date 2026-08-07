@@ -4900,6 +4900,15 @@ function renderArRounds(d, state) {
     const label = r.n === 0 ? 'Draft' : `Round ${r.n}`;
     const author = r.author || null;
     const review = r.review || null;
+    const readiness = r.readiness || null;
+    const readinessFailures = readiness && Array.isArray(readiness.failed)
+      ? readiness.failed
+      : [];
+    const readinessHeadline = readiness
+      ? (readiness.ready
+        ? 'readiness passed'
+        : `review blocked: ${readinessFailures.length} readiness check(s) failed`)
+      : '';
     const scores = (review && review.scores) || {};
     const chips = Object.entries(scores)
       .map(([k, v]) => `<span class="ar-score">${escapeHtml(k)} ${escapeHtml(String(v))}</span>`)
@@ -4913,7 +4922,7 @@ function renderArRounds(d, state) {
     return `<li class="ar-round">
       <div class="ar-round__head">
         <strong>${escapeHtml(label)}</strong>
-        <span class="ar-round__headline">${escapeHtml((review && review.headline) || (r.review_error ? `review failed: ${r.review_error}` : ''))}</span>
+        <span class="ar-round__headline">${escapeHtml((review && review.headline) || (r.review_error ? `review failed: ${r.review_error}` : readinessHeadline))}</span>
         ${reviewBtn}
       </div>
       <div class="ar-round__scores">${chips}</div>
