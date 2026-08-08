@@ -3496,6 +3496,122 @@ class _TaskMonitor:
             pass
 
 
+class AgentActivityWatcher:
+    """Watches every task's pane so the UI can show which ones just finished.
+
+    Distinct from ``TaskMonitorManager``, which the user opts into per task to
+    get an OpenClaw ping. This one is always on and purely visual: it answers
+    "which agent stopped while I was looking elsewhere", which is the question
+    a fleet of panes makes hard to answer by looking.
+
+    Capturing a short tail from every agent pane costs ~65ms for thirty of
+    them, so one poll for the whole host is cheaper than the per-task polling
+    the UI would otherwise need.
+    """
+
+    POLL_SECONDS = 4.0
+    RESCAN_SECONDS = 30.0
+    CAPTURE_LINES = 12
+    # Same confirmation the OpenClaw monitor uses: the working indicator
+    # flickers mid-turn, and a ring that blinks on every flicker is noise.
+    IDLE_CONFIRM = 3
+
+    def __init__(self, registry: WebProjectRegistry) -> None:
+        self.registry = registry
+        self._lock = threading.Lock()
+        self._state: dict[tuple[str, str], dict[str, Any]] = {}
+        self._targets: list[tuple[str, str, str]] = []
+        self._targets_at = 0.0
+        self._stop = threading.Event()
+        self.thread = threading.Thread(
+            target=self._loop, name="loom-activity", daemon=True
+        )
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _scan_targets(self) -> list[tuple[str, str, str]]:
+        """(project_id, slug, tmux target) for every task with a pane."""
+        out: list[tuple[str, str, str]] = []
+        for project in self.registry.list_projects():
+            pid, path = str(project.get("id") or ""), project.get("path")
+            if not pid or not path:
+                continue
+            try:
+                metas = list_tasks(Path(path))
+            except Exception:  # noqa: BLE001
+                continue
+            for meta in metas:
+                target = (getattr(meta, "tmux_interview_target", "") or "").strip()
+                if target:
+                    out.append((pid, meta.slug, target))
+        return out
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                now = time.time()
+                if now - self._targets_at > self.RESCAN_SECONDS:
+                    self._targets = self._scan_targets()
+                    self._targets_at = now
+                live = set()
+                for pid, slug, target in self._targets:
+                    key = (pid, slug)
+                    live.add(key)
+                    ok, text = capture_pane(target, self.CAPTURE_LINES)
+                    if not ok:
+                        continue
+                    working = bool(_AGENT_WORKING_RE.search(text or ""))
+                    with self._lock:
+                        entry = self._state.setdefault(
+                            key, {"working": False, "idle_polls": 0, "finished_at": 0.0}
+                        )
+                        if working:
+                            entry["working"] = True
+                            entry["idle_polls"] = 0
+                            # Working again supersedes an unread finish.
+                            entry["finished_at"] = 0.0
+                        else:
+                            entry["idle_polls"] += 1
+                            if entry["working"] and entry["idle_polls"] >= self.IDLE_CONFIRM:
+                                entry["working"] = False
+                                entry["finished_at"] = now
+                with self._lock:
+                    for key in [k for k in self._state if k not in live]:
+                        self._state.pop(key, None)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[activity] loop error: {exc}", flush=True)
+            if self._stop.wait(self.POLL_SECONDS):
+                break
+
+    def snapshot(self) -> dict[str, Any]:
+        """Which tasks are working, and which finished without being seen."""
+        tasks: dict[str, Any] = {}
+        projects: dict[str, int] = {}
+        with self._lock:
+            for (pid, slug), entry in self._state.items():
+                finished = float(entry.get("finished_at") or 0)
+                tasks[f"{pid}/{slug}"] = {
+                    "project": pid,
+                    "slug": slug,
+                    "working": bool(entry.get("working")),
+                    "finished_at": finished,
+                }
+                if finished:
+                    projects[pid] = projects.get(pid, 0) + 1
+        return {"ok": True, "tasks": tasks, "projects": projects}
+
+    def ack(self, project_id: str, slug: str) -> None:
+        """Clear a task's finished flag once the user has looked at it."""
+        with self._lock:
+            entry = self._state.get((project_id, slug))
+            if entry:
+                entry["finished_at"] = 0.0
+
+
 class TaskMonitorManager:
     """Owns per-task monitor threads keyed by ``(project_id, slug)``."""
 
@@ -4455,6 +4571,7 @@ def make_handler(
     multi_project_workspace: bool = False,
     monitor_manager: "TaskMonitorManager | None" = None,
     ar_manager: "ARLoopManager | None" = None,
+    activity_watcher: "AgentActivityWatcher | None" = None,
 ) -> type[BaseHTTPRequestHandler]:
     static_root = web_static_dir().resolve()
     required_token = auth_token.strip()
@@ -4465,6 +4582,9 @@ def make_handler(
     ar_manager = ar_manager or ARLoopManager(
         openclaw_client, claude_registry, default_skills
     )
+    if activity_watcher is None:
+        activity_watcher = AgentActivityWatcher(pr)
+        activity_watcher.start()
     terminal_streams = _TerminalStreamRegistry()
 
     class Handler(BaseHTTPRequestHandler):
@@ -5190,6 +5310,13 @@ def make_handler(
                     self._send(st, b, h)
                     return
                 st, b, h = _json_bytes(read_kernel_interview(root, slug))
+                self._send(st, b, h)
+                return
+
+            if path == "/api/activity":
+                # Host-wide on purpose: the point is to surface an agent that
+                # finished in a project you are not currently looking at.
+                st, b, h = _json_bytes(activity_watcher.snapshot())
                 self._send(st, b, h)
                 return
 
@@ -6056,6 +6183,18 @@ def make_handler(
                     return
                 result = _kernel_interview_turn(msgs, str(body.get("model", "")))
                 st, b, h = _json_bytes(result, 200 if result.get("ok") else 502)
+                self._send(st, b, h)
+                return
+
+            if path == "/api/activity/ack":
+                root, project_id = self._resolve_scope(parsed)
+                if project_id is None:
+                    self._bad_project()
+                    return
+                slug = str(body.get("slug", "")).strip()
+                if slug:
+                    activity_watcher.ack(project_id, slug)
+                st, b, h = _json_bytes({"ok": True})
                 self._send(st, b, h)
                 return
 
@@ -7591,6 +7730,8 @@ def serve(
     if _resumed:
         print(f"  Resumed {_resumed} enabled run-monitor(s)", flush=True)
     sk = default_skills if default_skills.is_file() else bundled_skills_path().resolve()
+    activity_watcher = AgentActivityWatcher(web_project_registry)
+    activity_watcher.start()
     ar_manager = ARLoopManager(openclaw_client, claude_registry, sk)
     _ar_swept = ar_manager.sweep_stale_jobs(_monitor_projects)
     if _ar_swept:
@@ -7608,6 +7749,7 @@ def serve(
         multi_project_workspace=multi_project_workspace,
         monitor_manager=monitor_manager,
         ar_manager=ar_manager,
+        activity_watcher=activity_watcher,
     )
     server = ThreadingHTTPServer((host, port), handler)
     rud_root = project_root / ".RUD"

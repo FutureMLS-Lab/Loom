@@ -189,6 +189,55 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
   transition: background 0.12s, border-color 0.12s, transform 0.12s;
 }
 .task-list li:hover { background: #fff; transform: translateX(1px); }
+
+/* An agent that stopped while you were looking elsewhere.
+   A rotating ring rather than a blink: it reads as "this one wants you" from
+   the corner of the eye without the flicker of something switching on and off,
+   and it survives on screens where a static dot would be missed. The ring is
+   a conic gradient masked down to its own border, so it costs one element and
+   animates on the compositor. */
+@property --loom-ring-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes loom-ring-spin { to { --loom-ring-angle: 360deg; } }
+
+/* The chip is not positioned by default, and an absolutely positioned ring
+   inside it would resolve against whatever ancestor is, painting an arc across
+   the page. */
+.project-toggle.is-finished { position: relative; }
+
+.task-list li.is-finished::before,
+.project-toggle.is-finished::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--loom-ring-angle),
+    transparent 0deg 140deg,
+    rgba(79, 70, 229, 0.22) 210deg,
+    var(--accent) 300deg,
+    #22c55e 348deg,
+    transparent 360deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: loom-ring-spin 1.8s linear infinite;
+  pointer-events: none;
+  z-index: 1;
+}
+.task-list li.is-finished > *,
+.project-toggle.is-finished > * { position: relative; z-index: 2; }
+
+@media (prefers-reduced-motion: reduce) {
+  .task-list li.is-finished::before,
+  .project-toggle.is-finished::before { animation: none; background: var(--accent); opacity: 0.55; }
+}
 .task-list li.active { border-color: rgba(79, 70, 229, 0.28); background: var(--accent-soft); }
 .task-list li:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12); }
 .task-list li.is-dragging {
