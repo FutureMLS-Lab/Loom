@@ -6,6 +6,7 @@ import io
 import json
 import re
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -314,6 +315,105 @@ def test_job_log_is_bounded(tmp_path: Path) -> None:
     assert ar.AR_LOG_MAX_LINES <= len(on_disk) <= ar.AR_LOG_MAX_LINES * 2 + 1
     assert on_disk[-1].endswith(f"line {ar.AR_LOG_MAX_LINES * 2 + 49}")
     assert len(ar.read_job_log(path)) == ar.AR_LOG_TAIL
+
+
+# --- shared paper store -----------------------------------------------------
+
+
+@pytest.fixture()
+def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("LOOM_AR_ROOT", str(tmp_path / "ar"))
+    return ar.paper_store_path()
+
+
+def test_store_round_trip(store: Path) -> None:
+    assert ar.store_get("2510.11696") is None
+    ar.store_put("2510.11696", {"verified": True, "real_title": "QeRL", "year": 2025})
+    got = ar.store_get("2510.11696")
+    assert got["real_title"] == "QeRL"
+    assert got["verified"] is True
+    assert store.is_file()
+    assert ar.store_stats()["papers"] == 1
+
+
+def test_store_expiry(store: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ar.store_put("2510.11696", {"verified": True})
+    ar.store_put("2999.99999", {"verified": False, "reason": "not found"})
+    assert ar.store_get("2510.11696") is not None
+    assert ar.store_get("2999.99999") is not None
+
+    # A miss is re-checked far sooner than a hit: indexing lags publication, so
+    # today's absence is not tomorrow's.
+    later = time.time() + ar.STORE_TTL_MISS + 60
+    monkeypatch.setattr(ar.time, "time", lambda: later)
+    assert ar.store_get("2510.11696") is not None
+    assert ar.store_get("2999.99999") is None
+
+    much_later = time.time() + ar.STORE_TTL_HIT + 60
+    monkeypatch.setattr(ar.time, "time", lambda: much_later)
+    assert ar.store_get("2510.11696") is None
+
+
+def test_store_survives_corruption(store: Path) -> None:
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text("{not json", encoding="utf-8")
+    assert ar.read_paper_store() == {}
+    assert ar.store_get("2510.11696") is None
+    ar.store_put("2510.11696", {"verified": True})
+    assert ar.store_get("2510.11696") is not None
+
+
+def test_verify_paper_uses_the_store(store: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def boom(*_a, **_k):
+        calls.append(1)
+        raise AssertionError("verify_paper hit the network on a cached id")
+
+    ar.store_put("2510.11696", {"verified": True, "real_title": "QeRL"})
+    monkeypatch.setattr(ar.urllib.request, "urlopen", boom)
+    got = ar.verify_paper("2510.11696")
+    assert got["real_title"] == "QeRL"
+    assert "fetched_at" not in got  # bookkeeping stays inside the store
+    assert not calls
+
+    # A version suffix is the same paper.
+    assert ar.verify_paper("2510.11696v3")["verified"] is True
+    # A malformed id never reaches the network either.
+    assert ar.verify_paper("nonsense")["verified"] is False
+
+
+def test_remember_papers_from_mining(store: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ar, "_arxiv_fetch", lambda url, timeout, attempts=3: (CANNED_FEED, "")
+    )
+    res = ar.mine_papers("quantization")
+    assert res["ok"]
+    # Mining is itself proof the paper exists, so a later verify is free.
+    cached = ar.store_get("2501.01234")
+    assert cached["verified"] is True
+    assert cached["source"] == "arxiv"
+    assert cached["real_title"] == "Outlier-Aware KV Cache Quantization"
+
+    def boom(*_a, **_k):
+        raise AssertionError("hit the network for a paper mining already saw")
+
+    monkeypatch.setattr(ar.urllib.request, "urlopen", boom)
+    assert ar.verify_paper("2501.01234")["verified"] is True
+
+
+def test_openalex_facts_win_over_arxiv(store: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ar.store_put(
+        "2510.11696",
+        {"verified": True, "real_title": "Full OpenAlex title", "cited_by": 42, "source": "openalex"},
+    )
+    monkeypatch.setattr(
+        ar, "_arxiv_fetch", lambda url, timeout, attempts=3: (CANNED_FEED, "")
+    )
+    ar.remember_papers([{"arxiv_id": "2510.11696", "title": "short", "published": "2025-10-13"}])
+    kept = ar.store_get("2510.11696")
+    assert kept["real_title"] == "Full OpenAlex title"
+    assert kept["cited_by"] == 42
 
 
 # --- review parsing ---------------------------------------------------------

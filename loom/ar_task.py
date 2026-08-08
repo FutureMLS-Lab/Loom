@@ -1101,7 +1101,9 @@ def mine_papers(
     papers = parse_arxiv_feed(body)
     if venue_only:
         papers = [p for p in papers if p.get("venue")]
-    return {"ok": True, "papers": papers[: int(limit)], "query": params["search_query"]}
+    papers = papers[: int(limit)]
+    remember_papers(papers)
+    return {"ok": True, "papers": papers, "query": params["search_query"]}
 
 
 # --- Headless model calls ---------------------------------------------------
@@ -1434,13 +1436,115 @@ _openalex_last = 0.0
 _OPENALEX_MIN_INTERVAL = 0.15
 
 
-def verify_paper(arxiv_id: str, timeout: int = 20) -> dict[str, Any]:
+# --- Shared paper store -----------------------------------------------------
+#
+# One record per arXiv id, shared by every AR task on this host. Without it the
+# same handful of papers is re-fetched on every grounding run and again for
+# every studio, which is slow, rude to a free API, and pointless: a paper's
+# title and year do not change.
+
+PAPER_STORE = "papers.json"
+# A paper that exists keeps existing; only the citation count drifts, and that
+# is not worth a request. A miss is re-checked sooner, because indexing lags
+# publication by weeks and today's absence is not tomorrow's.
+STORE_TTL_HIT = 30 * 24 * 3600
+STORE_TTL_MISS = 3 * 24 * 3600
+
+_store_lock = threading.Lock()
+
+
+def paper_store_path() -> Path:
+    return shared_cache_dir() / PAPER_STORE
+
+
+def read_paper_store() -> dict[str, Any]:
+    path = paper_store_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_paper_store(data: dict[str, Any]) -> None:
+    path = paper_store_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
+def store_get(key: str) -> dict[str, Any] | None:
+    """A stored record for *key*, or None when absent or stale."""
+    with _store_lock:
+        record = read_paper_store().get(key)
+    if not isinstance(record, dict):
+        return None
+    ttl = STORE_TTL_HIT if record.get("verified") else STORE_TTL_MISS
+    try:
+        age = time.time() - float(record.get("fetched_at") or 0)
+    except (TypeError, ValueError):
+        return None
+    return None if age > ttl else record
+
+
+def store_put(key: str, record: dict[str, Any]) -> None:
+    with _store_lock:
+        data = read_paper_store()
+        data[key] = {**record, "fetched_at": time.time()}
+        _write_paper_store(data)
+
+
+def store_stats() -> dict[str, Any]:
+    data = read_paper_store()
+    return {
+        "papers": len(data),
+        "verified": sum(1 for r in data.values() if isinstance(r, dict) and r.get("verified")),
+        "path": str(paper_store_path()),
+    }
+
+
+def remember_papers(papers: list[dict[str, Any]]) -> int:
+    """Fold mined arXiv results into the store so a later lookup is free."""
+    stored = 0
+    with _store_lock:
+        data = read_paper_store()
+        for paper in papers:
+            ident = str(paper.get("arxiv_id") or "").split("v")[0]
+            if not ident:
+                continue
+            existing = data.get(ident) if isinstance(data.get(ident), dict) else {}
+            # arXiv proves the paper exists and gives the authoritative title;
+            # OpenAlex adds standing later, so never overwrite what it found.
+            data[ident] = {
+                **existing,
+                "verified": True,
+                "real_title": existing.get("real_title") or paper.get("title", ""),
+                "year": existing.get("year") or (paper.get("published") or "")[:4],
+                "source": existing.get("source") or "arxiv",
+                "fetched_at": time.time(),
+            }
+            stored += 1
+        _write_paper_store(data)
+    return stored
+
+
+def verify_paper(arxiv_id: str, timeout: int = 20, refresh: bool = False) -> dict[str, Any]:
     """Confirm a cited arXiv id exists, and return what is known about it."""
     global _openalex_last
     ident = str(arxiv_id or "").strip()
     if not re.fullmatch(r"\d{4}\.\d{4,5}(v\d+)?", ident):
         return {"verified": False, "reason": "not an arXiv id"}
     bare = ident.split("v")[0]
+    if not refresh:
+        cached = store_get(bare)
+        if cached is not None:
+            return {k: v for k, v in cached.items() if k != "fetched_at"}
     url = (
         f"{OPENALEX_API}/doi:10.48550/arXiv.{bare}"
         f"?{urllib.parse.urlencode({'mailto': OPENALEX_MAILTO})}"
@@ -1455,24 +1559,30 @@ def verify_paper(arxiv_id: str, timeout: int = 20) -> dict[str, Any]:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
     except urllib.error.HTTPError as exc:
-        return {"verified": False, "reason": "not found" if exc.code == 404 else f"HTTP {exc.code}"}
+        miss = {"verified": False, "reason": "not found" if exc.code == 404 else f"HTTP {exc.code}"}
+        if exc.code == 404:
+            store_put(bare, miss)  # a transport error is not evidence of absence
+        return miss
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return {"verified": False, "reason": str(exc)[:80]}
     title = str(data.get("title") or "").strip()
     if not title:
         return {"verified": False, "reason": "no record"}
-    return {
+    record = {
         "verified": True,
         "real_title": title,
         "year": data.get("publication_year"),
         "cited_by": data.get("cited_by_count"),
+        "source": "openalex",
     }
+    store_put(bare, record)
+    return record
 
 
 def verify_idea_edges(ideas: list[dict[str, Any]], on_line: Any = None) -> int:
     """Attach OpenAlex facts to every edge that names an arXiv id."""
     seen: dict[str, dict[str, Any]] = {}
-    checked = 0
+    fetched = 0
     for idea in ideas:
         for edge in idea.get("derived_from") or []:
             paper = str(edge.get("paper") or "").strip()
@@ -1480,13 +1590,19 @@ def verify_idea_edges(ideas: list[dict[str, Any]], on_line: Any = None) -> int:
                 edge.setdefault("verified", None)  # named, but no id to check
                 continue
             if paper not in seen:
+                key = paper.split("v")[0]
+                if store_get(key) is None:
+                    fetched += 1
                 seen[paper] = verify_paper(paper)
-                checked += 1
             edge.update(seen[paper])
     if on_line is not None:
         ok = sum(1 for v in seen.values() if v.get("verified"))
-        on_line(f"verified {ok}/{len(seen)} cited arXiv id(s) against OpenAlex")
-    return checked
+        cached = len(seen) - fetched
+        on_line(
+            f"verified {ok}/{len(seen)} cited arXiv id(s)"
+            f" ({cached} from the local store, {fetched} fetched)"
+        )
+    return fetched
 
 
 def link_ideas(
