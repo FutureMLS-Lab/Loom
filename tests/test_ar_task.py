@@ -1227,7 +1227,13 @@ def test_ar_skills_are_bundled(name: str) -> None:
 
 def test_figure_skills_are_bundled() -> None:
     skills = {s["name"] for s in ar.figure_skills()}
-    assert {"teaser-figure", "results-figure", "checkbib"} <= skills
+    assert {
+        "results-figure-1",
+        "results-figure-2",
+        "teaser-figure-1",
+        "teaser-figure-2",
+        "checkbib",
+    } <= skills
     for skill in ar.figure_skills():
         assert Path(skill["path"]).is_file()
         assert skill["description"], f"{skill['name']} has no description"
@@ -1237,7 +1243,9 @@ def test_figure_skills_are_bundled() -> None:
 
 def test_figure_skills_block_stays_compact() -> None:
     block = ar.figure_skills_block()
-    assert "teaser-figure" in block and "checkbib" in block
+    assert "teaser-figure-1" in block
+    assert "results-figure-2" in block
+    assert "checkbib" in block
     # Five SKILL.md files are ~38k chars; the menu must be a fraction of that.
     assert len(block) < 3000
 
@@ -1247,7 +1255,8 @@ def test_author_prompts_point_at_the_figure_skills(tmp_path: Path) -> None:
     draft = ar.author_draft_prompt(tmp_path, tmp_path / "manuscript", state)
     rnd = ar.author_round_prompt(tmp_path, tmp_path / "manuscript", state, 2)
     for prompt in (draft, rnd):
-        assert "teaser-figure" in prompt
+        assert "teaser-figure-1" in prompt
+        assert "results-figure-2" in prompt
         assert "SKILL.md" in prompt
 
 

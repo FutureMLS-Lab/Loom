@@ -56,12 +56,12 @@ prompt lists them with their paths. Read the relevant `SKILL.md` before drawing
 rather than reaching for default matplotlib — each one carries a house style, a
 drawing kit in its `scripts/`, and a runnable example.
 
-- **teaser-figure** and **teaser-figure-plain** — the page-one overview. Use the
-  plain variant when the paper has something concrete to draw and a real
+- **teaser-figure-1** and **teaser-figure-2** — the page-one overview. Use
+  teaser-figure-2 when the paper has something concrete to draw and a real
   measurement to plot; the tinted-panel variant when the contribution is a
   mechanism with no drawable object.
-- **results-figure** and **results-figure-replicates** — the evidence plots. Use
-  the replicates variant whenever you have more than one seed, which for this
+- **results-figure-1** and **results-figure-2** — the evidence plots. Use
+  results-figure-2 whenever you have more than one seed, which for this
   pipeline is most of the time: showing the spread is what makes a small-scale
   result credible.
 - **checkbib** — run it before every gate. The reviewer challenges citations,

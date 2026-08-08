@@ -1,10 +1,10 @@
 ---
-name: teaser-figure
-description: Draw a paper's page-one teaser — the three-panel problem/method/result schematic of tinted rounded boxes and arrows that explains a contribution at a glance. Emits a full-width vector PDF with embedded fonts, ready to drop into a LaTeX figure*. Use when the user runs /teaser-figure, or asks for a teaser, a Figure 1, an overview or pull figure, a graphical abstract, a pipeline or flowchart that explains how a method works, or an "Excalidraw-style" diagram for a paper.
+name: teaser-figure-1
+description: Draw a paper's page-one teaser — the three-panel problem/method/result schematic of tinted rounded boxes and arrows that explains a contribution at a glance. Emits a full-width vector PDF with embedded fonts, ready to drop into a LaTeX figure*. Use when the user runs /teaser-figure-1, or asks for a teaser, a Figure 1, an overview or pull figure, a graphical abstract, a pipeline or flowchart that explains how a method works, or an "Excalidraw-style" diagram for a paper.
 disable-model-invocation: true
 ---
 
-# teaser-figure
+# teaser-figure-1
 
 ## What this makes, and what it is called
 
@@ -14,7 +14,7 @@ There are two kinds and they are not interchangeable. A **results teaser** is a 
 
 Ask which kind is wanted if it is not obvious. A paper whose contribution is a *number* wants a results teaser; a paper whose contribution is a *mechanism* wants this one.
 
-There is a second overview style in this repo, `teaser-figure-plain`: white ground, no tinted panels, the objects drawn rather than named, and a measured chart in the last panel — the SAM / FlashAttention idiom. Prefer it when the paper has something concrete to draw and a real measurement to plot, and the figure will sit under a caption that can carry the prose. Prefer this one when the contribution has no drawable object, or the figure must stand alone.
+There is a second overview style in this repo, `teaser-figure-2`: white ground, no tinted panels, the objects drawn rather than named, and a measured chart in the last panel — the SAM / FlashAttention idiom. Prefer it when the paper has something concrete to draw and a real measurement to plot, and the figure will sit under a caption that can carry the prose. Prefer this one when the contribution has no drawable object, or the figure must stand alone.
 
 ## The red line
 

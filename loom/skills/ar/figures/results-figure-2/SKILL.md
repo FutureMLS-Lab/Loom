@@ -1,10 +1,10 @@
 ---
-name: results-figure-replicates
-description: Draw a results figure that shows the distribution behind every number it asserts — the aggregate in one panel, every individual run in the next, dashed reference lines carrying the published value in their own colour, and the statistics set inside the panel. The Nature-style evidence idiom, with bold lowercase panel keys and one figure-level legend. Use when the user runs /results-figure-replicates, asks to show replicates, spread, variance, per-trial or per-seed results, asks for a figure in the style of arXiv 2505.13803, or when a claim rests on a mean that hides its distribution. Read the results-figure skill first; this is that plus one idea.
+name: results-figure-2
+description: Draw a results figure that shows the distribution behind every number it asserts — the aggregate in one panel, every individual run in the next, dashed reference lines carrying the published value in their own colour, and the statistics set inside the panel. The Nature-style evidence idiom, with bold lowercase panel keys and one figure-level legend. Use when the user runs /results-figure-2, asks to show replicates, spread, variance, per-trial or per-seed results, asks for a figure in the style of arXiv 2505.13803, or when a claim rests on a mean that hides its distribution. Read the results-figure-1 skill first; this is that plus one idea.
 disable-model-invocation: true
 ---
 
-# results-figure-replicates
+# results-figure-2
 
 ## The one idea
 
@@ -16,7 +16,7 @@ Three devices follow from that, and they are the whole style:
 2. **A dashed reference line carrying the published value, with the number written in the line's own colour.** The reader never works out which line a figure belongs to, and never leaves the panel to find what is being beaten.
 3. **The statistics inside the panel, right-aligned.** *n*, the spread, the step sizes, the significance count. Not three pages away in the body text.
 
-Everything in [results-figure](../results-figure/SKILL.md) still applies — same palette, fonts, widths, compliance. Read it first.
+Everything in [results-figure-1](../results-figure-1/SKILL.md) still applies — same palette, fonts, widths, compliance. Read it first.
 
 ## When it is worth it, and when it is not
 
