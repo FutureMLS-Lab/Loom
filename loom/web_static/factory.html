@@ -116,11 +116,12 @@
     <div class="rf-section__head">
       <h2>Knowledge graph</h2>
       <span class="rf-hint">
-        Cited work on the left, your ideas on the right. Click either side to open it.
+        Cited work on the left, your ideas on the right. Click a node to inspect it.
       </span>
     </div>
     <div class="rf-graph-wrap">
-      <svg id="graph" class="rf-graph" role="img" aria-label="Prior work and the ideas derived from it"></svg>
+      <svg id="graph" class="rf-graph" aria-label="Prior work and the ideas derived from it"></svg>
+      <div class="rf-graph-detail" id="graph-detail" aria-live="polite"></div>
       <div class="rf-graph-legend" id="graph-legend"></div>
       <div class="rf-graph-empty" id="graph-empty">
         Run steps 1 to 3 and the graph appears here.

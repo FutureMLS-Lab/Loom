@@ -195,22 +195,67 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
   color: var(--rf-faint); font-size: 13px; pointer-events: none;
 }
 .rf-graph-legend {
-  display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--rf-faint);
+  display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+  font-size: 11px; color: var(--rf-faint);
   padding: 10px 16px; border-top: 1px solid var(--rf-line); background: var(--rf-bg-2);
 }
-.rf-legend-item { display: flex; align-items: center; gap: 6px; }
+.rf-legend-count { margin-right: 4px; }
+/* Each relation is also a switch, so a busy picture can be thinned out
+   instead of squinted at. */
+.rf-legend-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: inherit; color: inherit; cursor: pointer;
+  padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--rf-line); background: var(--rf-bg-1);
+  transition: border-color 0.12s, opacity 0.12s;
+}
+.rf-legend-item:hover { border-color: var(--rf-accent); }
+.rf-legend-item.is-off { opacity: 0.4; text-decoration: line-through; }
 .rf-legend-dot { width: 9px; height: 9px; border-radius: 50%; }
+.rf-legend-n { color: var(--rf-faint); font-variant-numeric: tabular-nums; }
 
 .rf-node { cursor: pointer; transition: opacity 0.14s; }
-.rf-node:hover circle { stroke-width: 3; }
+.rf-node:focus { outline: none; }
+.rf-node:focus-visible .rf-node-dot { stroke: var(--rf-accent); stroke-width: 3; }
+.rf-node:hover .rf-node-dot { stroke-width: 3; }
 .rf-node text { font-size: 11px; fill: var(--rf-dim); pointer-events: none; }
 .rf-node.is-idea text { fill: var(--rf-text); font-weight: 600; }
 .rf-node.is-dim { opacity: 0.18; }
+.rf-node.is-selected .rf-node-dot { stroke: var(--rf-accent); stroke-width: 3.5; }
+.rf-node.is-selected text { fill: var(--rf-text); font-weight: 700; }
 .rf-node-meta { font-size: 9.5px; fill: var(--rf-faint); }
 .rf-graph-heading {
   font-size: 9.5px; font-weight: 700; letter-spacing: 0.12em; fill: var(--rf-faint);
 }
 .rf-edge-line { stroke-width: 1.5; fill: none; transition: stroke-opacity 0.14s; }
+.rf-edge-line.is-lit { stroke-width: 2.4; }
+.rf-edge-tag {
+  font-size: 10px; font-weight: 600; pointer-events: none;
+  paint-order: stroke; stroke: var(--rf-bg-1); stroke-width: 3.5px;
+  transition: opacity 0.14s;
+}
+
+/* ---------- graph detail ---------- */
+
+.rf-graph-detail {
+  border-top: 1px solid var(--rf-line); background: var(--rf-bg-1);
+  padding: 12px 16px; font-size: 12.5px; min-height: 44px;
+}
+.rf-detail-hint { margin: 0; color: var(--rf-faint); }
+.rf-detail-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rf-detail-head b { font-size: 13.5px; }
+.rf-detail-score { color: var(--rf-faint); font-variant-numeric: tabular-nums; }
+.rf-detail-body { margin: 8px 0 0; color: var(--rf-dim); line-height: 1.5; }
+.rf-detail-links { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+.rf-detail-links li { color: var(--rf-dim); }
+.rf-detail-rel { font-weight: 600; }
+.rf-detail-ok { color: #15803d; font-size: 11px; margin-left: 6px; }
+.rf-detail-bad { color: #be123c; font-size: 11px; margin-left: 6px; }
+.rf-detail-actions { display: flex; gap: 8px; margin-top: 10px; }
+.rf-pill--idea { background: #eef2ff; color: #3730a3; border-color: #c7d2fe; }
+/* Landing on a card from the graph, so the jump is visibly connected to the
+   click that caused it. */
+.rf-idea.is-flash { box-shadow: 0 0 0 2px var(--rf-accent); }
 
 /* ---------- studio steps ---------- */
 

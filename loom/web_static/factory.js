@@ -17,6 +17,8 @@ const S = {
   picked: new Set(),
   timer: null,
   busy: false,
+  graphSel: '',              // node the user clicked into, '' when nothing is
+  graphHide: new Set(),      // relations switched off in the legend
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -93,6 +95,7 @@ function openFleet() {
 
 function openStudio(slug) {
   S.slug = slug; S.parent = slug; S.picked = new Set(); S.data = null;
+  S.graphSel = ''; S.graphHide = new Set();
   show('studio');
   loadTask();
   writeHash(`studio/${slug}`);
@@ -353,6 +356,17 @@ const RELATION_COLOR = {
   'relates-to': '#8a8f97',
 };
 
+// The relation read as a sentence. Colour alone means holding a six-item
+// legend in your head; the wording lets a selected edge explain itself.
+const RELATION_TEXT = {
+  extends: 'builds on',
+  contradicts: 'argues against',
+  combines: 'combines',
+  ports: 'ports the method from',
+  'controls-for': 'controls for',
+  'relates-to': 'relates to',
+};
+
 const NODE_STYLE = {
   idea: { fill: '#4f46e5', stroke: '#312e81', width: '2' },
   paper: { fill: '#ffffff', stroke: '#8a8f97', width: '1.4' },
@@ -413,7 +427,7 @@ function graphNodesFrom(papers, ideas) {
         target.meta = '✗ unverified';
         target.hover = `${target.label} — arXiv ${edge.paper} could not be confirmed`;
       }
-      links.push({ source: node, target, relation: edge.relation });
+      links.push({ source: node, target, relation: edge.relation, edge });
     });
   });
 
@@ -438,19 +452,33 @@ function svgEl(name, attrs = {}) {
 
 function drawGraph(papers, ideas) {
   const svg = el('graph');
-  const { nodes, links, dropped } = graphNodesFrom(papers || [], ideas || []);
+  const all = graphNodesFrom(papers || [], ideas || []);
+
+  // Legend switches drop a relation's edges, and any cited work left with
+  // nothing pointing at it goes with them - a lone circle in the left column
+  // would otherwise read as "cited by nothing", which is not what it means.
+  const links = all.links.filter((l) => !S.graphHide.has(l.relation || 'relates-to'));
+  const live = new Set();
+  links.forEach((l) => { live.add(l.source.id); live.add(l.target.id); });
+  const nodes = all.nodes.filter((n) => n.kind === 'idea' || live.has(n.id));
   const works = nodes.filter((n) => n.kind !== 'idea');
   const ours = nodes.filter((n) => n.kind === 'idea');
 
-  el('graph-empty').hidden = links.length > 0;
-  el('graph-legend').innerHTML = links.length
-    ? `<span class="rf-legend-item">${ours.length} ideas · ${works.length} cited works`
-      + `${dropped ? ` · ${dropped} mined but uncited` : ''}</span>`
-      + Object.entries(RELATION_COLOR).map(([name, color]) =>
-          `<span class="rf-legend-item"><span class="rf-legend-dot" style="background:${color}"></span>${name}</span>`).join('')
-    : '';
+  drawLegend(all, works.length, ours.length);
   svg.innerHTML = '';
-  if (!links.length) return;
+  const empty = el('graph-empty');
+  if (!links.length) {
+    // Either nothing has been generated yet, or the legend has every relation
+    // switched off - which looks identical without saying so.
+    empty.textContent = all.links.length
+      ? 'Every relation is hidden. Turn one back on in the legend below.'
+      : 'Run steps 1 to 3 and the graph appears here.';
+    empty.hidden = false;
+    svg.removeAttribute('height');
+    renderGraphDetail(null, []);
+    return;
+  }
+  empty.hidden = true;
 
   // Order the left column so edges cross as little as possible: a cited work
   // sits at the average height of the ideas that cite it.
@@ -473,8 +501,9 @@ function drawGraph(papers, ideas) {
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   svg.setAttribute('height', String(height));
   const gLinks = svgEl('g');
+  const gTags = svgEl('g');
   const gNodes = svgEl('g');
-  svg.append(gLinks, gNodes);
+  svg.append(gLinks, gTags, gNodes);
 
   links.forEach((link) => {
     const { source: a, target: b } = link;
@@ -486,12 +515,42 @@ function drawGraph(papers, ideas) {
       'stroke-opacity': 0.55,
     });
     gLinks.appendChild(link.path);
+
+    // Revealed only while one end is in focus - labelling all eighteen at once
+    // would bury the picture it explains. Sat a quarter along from the paper
+    // rather than at the midpoint: every edge of one idea converges on the
+    // same point, so midpoint labels land on top of each other, while near the
+    // papers they inherit the row spacing and stay apart.
+    const t = 0.25;
+    const u = 1 - t;
+    const tag = svgEl('text', {
+      class: 'rf-edge-tag',
+      x: u * u * u * b.x + 3 * u * t * (u + t) * mid + t * t * t * a.x,
+      y: (u * u * u + 3 * u * u * t) * b.y + (3 * u * t * t + t * t * t) * a.y - 5,
+      'text-anchor': 'middle', opacity: '0',
+      fill: RELATION_COLOR[link.relation] || RELATION_COLOR['relates-to'],
+    });
+    tag.textContent = RELATION_TEXT[link.relation] || link.relation || '';
+    link.tag = tag;
+    gTags.appendChild(tag);
   });
 
   const paint = (node, side) => {
-    const g = svgEl('g', { class: `rf-node is-${node.kind}`, transform: `translate(${node.x},${node.y})` });
+    const g = svgEl('g', {
+      class: `rf-node is-${node.kind}`, transform: `translate(${node.x},${node.y})`,
+      tabindex: '0', role: 'button',
+      'aria-label': `${node.kind === 'idea' ? 'Idea' : 'Cited work'}: ${node.label}`,
+    });
     const style = NODE_STYLE[node.kind] || NODE_STYLE.paper;
+    // A generous invisible target. The circles are 5-8px across, which is a
+    // hard thing to hit and an easy thing to fall off mid-read.
+    g.appendChild(svgEl('rect', {
+      class: 'rf-node-hit',
+      x: side === 'left' ? -230 : -(node.r + 10), y: -rowH / 2,
+      width: 230 + node.r + 10, height: rowH, fill: 'transparent',
+    }));
     g.appendChild(svgEl('circle', {
+      class: 'rf-node-dot',
       r: node.r, fill: style.fill, stroke: style.stroke, 'stroke-width': style.width,
     }));
     const label = svgEl('text', {
@@ -506,32 +565,18 @@ function drawGraph(papers, ideas) {
       meta.textContent = node.meta;
       g.appendChild(meta);
     }
-    const title = svgEl('title');
-    title.textContent = node.hover || node.label;
-    g.appendChild(title);
-    g.addEventListener('click', () => {
-      if (node.kind === 'idea') {
-        const card = document.querySelector(`[data-idea="${CSS.escape(node.idea.id)}"]`);
-        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      } else if (node.url) {
-        window.open(node.url, '_blank', 'noreferrer');
-      }
+    const select = () => {
+      S.graphSel = S.graphSel === node.id ? '' : node.id;
+      applyGraphFocus(nodes, links);
+    };
+    g.addEventListener('click', (ev) => { ev.stopPropagation(); select(); });
+    g.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); select(); }
     });
-    // Dim everything that is not on this node's edges, so one hover answers
-    // "what does this idea rest on" without reading the whole picture.
-    g.addEventListener('mouseenter', () => {
-      const near = new Set([node]);
-      links.forEach((l) => {
-        if (l.source === node || l.target === node) { near.add(l.source); near.add(l.target); }
-      });
-      nodes.forEach((n) => n.g.classList.toggle('is-dim', !near.has(n)));
-      links.forEach((l) => l.path.setAttribute(
-        'stroke-opacity', l.source === node || l.target === node ? '0.95' : '0.10'));
-    });
-    g.addEventListener('mouseleave', () => {
-      nodes.forEach((n) => n.g.classList.remove('is-dim'));
-      links.forEach((l) => l.path.setAttribute('stroke-opacity', '0.55'));
-    });
+    // Hover is a preview only. It used to be the only way to isolate a node,
+    // which meant the answer vanished the moment you moved to read it.
+    g.addEventListener('mouseenter', () => { if (!S.graphSel) applyGraphFocus(nodes, links, node); });
+    g.addEventListener('mouseleave', () => { if (!S.graphSel) applyGraphFocus(nodes, links); });
     gNodes.appendChild(g);
     node.g = g;
   };
@@ -546,6 +591,122 @@ function drawGraph(papers, ideas) {
   };
   heading(leftX, 'PRIOR WORK', 'end');
   heading(rightX, 'IDEAS', 'start');
+
+  svg.onclick = () => { S.graphSel = ''; applyGraphFocus(nodes, links); };
+  applyGraphFocus(nodes, links);
+}
+
+// Dim everything off the focused node's edges and name the relations that
+// remain. `hover` is the transient version; with nothing hovered it falls back
+// to whatever is selected, and to the plain picture when neither is set.
+function applyGraphFocus(nodes, links, hover) {
+  const focus = hover || nodes.find((n) => n.id === S.graphSel) || null;
+  const mine = focus ? links.filter((l) => l.source === focus || l.target === focus) : [];
+  const near = new Set(focus ? [focus] : []);
+  mine.forEach((l) => { near.add(l.source); near.add(l.target); });
+
+  nodes.forEach((n) => {
+    n.g.classList.toggle('is-dim', Boolean(focus) && !near.has(n));
+    n.g.classList.toggle('is-selected', Boolean(S.graphSel) && n.id === S.graphSel);
+  });
+  links.forEach((l) => {
+    const on = !focus || mine.includes(l);
+    l.path.setAttribute('stroke-opacity', focus ? (on ? '0.95' : '0.07') : '0.55');
+    l.path.classList.toggle('is-lit', Boolean(focus) && on);
+    if (l.tag) l.tag.setAttribute('opacity', focus && on ? '1' : '0');
+  });
+  renderGraphDetail(hover ? null : focus, mine);
+}
+
+// What the picture cannot say: full titles, whether a citation checked out,
+// and where to go next. Clicking a node used to jump straight to arXiv, which
+// took you off the page before you knew what you had clicked.
+function renderGraphDetail(node, links) {
+  const host = el('graph-detail');
+  if (!host) return;
+  if (!node) {
+    host.innerHTML = '<p class="rf-detail-hint">Click any node to see what it is,'
+      + ' what it connects to, and where to open it. Use the legend to hide a relation.</p>';
+    return;
+  }
+  const rel = (l) => `<span class="rf-detail-rel" style="color:${RELATION_COLOR[l.relation] || RELATION_COLOR['relates-to']}">`
+    + `${esc(RELATION_TEXT[l.relation] || l.relation || 'relates to')}</span>`;
+
+  if (node.kind === 'idea') {
+    const idea = node.idea || {};
+    host.innerHTML = `
+      <div class="rf-detail-head">
+        <span class="rf-pill rf-pill--idea">idea</span>
+        <b>${esc(idea.title || node.label)}</b>
+        <span class="rf-detail-score">${Number(idea.score || 0).toFixed(2)}</span>
+      </div>
+      ${idea.hypothesis ? `<p class="rf-detail-body">${esc(idea.hypothesis)}</p>` : ''}
+      <ul class="rf-detail-links">${links.map((l) =>
+        `<li>${rel(l)} <span>${esc(l.target.label)}</span>${
+          l.edge && l.edge.verified === true ? '<span class="rf-detail-ok">verified</span>' : ''}${
+          l.edge && l.edge.verified === false && l.edge.paper ? '<span class="rf-detail-bad">unverified</span>' : ''}</li>`).join('')
+        || '<li class="rf-detail-hint">No grounding recorded for this idea.</li>'}</ul>
+      <div class="rf-detail-actions">
+        <button type="button" class="rf-btn rf-btn--ghost rf-btn--sm" data-detail="card">Show the full card</button>
+        ${idea.child_slug ? '<button type="button" class="rf-btn rf-btn--ghost rf-btn--sm" data-detail="paper">Open the paper</button>' : ''}
+      </div>`;
+    host.querySelector('[data-detail="card"]').onclick = () => {
+      const card = document.querySelector(`[data-idea="${CSS.escape(idea.id)}"]`);
+      if (card) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.classList.add('is-flash');
+        setTimeout(() => card.classList.remove('is-flash'), 1200);
+      }
+    };
+    const open = host.querySelector('[data-detail="paper"]');
+    if (open) open.onclick = () => openPaper(idea.child_slug, S.slug);
+    return;
+  }
+
+  const verified = node.meta && node.meta.startsWith('✓');
+  host.innerHTML = `
+    <div class="rf-detail-head">
+      <span class="rf-pill">${node.kind === 'paper' ? 'mined' : 'cited'}</span>
+      <b>${esc(node.hover || node.label)}</b>
+      ${verified ? `<span class="rf-detail-ok">${esc(node.meta.slice(1).trim() || 'verified')}</span>`
+        : (node.meta ? `<span class="rf-detail-bad">${esc(node.meta.replace('✗', '').trim())}</span>` : '')}
+    </div>
+    <ul class="rf-detail-links">${links.map((l) =>
+      `<li><span>${esc(l.source.label)}</span> ${rel(l)} this</li>`).join('')}</ul>
+    <div class="rf-detail-actions">
+      ${node.url ? `<a class="rf-btn rf-btn--ghost rf-btn--sm" href="${esc(node.url)}" target="_blank" rel="noreferrer">Open on arXiv</a>` : ''}
+    </div>`;
+}
+
+// Counts make the legend a summary as well as a control, and switching a
+// relation off is the quickest way to read a busy picture.
+function drawLegend(all, workCount, ideaCount) {
+  const host = el('graph-legend');
+  if (!all.links.length) { host.innerHTML = ''; return; }
+  const counts = {};
+  all.links.forEach((l) => {
+    const r = l.relation || 'relates-to';
+    counts[r] = (counts[r] || 0) + 1;
+  });
+  host.innerHTML = `<span class="rf-legend-count">${ideaCount} ideas · ${workCount} cited works`
+    + `${all.dropped ? ` · ${all.dropped} mined but uncited` : ''}</span>`
+    + Object.keys(counts).sort().map((name) => {
+      const off = S.graphHide.has(name);
+      return `<button type="button" class="rf-legend-item${off ? ' is-off' : ''}" data-rel="${esc(name)}"`
+        + ` aria-pressed="${off ? 'false' : 'true'}" title="${off ? 'Show' : 'Hide'} ${esc(name)} edges">`
+        + `<span class="rf-legend-dot" style="background:${RELATION_COLOR[name] || RELATION_COLOR['relates-to']}"></span>`
+        + `${esc(name)}<span class="rf-legend-n">${counts[name]}</span></button>`;
+    }).join('');
+
+  host.querySelectorAll('[data-rel]').forEach((btn) => {
+    btn.onclick = () => {
+      const name = btn.dataset.rel;
+      if (S.graphHide.has(name)) S.graphHide.delete(name); else S.graphHide.add(name);
+      S.graphSel = '';
+      const st = (S.data && S.data.state) || {};
+      drawGraph(st.papers || [], st.ideas || []);
+    };
+  });
 }
 
 // ===== paper =====
@@ -835,6 +996,13 @@ el('btn-studio-create').addEventListener('click', async () => {
   readHash();
   startPolling();
   window.addEventListener('hashchange', readHash);
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && S.graphSel) {
+      S.graphSel = '';
+      const st = (S.data && S.data.state) || {};
+      drawGraph(st.papers || [], st.ideas || []);
+    }
+  });
   window.addEventListener('resize', () => {
     if (S.view === 'studio' && S.data) {
       const st = S.data.state || {};
