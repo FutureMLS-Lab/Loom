@@ -1422,6 +1422,73 @@ def propose_ideas(
     return {"ok": True, "ideas": ideas}
 
 
+# OpenAlex answers without a key and without meaningful rate limits, and it
+# resolves an arXiv id through the DOI arXiv mints for every submission. It
+# does NOT carry reference lists for preprints - those come from publisher
+# metadata that a preprint has none of - so it is used here to confirm a cited
+# paper is real and to attach its title, year and standing, not to draw edges.
+OPENALEX_API = "https://api.openalex.org/works"
+OPENALEX_MAILTO = "loom-ar@local"
+_openalex_lock = threading.Lock()
+_openalex_last = 0.0
+_OPENALEX_MIN_INTERVAL = 0.15
+
+
+def verify_paper(arxiv_id: str, timeout: int = 20) -> dict[str, Any]:
+    """Confirm a cited arXiv id exists, and return what is known about it."""
+    global _openalex_last
+    ident = str(arxiv_id or "").strip()
+    if not re.fullmatch(r"\d{4}\.\d{4,5}(v\d+)?", ident):
+        return {"verified": False, "reason": "not an arXiv id"}
+    bare = ident.split("v")[0]
+    url = (
+        f"{OPENALEX_API}/doi:10.48550/arXiv.{bare}"
+        f"?{urllib.parse.urlencode({'mailto': OPENALEX_MAILTO})}"
+    )
+    with _openalex_lock:
+        wait = _OPENALEX_MIN_INTERVAL - (time.monotonic() - _openalex_last)
+        if wait > 0:
+            time.sleep(wait)
+        _openalex_last = time.monotonic()
+    req = urllib.request.Request(url, headers={"User-Agent": "loom-ar/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        return {"verified": False, "reason": "not found" if exc.code == 404 else f"HTTP {exc.code}"}
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return {"verified": False, "reason": str(exc)[:80]}
+    title = str(data.get("title") or "").strip()
+    if not title:
+        return {"verified": False, "reason": "no record"}
+    return {
+        "verified": True,
+        "real_title": title,
+        "year": data.get("publication_year"),
+        "cited_by": data.get("cited_by_count"),
+    }
+
+
+def verify_idea_edges(ideas: list[dict[str, Any]], on_line: Any = None) -> int:
+    """Attach OpenAlex facts to every edge that names an arXiv id."""
+    seen: dict[str, dict[str, Any]] = {}
+    checked = 0
+    for idea in ideas:
+        for edge in idea.get("derived_from") or []:
+            paper = str(edge.get("paper") or "").strip()
+            if not paper:
+                edge.setdefault("verified", None)  # named, but no id to check
+                continue
+            if paper not in seen:
+                seen[paper] = verify_paper(paper)
+                checked += 1
+            edge.update(seen[paper])
+    if on_line is not None:
+        ok = sum(1 for v in seen.values() if v.get("verified"))
+        on_line(f"verified {ok}/{len(seen)} cited arXiv id(s) against OpenAlex")
+    return checked
+
+
 def link_ideas(
     state: dict[str, Any],
     *,
@@ -1501,6 +1568,9 @@ Rules:
             linked += 1
     if on_line is not None:
         on_line(f"linked {linked} idea(s)")
+    # A model naming a paper is a claim; OpenAlex saying it exists is a fact.
+    # Keep them visibly separate rather than presenting the claim as evidence.
+    verify_idea_edges(ideas, on_line=on_line)
     return {"ok": True, "ideas": ideas, "linked": linked, "cost": res.get("cost", 0.0)}
 
 

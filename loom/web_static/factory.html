@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Research Factory</title>
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
-  <link rel="stylesheet" href="/static/factory.css?v=20260807-2" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260807-3" />
 </head>
 <body>
 
@@ -59,29 +59,71 @@
       <h1 id="studio-title">…</h1>
       <p class="rf-lede" id="studio-sub"></p>
     </div>
-    <div class="rf-studio-actions">
-      <label class="rf-check"><input type="checkbox" id="studio-venue-only" /> venue-tagged only</label>
-      <button type="button" class="rf-btn" id="btn-mine">Mine arXiv</button>
-      <label class="rf-check">ideas <input type="number" id="studio-count" min="1" max="12" value="6" /></label>
-      <button type="button" class="rf-btn" id="btn-ideas">Generate ideas</button>
-      <button type="button" class="rf-btn" id="btn-link" title="Read each idea's novelty text and recover the prior work it cites, for ideas that have no edges yet">Link to papers</button>
-      <button type="button" class="rf-btn rf-btn--primary" id="btn-spawn">Create papers</button>
-    </div>
   </section>
+
+  <!-- The studio is a sequence, so show it as one: each step says what it is
+       for, whether it is done, and carries its own control. -->
+  <ol class="rf-steps" id="studio-steps">
+    <li class="rf-step" data-step="mine">
+      <div class="rf-step__n">1</div>
+      <div class="rf-step__body">
+        <h3>Mine recent work</h3>
+        <p>Pull the newest arXiv papers in this direction so the ideas are proposed against what the field actually published, not against memory.</p>
+        <div class="rf-step__actions">
+          <label class="rf-check"><input type="checkbox" id="studio-venue-only" /> venue-tagged only</label>
+          <button type="button" class="rf-btn" id="btn-mine">Mine arXiv</button>
+          <span class="rf-hint" id="step-mine-state"></span>
+        </div>
+      </div>
+    </li>
+    <li class="rf-step" data-step="ideas">
+      <div class="rf-step__n">2</div>
+      <div class="rf-step__body">
+        <h3>Generate ideas</h3>
+        <p>Turn the survey into specific, falsifiable idea cards — each with a hypothesis, the prior work it stands against, and the experiments that would settle it.</p>
+        <div class="rf-step__actions">
+          <label class="rf-check">how many <input type="number" id="studio-count" min="1" max="12" value="6" /></label>
+          <button type="button" class="rf-btn" id="btn-ideas">Generate ideas</button>
+          <span class="rf-hint" id="step-ideas-state"></span>
+        </div>
+      </div>
+    </li>
+    <li class="rf-step" data-step="link">
+      <div class="rf-step__n">3</div>
+      <div class="rf-step__body">
+        <h3>Ground and verify</h3>
+        <p>Read each idea's novelty claim back out as citations, then check every cited arXiv id against OpenAlex so a fabricated reference cannot pass as grounding.</p>
+        <div class="rf-step__actions">
+          <button type="button" class="rf-btn" id="btn-link">Ground and verify</button>
+          <span class="rf-hint" id="step-link-state"></span>
+        </div>
+      </div>
+    </li>
+    <li class="rf-step" data-step="spawn">
+      <div class="rf-step__n">4</div>
+      <div class="rf-step__body">
+        <h3>Create papers</h3>
+        <p>Every idea you tick becomes its own task: a LaTeX draft, your review, then the author and reviewer rounds.</p>
+        <div class="rf-step__actions">
+          <button type="button" class="rf-btn rf-btn--primary" id="btn-spawn">Create papers</button>
+          <span class="rf-hint" id="step-spawn-state"></span>
+        </div>
+      </div>
+    </li>
+  </ol>
 
   <section class="rf-section">
     <div class="rf-section__head">
       <h2>Knowledge graph</h2>
       <span class="rf-hint">
-        What the field published, and how each idea stands against it.
-        Drag a node. Click to open.
+        Cited work on the left, your ideas on the right. Click either side to open it.
       </span>
     </div>
     <div class="rf-graph-wrap">
-      <svg id="graph" class="rf-graph" role="img" aria-label="Papers and the ideas derived from them"></svg>
+      <svg id="graph" class="rf-graph" role="img" aria-label="Prior work and the ideas derived from it"></svg>
       <div class="rf-graph-legend" id="graph-legend"></div>
       <div class="rf-graph-empty" id="graph-empty">
-        Mine papers and generate ideas to draw the graph.
+        Run steps 1 to 3 and the graph appears here.
       </div>
     </div>
   </section>
@@ -206,6 +248,6 @@
 
 <div class="rf-toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/factory.js?v=20260807-2"></script>
+<script src="/static/factory.js?v=20260807-3"></script>
 </body>
 </html>

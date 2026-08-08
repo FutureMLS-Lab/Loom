@@ -73,11 +73,15 @@ async function act(slug, action, body, label) {
 // ===== routing =====
 
 function show(view) {
+  // Every poll re-renders through here, so only move the viewport when the
+  // view actually changed. Scrolling the reader to the top every six seconds
+  // makes the page unusable while a job is running.
+  const changed = S.view !== view;
   S.view = view;
   for (const name of ['fleet', 'studio', 'paper']) {
     el(`view-${name}`).hidden = name !== view;
   }
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (changed) window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function openFleet() {
@@ -241,8 +245,12 @@ function renderStudio(d, state) {
 
   el('ideas-list').innerHTML = ideas.map((idea) => {
     const spawned = idea.status === 'spawned';
-    const edges = (idea.derived_from || []).map((e) =>
-      `<span class="rf-edge-chip">${esc(e.relation)} · ${esc(e.title || e.paper)}</span>`).join('');
+    const edges = (idea.derived_from || []).map((e) => {
+      const mark = e.verified === true ? ' ✓' : (e.paper && e.verified === false ? ' ✗' : '');
+      const cls = e.verified === false && e.paper ? ' is-unverified' : '';
+      return `<span class="rf-edge-chip${cls}" title="${esc(e.real_title || '')}">`
+        + `${esc(e.relation)} · ${esc(e.title || e.paper)}${mark}</span>`;
+    }).join('');
     return `<article class="rf-idea${spawned ? ' is-spawned' : ''}${S.picked.has(idea.id) ? ' is-picked' : ''}" data-idea="${esc(idea.id)}">
       <div class="rf-idea__head">
         <input type="checkbox" data-pick="${esc(idea.id)}" ${S.picked.has(idea.id) ? 'checked' : ''} ${spawned ? 'disabled' : ''} />
@@ -270,7 +278,54 @@ function renderStudio(d, state) {
     link.addEventListener('click', (ev) => { ev.preventDefault(); openPaper(link.dataset.openPaper, S.slug); });
   });
   updateSpawnLabel();
+  renderSteps(state, papers, ideas);
   drawGraph(papers, ideas);
+}
+
+// Each step reports its own state, and the first unfinished one is marked
+// current so there is always one obvious next thing to press.
+function renderSteps(state, papers, ideas) {
+  const edges = ideas.reduce((n, i) => n + (i.derived_from || []).length, 0);
+  const spawned = ideas.filter((i) => i.status === 'spawned').length;
+  const running = (job) => state[`${job}_status`] === 'running';
+
+  const steps = [
+    {
+      id: 'mine',
+      done: papers.length > 0,
+      state: running('papers') ? 'mining…'
+        : papers.length ? `${papers.length} papers mined`
+        : (state.papers_error || 'not run yet'),
+    },
+    {
+      id: 'ideas',
+      done: ideas.length > 0,
+      state: running('ideas') ? 'generating, a few minutes…'
+        : ideas.length ? `${ideas.length} ideas`
+        : (state.ideas_error || 'not run yet'),
+    },
+    {
+      id: 'link',
+      done: edges > 0,
+      state: running('link') ? 'grounding and verifying…'
+        : edges ? `${edges} citations across ${ideas.filter((i) => (i.derived_from || []).length).length} ideas`
+        : (state.link_error || 'ideas are not grounded yet'),
+    },
+    {
+      id: 'spawn',
+      done: spawned > 0,
+      state: spawned ? `${spawned} paper task(s) created` : 'nothing picked yet',
+    },
+  ];
+  const current = steps.findIndex((s) => !s.done);
+  steps.forEach((s, i) => {
+    const node = document.querySelector(`.rf-step[data-step="${s.id}"]`);
+    if (!node) return;
+    node.classList.toggle('is-done', s.done);
+    node.classList.toggle('is-current', i === current);
+    const label = el(`step-${s.id}-state`);
+    if (label) label.textContent = s.state;
+  });
 }
 
 function updateSpawnLabel() {
@@ -280,9 +335,12 @@ function updateSpawnLabel() {
 
 // ===== knowledge graph =====
 //
-// A small force simulation rather than a charting library: the graph is two
-// node kinds and one edge kind, and 120 lines of Verlet-ish relaxation keeps
-// the page dependency-free and instant to load.
+// The data is bipartite - ideas derive from prior work, never from each other -
+// so it is drawn as two columns rather than relaxed into a force layout. A
+// force graph of the same edges was unreadable: labels sit beside their node
+// and collide long before the circles do, and the result looked like tangle
+// however it was tuned. Columns cannot overlap, and reading left to right is
+// the same direction as "this idea came from that paper".
 
 // Readable on the paper-white ground, and distinguishable under the common
 // colour-vision deficiencies.
@@ -301,8 +359,6 @@ const NODE_STYLE = {
   external: { fill: '#f5f3ed', stroke: '#cfc9bb', width: '1.2' },
 };
 
-let GRAPH = { nodes: [], links: [], raf: 0, drag: null };
-
 function graphNodesFrom(papers, ideas) {
   const nodes = [];
   const links = [];
@@ -312,8 +368,7 @@ function graphNodesFrom(papers, ideas) {
     if (byKey.has(key)) return byKey.get(key);
     const node = {
       id: key, kind: mined ? 'paper' : 'external',
-      label, url, r: mined ? 7 : 5.5,
-      x: 0, y: 0, vx: 0, vy: 0,
+      label, url, r: mined ? 6.5 : 5, x: 0, y: 0,
     };
     byKey.set(key, node);
     nodes.push(node);
@@ -328,8 +383,8 @@ function graphNodesFrom(papers, ideas) {
   ideas.forEach((idea) => {
     const node = {
       id: `idea:${idea.id}`, kind: 'idea', label: idea.title,
-      idea, r: 9 + Math.min(5, Number(idea.score || 0) * 5),
-      x: 0, y: 0, vx: 0, vy: 0,
+      idea, r: 8 + Math.min(4, Number(idea.score || 0) * 4), x: 0, y: 0,
+      hover: idea.hypothesis || idea.title,
     };
     nodes.push(node);
     (idea.derived_from || []).forEach((edge) => {
@@ -349,6 +404,15 @@ function graphNodesFrom(papers, ideas) {
         target = addPaper(edge.paper || edge.title, edge.title || edge.paper,
           edge.paper ? `https://arxiv.org/abs/${edge.paper}` : '', false);
       }
+      // What OpenAlex confirmed about this citation, shown beside the node so
+      // an unverified reference is visible rather than implied.
+      if (edge.verified === true) {
+        target.meta = `✓${edge.cited_by ? ` ${edge.cited_by} cites` : ''}`;
+        target.hover = `${edge.real_title || target.label}${edge.year ? ` (${edge.year})` : ''}`;
+      } else if (edge.paper && edge.verified === false) {
+        target.meta = '✗ unverified';
+        target.hover = `${target.label} — arXiv ${edge.paper} could not be confirmed`;
+      }
       links.push({ source: node, target, relation: edge.relation });
     });
   });
@@ -363,74 +427,88 @@ function graphNodesFrom(papers, ideas) {
   return { nodes: kept, links, dropped: nodes.length - kept.length };
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+
+function svgEl(name, attrs = {}) {
+  const node = document.createElementNS(SVG_NS, name);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
+  return node;
+}
+
 function drawGraph(papers, ideas) {
   const svg = el('graph');
   const { nodes, links, dropped } = graphNodesFrom(papers || [], ideas || []);
-  el('graph-empty').hidden = nodes.length > 0;
-  const counts = nodes.length
-    ? `<span class="rf-legend-item">${nodes.filter((n) => n.kind === 'idea').length} ideas · `
-      + `${nodes.length - nodes.filter((n) => n.kind === 'idea').length} cited works`
+  const works = nodes.filter((n) => n.kind !== 'idea');
+  const ours = nodes.filter((n) => n.kind === 'idea');
+
+  el('graph-empty').hidden = links.length > 0;
+  el('graph-legend').innerHTML = links.length
+    ? `<span class="rf-legend-item">${ours.length} ideas · ${works.length} cited works`
       + `${dropped ? ` · ${dropped} mined but uncited` : ''}</span>`
+      + Object.entries(RELATION_COLOR).map(([name, color]) =>
+          `<span class="rf-legend-item"><span class="rf-legend-dot" style="background:${color}"></span>${name}</span>`).join('')
     : '';
-  el('graph-legend').innerHTML = nodes.length
-    ? counts + Object.entries(RELATION_COLOR).map(([name, color]) =>
-        `<span class="rf-legend-item"><span class="rf-legend-dot" style="background:${color}"></span>${name}</span>`).join('')
-    : '';
-  cancelAnimationFrame(GRAPH.raf);
   svg.innerHTML = '';
-  if (!nodes.length) return;
+  if (!links.length) return;
 
-  const w = svg.clientWidth || 900;
-  const h = svg.clientHeight || 520;
-  nodes.forEach((n, i) => {
-    // Seed ideas and papers on two rings so the first frame is already legible.
-    const ring = n.kind === 'idea' ? 0.22 : 0.40;
-    const a = (i / nodes.length) * Math.PI * 2;
-    n.x = w / 2 + Math.cos(a) * w * ring;
-    n.y = h / 2 + Math.sin(a) * h * ring;
+  // Order the left column so edges cross as little as possible: a cited work
+  // sits at the average height of the ideas that cite it.
+  const rows = Math.max(works.length, ours.length);
+  const rowH = 34;
+  const top = 28;
+  const height = top * 2 + Math.max(1, rows - 1) * rowH;
+  const width = svg.clientWidth || 900;
+  const leftX = 210;
+  const rightX = Math.max(leftX + 220, width - 330);
+
+  ours.forEach((n, i) => { n.x = rightX; n.y = top + i * (ours.length > 1 ? (height - 2 * top) / (ours.length - 1) : 0); });
+  works.forEach((n) => {
+    const mine = links.filter((l) => l.target === n).map((l) => l.source.y);
+    n.order = mine.length ? mine.reduce((a, b) => a + b, 0) / mine.length : height;
   });
+  works.sort((a, b) => a.order - b.order);
+  works.forEach((n, i) => { n.x = leftX; n.y = top + i * (works.length > 1 ? (height - 2 * top) / (works.length - 1) : 0); });
 
-  const ns = 'http://www.w3.org/2000/svg';
-  const gLinks = document.createElementNS(ns, 'g');
-  const gNodes = document.createElementNS(ns, 'g');
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('height', String(height));
+  const gLinks = svgEl('g');
+  const gNodes = svgEl('g');
   svg.append(gLinks, gNodes);
 
   links.forEach((link) => {
-    link.line = document.createElementNS(ns, 'line');
-    link.line.setAttribute('class', 'rf-edge-line');
-    link.line.setAttribute('stroke', RELATION_COLOR[link.relation] || RELATION_COLOR['relates-to']);
-    link.line.setAttribute('stroke-opacity', '0.65');
-    gLinks.appendChild(link.line);
+    const { source: a, target: b } = link;
+    const mid = (a.x + b.x) / 2;
+    link.path = svgEl('path', {
+      class: 'rf-edge-line',
+      d: `M ${b.x} ${b.y} C ${mid} ${b.y}, ${mid} ${a.y}, ${a.x} ${a.y}`,
+      stroke: RELATION_COLOR[link.relation] || RELATION_COLOR['relates-to'],
+      'stroke-opacity': 0.55,
+    });
+    gLinks.appendChild(link.path);
   });
 
-  nodes.forEach((node) => {
-    const g = document.createElementNS(ns, 'g');
-    g.setAttribute('class', `rf-node is-${node.kind}`);
+  const paint = (node, side) => {
+    const g = svgEl('g', { class: `rf-node is-${node.kind}`, transform: `translate(${node.x},${node.y})` });
     const style = NODE_STYLE[node.kind] || NODE_STYLE.paper;
-    const c = document.createElementNS(ns, 'circle');
-    c.setAttribute('r', String(node.r));
-    c.setAttribute('fill', style.fill);
-    c.setAttribute('stroke', style.stroke);
-    c.setAttribute('stroke-width', style.width);
-    const label = document.createElementNS(ns, 'text');
-    const short = node.label.length > 34 ? node.label.slice(0, 33) + '…' : node.label;
-    label.textContent = short;
-    label.setAttribute('x', String(node.r + 6));
-    label.setAttribute('y', '3.5');
-    g.append(c, label);
-    gNodes.appendChild(g);
-    node.g = g;
-
-    g.addEventListener('pointerdown', (ev) => {
-      GRAPH.drag = node; node.fixed = true;
-      g.setPointerCapture(ev.pointerId);
+    g.appendChild(svgEl('circle', {
+      r: node.r, fill: style.fill, stroke: style.stroke, 'stroke-width': style.width,
+    }));
+    const label = svgEl('text', {
+      x: side === 'left' ? -(node.r + 8) : node.r + 8,
+      y: 3.5,
+      'text-anchor': side === 'left' ? 'end' : 'start',
     });
-    g.addEventListener('pointermove', (ev) => {
-      if (GRAPH.drag !== node) return;
-      const pt = svgPoint(svg, ev);
-      node.x = pt.x; node.y = pt.y; node.vx = node.vy = 0;
-    });
-    g.addEventListener('pointerup', () => { GRAPH.drag = null; node.fixed = false; });
+    label.textContent = clip(node.label, side === 'left' ? 26 : 40);
+    g.appendChild(label);
+    if (side === 'left' && node.meta) {
+      const meta = svgEl('text', { x: node.r + 8, y: 3.5, class: 'rf-node-meta' });
+      meta.textContent = node.meta;
+      g.appendChild(meta);
+    }
+    const title = svgEl('title');
+    title.textContent = node.hover || node.label;
+    g.appendChild(title);
     g.addEventListener('click', () => {
       if (node.kind === 'idea') {
         const card = document.querySelector(`[data-idea="${CSS.escape(node.idea.id)}"]`);
@@ -439,65 +517,35 @@ function drawGraph(papers, ideas) {
         window.open(node.url, '_blank', 'noreferrer');
       }
     });
-  });
-
-  GRAPH = { nodes, links, raf: 0, drag: GRAPH.drag };
-  let alpha = 1;
-  const step = () => {
-    alpha *= 0.99;
-    simulate(nodes, links, w, h, alpha);
-    links.forEach((l) => {
-      l.line.setAttribute('x1', l.source.x); l.line.setAttribute('y1', l.source.y);
-      l.line.setAttribute('x2', l.target.x); l.line.setAttribute('y2', l.target.y);
+    // Dim everything that is not on this node's edges, so one hover answers
+    // "what does this idea rest on" without reading the whole picture.
+    g.addEventListener('mouseenter', () => {
+      const near = new Set([node]);
+      links.forEach((l) => {
+        if (l.source === node || l.target === node) { near.add(l.source); near.add(l.target); }
+      });
+      nodes.forEach((n) => n.g.classList.toggle('is-dim', !near.has(n)));
+      links.forEach((l) => l.path.setAttribute(
+        'stroke-opacity', l.source === node || l.target === node ? '0.95' : '0.10'));
     });
-    nodes.forEach((n) => n.g.setAttribute('transform', `translate(${n.x},${n.y})`));
-    if (alpha > 0.008) GRAPH.raf = requestAnimationFrame(step);
+    g.addEventListener('mouseleave', () => {
+      nodes.forEach((n) => n.g.classList.remove('is-dim'));
+      links.forEach((l) => l.path.setAttribute('stroke-opacity', '0.55'));
+    });
+    gNodes.appendChild(g);
+    node.g = g;
   };
-  step();
-}
 
-function svgPoint(svg, ev) {
-  const rect = svg.getBoundingClientRect();
-  return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
-}
+  works.forEach((n) => paint(n, 'left'));
+  ours.forEach((n) => paint(n, 'right'));
 
-function simulate(nodes, links, w, h, alpha) {
-  // Repulsion between every pair, springs along the edges, and a gentle pull
-  // to the middle. Node counts here are tens, so O(n^2) is free.
-  for (let i = 0; i < nodes.length; i++) {
-    const a = nodes[i];
-    for (let j = i + 1; j < nodes.length; j++) {
-      const b = nodes[j];
-      let dx = b.x - a.x, dy = b.y - a.y;
-      let dist = Math.hypot(dx, dy) || 0.01;
-      let push = (9000 * alpha) / (dist * dist);
-      // Labels sit to the right of a node, so two nodes at the same height
-      // collide long before their circles do. Push hard when that close.
-      if (dist < 120) push += (120 - dist) * 0.09 * alpha;
-      dx /= dist; dy /= dist;
-      a.vx -= dx * push; a.vy -= dy * push;
-      b.vx += dx * push; b.vy += dy * push;
-    }
-  }
-  links.forEach((l) => {
-    const dx = l.target.x - l.source.x, dy = l.target.y - l.source.y;
-    const dist = Math.hypot(dx, dy) || 0.01;
-    const force = (dist - 190) * 0.010 * alpha;
-    const ux = (dx / dist) * force, uy = (dy / dist) * force;
-    l.source.vx += ux; l.source.vy += uy;
-    l.target.vx -= ux; l.target.vy -= uy;
-  });
-  nodes.forEach((n) => {
-    n.vx += (w / 2 - n.x) * 0.0016 * alpha;
-    n.vy += (h / 2 - n.y) * 0.0016 * alpha;
-    if (!n.fixed) {
-      n.x += (n.vx *= 0.82);
-      n.y += (n.vy *= 0.82);
-    }
-    const pad = 70;
-    n.x = Math.max(pad, Math.min(w - pad, n.x));
-    n.y = Math.max(24, Math.min(h - 24, n.y));
-  });
+  const heading = (x, text, anchor) => {
+    const t = svgEl('text', { x, y: 14, class: 'rf-graph-heading', 'text-anchor': anchor });
+    t.textContent = text;
+    svg.appendChild(t);
+  };
+  heading(leftX, 'PRIOR WORK', 'end');
+  heading(rightX, 'IDEAS', 'start');
 }
 
 // ===== paper =====
