@@ -353,15 +353,27 @@ function graphNodesFrom(papers, ideas) {
     });
   });
 
-  return { nodes, links };
+  // A mined paper nobody derived from is not part of a derivation graph - it
+  // is just a search result, and it is already listed under Recent work. With
+  // thirty of them they crowd the connected subgraph into a corner, so keep
+  // only the papers an idea actually points at.
+  const connected = new Set();
+  links.forEach((l) => { connected.add(l.source.id); connected.add(l.target.id); });
+  const kept = nodes.filter((n) => n.kind === 'idea' || connected.has(n.id));
+  return { nodes: kept, links, dropped: nodes.length - kept.length };
 }
 
 function drawGraph(papers, ideas) {
   const svg = el('graph');
-  const { nodes, links } = graphNodesFrom(papers || [], ideas || []);
+  const { nodes, links, dropped } = graphNodesFrom(papers || [], ideas || []);
   el('graph-empty').hidden = nodes.length > 0;
+  const counts = nodes.length
+    ? `<span class="rf-legend-item">${nodes.filter((n) => n.kind === 'idea').length} ideas · `
+      + `${nodes.length - nodes.filter((n) => n.kind === 'idea').length} cited works`
+      + `${dropped ? ` · ${dropped} mined but uncited` : ''}</span>`
+    : '';
   el('graph-legend').innerHTML = nodes.length
-    ? Object.entries(RELATION_COLOR).map(([name, color]) =>
+    ? counts + Object.entries(RELATION_COLOR).map(([name, color]) =>
         `<span class="rf-legend-item"><span class="rf-legend-dot" style="background:${color}"></span>${name}</span>`).join('')
     : '';
   cancelAnimationFrame(GRAPH.raf);
@@ -432,14 +444,14 @@ function drawGraph(papers, ideas) {
   GRAPH = { nodes, links, raf: 0, drag: GRAPH.drag };
   let alpha = 1;
   const step = () => {
-    alpha *= 0.985;
+    alpha *= 0.99;
     simulate(nodes, links, w, h, alpha);
     links.forEach((l) => {
       l.line.setAttribute('x1', l.source.x); l.line.setAttribute('y1', l.source.y);
       l.line.setAttribute('x2', l.target.x); l.line.setAttribute('y2', l.target.y);
     });
     nodes.forEach((n) => n.g.setAttribute('transform', `translate(${n.x},${n.y})`));
-    if (alpha > 0.02) GRAPH.raf = requestAnimationFrame(step);
+    if (alpha > 0.008) GRAPH.raf = requestAnimationFrame(step);
   };
   step();
 }
@@ -458,7 +470,10 @@ function simulate(nodes, links, w, h, alpha) {
       const b = nodes[j];
       let dx = b.x - a.x, dy = b.y - a.y;
       let dist = Math.hypot(dx, dy) || 0.01;
-      const push = (2600 * alpha) / (dist * dist);
+      let push = (9000 * alpha) / (dist * dist);
+      // Labels sit to the right of a node, so two nodes at the same height
+      // collide long before their circles do. Push hard when that close.
+      if (dist < 120) push += (120 - dist) * 0.09 * alpha;
       dx /= dist; dy /= dist;
       a.vx -= dx * push; a.vy -= dy * push;
       b.vx += dx * push; b.vy += dy * push;
@@ -467,7 +482,7 @@ function simulate(nodes, links, w, h, alpha) {
   links.forEach((l) => {
     const dx = l.target.x - l.source.x, dy = l.target.y - l.source.y;
     const dist = Math.hypot(dx, dy) || 0.01;
-    const force = (dist - 150) * 0.012 * alpha;
+    const force = (dist - 190) * 0.010 * alpha;
     const ux = (dx / dist) * force, uy = (dy / dist) * force;
     l.source.vx += ux; l.source.vy += uy;
     l.target.vx -= ux; l.target.vy -= uy;
@@ -646,6 +661,10 @@ el('btn-mine').addEventListener('click', async () => {
 });
 el('btn-ideas').addEventListener('click', async () => {
   await act(S.slug, 'ideas', { count: Number(el('studio-count').value || 6) }, 'Idea generation');
+  loadTask();
+});
+el('btn-link').addEventListener('click', async () => {
+  await act(S.slug, 'link', {}, 'Linking ideas');
   loadTask();
 });
 el('btn-spawn').addEventListener('click', async () => {

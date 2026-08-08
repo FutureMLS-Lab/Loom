@@ -3719,6 +3719,30 @@ def _ar_ideas_job(root: Path, slug: str, count: int, model: str) -> None:
         print(f"[ar] {slug}: idea generation failed - {res.get('error')}", flush=True)
 
 
+def _ar_link_job(root: Path, slug: str, model: str) -> None:
+    state = ar.read_ar_state(root, slug)
+    log = _ar_logger(root, slug, ar.JOB_IDEAS, reset=False)
+    res = ar.link_ideas(state, model=model, on_line=log)
+    if not res.get("ok"):
+        log(f"failed: {res.get('error')}")
+        ar.update_ar_state(
+            root, slug, link_status="error", link_error=str(res.get("error") or "")
+        )
+        return
+    ar.update_ar_state(
+        root,
+        slug,
+        ideas=res.get("ideas") or state.get("ideas") or [],
+        link_status="done",
+        link_error="",
+        ideas_updated_at=_iso_now(),
+        cost_usd=round(
+            float(state.get("cost_usd") or 0.0) + float(res.get("cost") or 0.0), 4
+        ),
+    )
+    print(f"[ar] {slug}: linked {res.get('linked')} idea(s) to prior work", flush=True)
+
+
 def _ar_review_job(root: Path, slug: str, model: str) -> None:
     """One out-of-band review, triggered from the panel rather than the loop."""
     state = ar.read_ar_state(root, slug)
@@ -4689,6 +4713,18 @@ def make_handler(
                 model = str(body.get("model", "")).strip() or _ar_headless_model(meta)
                 ar.update_ar_state(root, slug, ideas_status="running", ideas_error="")
                 _ar_run_async(_ar_ideas_job, root, slug, count, model)
+                return {"ok": True, "status": "running"}, 202
+
+            if action == "link":
+                state, err = self._ar_require_state(root, slug, ar.ROLE_STUDIO)
+                if state is None:
+                    return {"ok": False, "error": err}, 400
+                if str(state.get("link_status")) == "running":
+                    return {"ok": True, "status": "running"}, 202
+                meta = read_meta(root, slug)
+                model = str(body.get("model", "")).strip() or _ar_headless_model(meta)
+                ar.update_ar_state(root, slug, link_status="running", link_error="")
+                _ar_run_async(_ar_link_job, root, slug, model)
                 return {"ok": True, "status": "running"}, 202
 
             if action == "spawn":

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Research Factory</title>
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
-  <link rel="stylesheet" href="/static/factory.css?v=20260807-1" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260807-2" />
 </head>
 <body>
 
@@ -64,6 +64,7 @@
       <button type="button" class="rf-btn" id="btn-mine">Mine arXiv</button>
       <label class="rf-check">ideas <input type="number" id="studio-count" min="1" max="12" value="6" /></label>
       <button type="button" class="rf-btn" id="btn-ideas">Generate ideas</button>
+      <button type="button" class="rf-btn" id="btn-link" title="Read each idea's novelty text and recover the prior work it cites, for ideas that have no edges yet">Link to papers</button>
       <button type="button" class="rf-btn rf-btn--primary" id="btn-spawn">Create papers</button>
     </div>
   </section>
@@ -205,6 +206,6 @@
 
 <div class="rf-toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/factory.js?v=20260807-1"></script>
+<script src="/static/factory.js?v=20260807-2"></script>
 </body>
 </html>

@@ -1422,6 +1422,88 @@ def propose_ideas(
     return {"ok": True, "ideas": ideas}
 
 
+def link_ideas(
+    state: dict[str, Any],
+    *,
+    model: str = "",
+    timeout: int = 600,
+    on_line: Any = None,
+) -> dict[str, Any]:
+    """Recover the graph edges for ideas that have none.
+
+    An idea's ``novelty`` field already names the work it stands on or against
+    - that is what makes it a novelty claim - but ideas proposed before edges
+    existed, or pasted in by hand, carry that only as prose. This reads it back
+    out as structured edges, leaving everything else about the idea untouched.
+    """
+    ideas = [i for i in (state.get("ideas") or []) if isinstance(i, dict)]
+    todo = [i for i in ideas if not i.get("derived_from")]
+    if not todo:
+        return {"ok": True, "ideas": ideas, "linked": 0}
+
+    papers = [p for p in (state.get("papers") or []) if isinstance(p, dict)]
+    paper_block = "\n".join(
+        f"- {p.get('arxiv_id', '')} {p.get('title', '')}" for p in papers[:40]
+    ) or "(none mined)"
+    idea_block = "\n\n".join(
+        f"id: {i['id']}\ntitle: {i.get('title', '')}\nnovelty: {i.get('novelty', '')}"
+        for i in todo
+    )
+    prompt = f"""You are grounding research ideas against the prior work they cite.
+
+Each idea below has a `novelty` paragraph that already names the work it builds
+on or argues against. Turn that prose into the edges of a knowledge graph.
+
+Papers mined for this direction (arXiv id, then title):
+{paper_block}
+
+Ideas:
+{idea_block}
+
+Reply with JSON only - an array, one entry per idea:
+
+[{{"id": "<the idea's id, copied exactly>",
+  "derived_from": [
+    {{"paper": "<arXiv id, bare, or empty>", "title": "<short name, e.g. QeRL>",
+     "relation": "<{'|'.join(IDEA_RELATIONS[:-1])}>"}}
+  ]}}]
+
+Rules:
+- Use the arXiv id whenever the novelty text gives one, or when the named work
+  matches a mined paper above. Work named without an id still gets an edge,
+  with the title alone.
+- Choose the relation from what the text actually says, not from what would
+  sound strongest: "asserts X but never runs the control" is controls-for;
+  "eliminates/aligns/corrects" that the idea builds past is extends; "we
+  predict their explanation is wrong" is contradicts.
+- Two to four edges per idea. Do not invent work the novelty text never names.
+"""
+    if on_line is not None:
+        on_line(f"linking {len(todo)} idea(s) against {len(papers)} mined paper(s)")
+    res = _run_headless(prompt, model=model, timeout=timeout, on_line=on_line)
+    if not res.get("ok"):
+        return res
+    raw = _extract_json_array(str(res.get("text") or ""))
+    if raw is None:
+        return {"ok": False, "error": "model did not return a JSON array of links"}
+
+    by_id = {str(i["id"]): i for i in ideas}
+    linked = 0
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        idea = by_id.get(str(entry.get("id") or ""))
+        if idea is None:
+            continue
+        edges = [e for e in (normalize_edge(x) for x in (entry.get("derived_from") or [])) if e]
+        if edges:
+            idea["derived_from"] = edges
+            linked += 1
+    if on_line is not None:
+        on_line(f"linked {linked} idea(s)")
+    return {"ok": True, "ideas": ideas, "linked": linked, "cost": res.get("cost", 0.0)}
+
+
 # --- Reviewer ---------------------------------------------------------------
 
 _SCORE_FIELDS = {
