@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+from loom import agent_hooks
 from loom import ar_task as ar
 from loom.openclaw import OpenClawClient, OpenClawConfig, openclaw_status
 from loom.paths import (
@@ -2979,8 +2980,13 @@ class ClaudeRegistry:
                 "already_running": True,
             }
 
+        # Name the task in the pane's environment. The agent's stop hook
+        # inherits it and can say exactly which task just finished - its own
+        # event only reports the repository root, which is the same for every
+        # task in a project.
+        pane_env = {"LOOM_TASK_ID": f"{project_id}/{slug}", **(env or {})}
         env_args: list[str] = []
-        for key, value in (env or {}).items():
+        for key, value in pane_env.items():
             env_args += ["-e", f"{key}={value}"]
         try:
             subprocess.run(
@@ -3581,6 +3587,11 @@ class AgentActivityWatcher:
                                 entry["finished_at"] = now
                 with self._lock:
                     for key in [k for k in self._state if k not in live]:
+                        # Keep an unread finish that a stop hook reported: the
+                        # task may not be in the target list yet, and dropping
+                        # it here would silently swallow the notification.
+                        if self._state[key].get("finished_at"):
+                            continue
                         self._state.pop(key, None)
             except Exception as exc:  # noqa: BLE001
                 print(f"[activity] loop error: {exc}", flush=True)
@@ -3610,6 +3621,55 @@ class AgentActivityWatcher:
             entry = self._state.get((project_id, slug))
             if entry:
                 entry["finished_at"] = 0.0
+
+    def report_finished(self, cwd: str, task_id: str = "") -> tuple[str, str] | None:
+        """Record a finish reported by the agent itself, via its stop hook.
+
+        Prefer the task Loom stamped on the pane. Fall back to matching the
+        reported directory against the task directories, for a pane started
+        outside Loom; longest match wins there, since a worktree sits inside a
+        task directory and the deeper path is the more specific answer.
+        """
+        if task_id and "/" in task_id:
+            pid, _, slug = task_id.partition("/")
+            if pid and slug:
+                self._mark_finished(pid, slug)
+                return pid, slug
+        try:
+            where = Path(cwd).expanduser().resolve()
+        except (OSError, RuntimeError):
+            return None
+        best: tuple[int, str, str] | None = None
+        for project in self.registry.list_projects():
+            pid, path = str(project.get("id") or ""), project.get("path")
+            if not pid or not path:
+                continue
+            try:
+                metas = list_tasks(Path(path))
+            except Exception:  # noqa: BLE001
+                continue
+            for meta in metas:
+                root = task_root(Path(path), meta.slug)
+                if where == root or root in where.parents:
+                    depth = len(root.parts)
+                    if best is None or depth > best[0]:
+                        best = (depth, pid, meta.slug)
+        if best is None:
+            return None
+        _, pid, slug = best
+        self._mark_finished(pid, slug)
+        return pid, slug
+
+    def _mark_finished(self, project_id: str, slug: str) -> None:
+        with self._lock:
+            entry = self._state.setdefault(
+                (project_id, slug), {"working": False, "idle_polls": 0, "finished_at": 0.0}
+            )
+            entry["working"] = False
+            # The agent said it stopped, so the poller has nothing left to
+            # confirm; without this it would re-announce the same finish.
+            entry["idle_polls"] = self.IDLE_CONFIRM
+            entry["finished_at"] = time.time()
 
 
 class TaskMonitorManager:
@@ -5013,6 +5073,26 @@ def make_handler(
             self.wfile.write(body)
             return False
 
+        def _agent_finished(self, body: dict[str, Any]) -> None:
+            """Handle an agent's own report that its turn ended.
+
+            Authorised by the hook token rather than the web session, and
+            deliberately loopback-only: the caller is a local process on this
+            host, so nothing about it should be reachable from the network.
+            """
+            client = (self.client_address or ("",))[0]
+            token = self.headers.get("X-Loom-Hook-Token", "")
+            expected = agent_hooks.hook_token()
+            if client not in ("127.0.0.1", "::1") or not expected or not hmac.compare_digest(token, expected):
+                st, b, h = _json_bytes({"ok": False}, status=403)
+                self._send(st, b, h)
+                return
+            hit = activity_watcher.report_finished(
+                str(body.get("cwd", "")), str(body.get("task", ""))
+            )
+            st, b, h = _json_bytes({"ok": bool(hit), "task": hit[1] if hit else ""})
+            self._send(st, b, h)
+
         def _claude_session_summary(self, project_id: str, slug: str, meta) -> dict[str, Any]:
             agent = normalize_agent(meta.agent)
             root = pr.get_path(project_id)
@@ -6034,9 +6114,15 @@ def make_handler(
         # ===== POST =====
 
         def do_POST(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            # An agent's stop hook reports here. It runs outside any browser
+            # session, so it carries its own narrow credential instead of the
+            # web token - checked before _require_auth, which would reject it.
+            if parsed.path == "/api/activity/finished":
+                self._agent_finished(_read_json(self))
+                return
             if not self._require_auth():
                 return
-            parsed = urlparse(self.path)
             path = parsed.path
             body = _read_json(self)
 
@@ -7732,6 +7818,11 @@ def serve(
     sk = default_skills if default_skills.is_file() else bundled_skills_path().resolve()
     activity_watcher = AgentActivityWatcher(web_project_registry)
     activity_watcher.start()
+    # Agents that support a stop hook report their own completion, which beats
+    # watching their pane for it. The watcher above stays as the fallback for
+    # the ones that don't.
+    for _note in agent_hooks.install(port):
+        print(f"  Stop hook {_note}", flush=True)
     ar_manager = ARLoopManager(openclaw_client, claude_registry, sk)
     _ar_swept = ar_manager.sweep_stale_jobs(_monitor_projects)
     if _ar_swept:
