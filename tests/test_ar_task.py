@@ -58,6 +58,90 @@ Recommendation: weak reject
 def test_normalize_kind_maps_legacy_aris() -> None:
     assert ar.normalize_kind("aris") == ar.KIND_AR
     assert ar.normalize_kind("ARIS") == ar.KIND_AR
+
+
+class TestAvailableActions:
+    """A button should only be live when pressing it would work."""
+
+    def test_a_fresh_paper_can_only_be_started(self):
+        can = ar.available_actions({"stage": ar.STAGE_DRAFT})
+        assert can["start"]["ok"]
+        assert can["start"]["action"] == "draft"
+        assert not can["stop"]["ok"]
+        assert not can["review"]["ok"], "there is nothing written to review"
+        assert not can["gate"]["ok"]
+        assert not can["pdf"]["ok"]
+
+    def test_a_gate_blocks_the_author_and_opens_the_decision(self):
+        can = ar.available_actions(
+            {"stage": ar.STAGE_AWAIT_DRAFT_REVIEW}, has_source=True
+        )
+        assert can["gate"]["ok"]
+        assert not can["start"]["ok"]
+        assert "waiting for you" in can["start"]["why"]
+
+    def test_stop_follows_the_loop_not_the_stage(self):
+        loop = {"stage": ar.STAGE_LOOP}
+        assert not ar.available_actions(loop)["stop"]["ok"]
+        assert ar.available_actions(loop, loop_running=True)["stop"]["ok"]
+        assert not ar.available_actions(loop, loop_running=True)["start"]["ok"]
+
+    def test_start_is_named_for_what_it_does(self):
+        loop = ar.available_actions({"stage": ar.STAGE_LOOP})["start"]
+        assert loop["action"] == "loop/start" and "loop" in loop["label"]
+        draft = ar.available_actions({"stage": ar.STAGE_DRAFT})["start"]
+        assert draft["action"] == "draft" and "draft" in draft["label"]
+
+    def test_delivered_stays_readable_but_not_restartable(self):
+        can = ar.available_actions(
+            {"stage": ar.STAGE_DELIVERED}, has_source=True, pdf_available=True
+        )
+        assert not can["start"]["ok"]
+        assert can["pdf"]["ok"] and can["build"]["ok"]
+
+    def test_every_refusal_explains_itself(self):
+        for stage in ar.STAGE_LABELS:
+            for name, rule in ar.available_actions({"stage": stage}).items():
+                if not rule["ok"]:
+                    assert rule["why"], f"{stage}/{name} refuses without saying why"
+
+
+class TestSkillCatalog:
+    def test_lists_the_roles_and_the_figure_skills(self):
+        skills = ar.skill_catalog()
+        roles = {s["role"] for s in skills}
+        assert {"Studio", "Author", "Reviewer"} <= roles
+        assert "Figures" in roles
+        assert all(s["id"] and s["description"] for s in skills)
+
+    def test_body_reads_a_catalogued_skill(self):
+        first = ar.skill_catalog()[0]
+        assert len(ar.skill_body(first["id"])) > 200
+
+    def test_body_refuses_anything_not_in_the_catalog(self):
+        assert ar.skill_body("../../../etc/passwd") == ""
+        assert ar.skill_body("/etc/passwd") == ""
+
+
+class TestBrowse:
+    def test_hides_generated_clutter(self, tmp_path):
+        (tmp_path / "code").mkdir()
+        (tmp_path / "__pycache__").mkdir()
+        (tmp_path / "run.py").write_text("print(1)")
+        (tmp_path / "model.safetensors").write_bytes(b"\x00" * 10)
+        entries = {e["name"]: e for e in ar.browse_dir(tmp_path)}
+        assert set(entries) == {"code", "run.py", "model.safetensors"}
+        assert entries["run.py"]["readable"]
+        assert not entries["model.safetensors"]["readable"], "weights are not text"
+        assert entries["code"]["dir"]
+
+    def test_reads_text_but_not_binaries(self, tmp_path):
+        src = tmp_path / "a.py"
+        src.write_text("x = 1\n")
+        assert ar.read_text_file(src) == "x = 1\n"
+        blob = tmp_path / "a.bin"
+        blob.write_bytes(b"\x00\x01")
+        assert ar.read_text_file(blob) == ""
     assert ar.normalize_kind("ar") == ar.KIND_AR
     assert ar.normalize_kind("kernel") == "kernel"
     assert ar.normalize_kind("") == "agent"

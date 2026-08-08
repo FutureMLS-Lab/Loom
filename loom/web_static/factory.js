@@ -19,6 +19,9 @@ const S = {
   busy: false,
   graphSel: '',              // node the user clicked into, '' when nothing is
   graphHide: new Set(),      // relations switched off in the legend
+  pane: '',                  // tmux target of the open paper's author
+  paneFollow: false,         // whether to keep tailing it
+  filePath: '',              // where the file browser is, under work/
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -105,8 +108,10 @@ function openPaper(slug, parent) {
   S.slug = slug;
   if (parent) S.parent = parent;
   S.data = null;
+  S.pane = ''; S.filePath = '';
   show('paper');
   loadTask();
+  openFiles('');
   writeHash(`paper/${slug}`);
 }
 
@@ -329,11 +334,28 @@ function renderSteps(state, papers, ideas) {
     const label = el(`step-${s.id}-state`);
     if (label) label.textContent = s.state;
   });
+
+  // A step whose input does not exist yet cannot run, so say so on the button
+  // rather than letting it be pressed and answer with an error.
+  const busy = running('papers') || running('ideas') || running('link');
+  setAction('btn-mine', { ok: !running('papers'), why: 'already mining' });
+  setAction('btn-ideas', {
+    ok: !busy && (papers.length > 0 || state.mode === 'seed'),
+    why: busy ? 'a job is already running' : 'mine the field first, or start the studio from your own idea',
+  });
+  setAction('btn-link', {
+    ok: !busy && ideas.length > 0,
+    why: busy ? 'a job is already running' : 'generate ideas first',
+  });
 }
 
 function updateSpawnLabel() {
   const n = S.picked.size;
-  el('btn-spawn').textContent = n ? `Create ${n} paper${n === 1 ? '' : 's'}` : 'Create papers';
+  const btn = el('btn-spawn');
+  btn.textContent = n ? `Create ${n} paper${n === 1 ? '' : 's'}` : 'Create papers';
+  btn.disabled = !n;
+  btn.title = n ? '' : 'Tick the ideas you want turned into papers';
+  el('ideas-picked').textContent = n ? `${n} selected` : 'none selected';
 }
 
 // ===== knowledge graph =====
@@ -726,6 +748,118 @@ function drawLegend(all, workCount, ideaCount) {
   });
 }
 
+// ===== the agent at work =====
+//
+// A read-only tail of the author's tmux pane. Loom owns the interactive
+// terminal; repeating it here would mean a second place to get input handling
+// wrong, and watching is the thing you actually want from this page.
+
+function renderPane() {
+  const status = el('pane-status');
+  const view = el('pane-view');
+  el('btn-open-loom').href = S.slug
+    ? `/?project=${encodeURIComponent(S.project)}#task=${encodeURIComponent(S.slug)}`
+    : '/';
+  if (!S.pane) {
+    view.hidden = true;
+    status.textContent = 'No agent session yet — it starts when the author does.';
+    return;
+  }
+  status.textContent = S.paneFollow ? `Watching ${S.pane}` : `Session ${S.pane} — tick "live" to watch.`;
+  view.hidden = !S.paneFollow;
+}
+
+async function pollPane() {
+  if (S.paneFollow && S.pane && S.view === 'paper') {
+    try {
+      const d = await api(`/api/tmux/capture?target=${encodeURIComponent(S.pane)}&lines=60`);
+      const view = el('pane-view');
+      const atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 40;
+      view.textContent = d.text || '(the pane is empty)';
+      if (atBottom) view.scrollTop = view.scrollHeight;
+    } catch { /* the pane can die between polls; the next one will say so */ }
+  }
+  setTimeout(pollPane, 2000);
+}
+
+// ===== what the author wrote =====
+
+async function openFiles(path = '') {
+  S.filePath = path;
+  try {
+    const d = await api(`${taskPath(S.slug, '/files')}?path=${encodeURIComponent(path)}`);
+    renderFiles(d);
+  } catch (err) {
+    el('files-list').innerHTML = `<li class="rf-empty">${esc(err.message)}</li>`;
+    el('files-body').hidden = true;
+  }
+}
+
+function renderFiles(d) {
+  const crumbs = el('files-crumbs');
+  const parts = (d.path || '').split('/').filter(Boolean);
+  crumbs.innerHTML = ['work', ...parts].map((name, i) => {
+    const upto = parts.slice(0, i).join('/');
+    return i === parts.length
+      ? `<span>${esc(name)}</span>`
+      : `<button type="button" data-path="${esc(upto)}">${esc(name)}</button>`;
+  }).join('<span class="rf-crumbs__sep">/</span>');
+  crumbs.querySelectorAll('[data-path]').forEach((b) => {
+    b.onclick = () => openFiles(b.dataset.path);
+  });
+
+  const list = el('files-list');
+  const body = el('files-body');
+  if (!d.dir) {
+    body.hidden = false;
+    body.textContent = d.body || '(not a text file, or too large to show)';
+    return;
+  }
+  body.hidden = true;
+  const dir = d.path ? `${d.path}/` : '';
+  list.innerHTML = (d.entries || []).map((e) => {
+    const kb = e.dir ? '' : `${(e.size / 1024).toFixed(e.size < 10240 ? 1 : 0)} kB`;
+    const open = e.dir || e.readable;
+    return `<li class="${e.dir ? 'is-dir' : ''}${open ? '' : ' is-flat'}">
+      ${open ? `<button type="button" data-open="${esc(dir + e.name)}">${esc(e.name)}</button>`
+             : `<span>${esc(e.name)}</span>`}
+      <em>${esc(kb)}</em></li>`;
+  }).join('') || '<li class="rf-empty">Nothing here yet.</li>';
+  list.querySelectorAll('[data-open]').forEach((b) => {
+    b.onclick = () => openFiles(b.dataset.open);
+  });
+}
+
+// ===== skills =====
+
+async function openSkills() {
+  el('skills-modal').hidden = false;
+  const list = el('skills-list');
+  try {
+    const d = await api('/api/ar/skills');
+    let role = '';
+    list.innerHTML = (d.skills || []).map((s) => {
+      const head = s.role !== role ? `<li class="rf-skills__role">${esc(s.role)}</li>` : '';
+      role = s.role;
+      return `${head}<li><button type="button" data-skill="${esc(s.id)}">
+        <b>${esc(s.name)}</b><small>${esc(s.description)}</small></button></li>`;
+    }).join('') || '<li class="rf-empty">No skills installed.</li>';
+    list.querySelectorAll('[data-skill]').forEach((b) => {
+      b.onclick = async () => {
+        list.querySelectorAll('[data-skill]').forEach((o) => o.classList.remove('is-on'));
+        b.classList.add('is-on');
+        el('skills-body').textContent = 'Loading…';
+        try {
+          const one = await api(`/api/ar/skills?id=${encodeURIComponent(b.dataset.skill)}`);
+          el('skills-body').textContent = one.body || '(empty)';
+        } catch (err) { el('skills-body').textContent = err.message; }
+      };
+    });
+  } catch (err) {
+    list.innerHTML = `<li class="rf-empty">${esc(err.message)}</li>`;
+  }
+}
+
 // ===== paper =====
 
 const STAGES = [
@@ -736,11 +870,33 @@ const STAGES = [
   ['delivered', 'Delivered'],
 ];
 
+// The server decides what this paper can accept; the page only reflects it.
+// A disabled button carries the reason, so "why can't I press this" is
+// answered by the button itself rather than by pressing it and reading a toast.
+function setAction(id, rule, fallback) {
+  const btn = el(id);
+  if (!btn) return;
+  const ok = rule ? rule.ok !== false : Boolean(fallback);
+  btn.disabled = !ok;
+  btn.title = ok ? '' : ((rule && rule.why) || 'not available at this stage');
+  if (rule && rule.label) btn.textContent = rule.label;
+}
+
 function renderPaper(d, state) {
   const idea = state.idea || {};
   el('paper-title').textContent = idea.title || S.slug;
   el('paper-eyebrow').textContent = `Paper · ${String(state.venue || '').toUpperCase()}`;
   el('paper-hypothesis').textContent = idea.hypothesis || '';
+
+  const can = d.actions || {};
+  setAction('btn-paper-build', can.build);
+  setAction('btn-paper-pdf', can.pdf);
+  setAction('btn-paper-submission', can.submission);
+  setAction('btn-loop-start', can.start);
+  setAction('btn-loop-stop', can.stop);
+  setAction('btn-review-now', can.review);
+  S.pane = d.pane || '';
+  renderPane();
 
   const at = STAGES.findIndex(([id]) => id === state.stage);
   el('paper-pipeline').innerHTML = STAGES.map(([id, label], i) => {
@@ -903,6 +1059,24 @@ el('btn-spawn').addEventListener('click', async () => {
   loadTask();
 });
 
+el('btn-skills').addEventListener('click', openSkills);
+el('btn-skills-close').addEventListener('click', () => { el('skills-modal').hidden = true; });
+el('btn-goto-ideas').addEventListener('click', () => {
+  el('btn-spawn').closest('.rf-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+el('pane-follow').addEventListener('change', (ev) => {
+  S.paneFollow = ev.target.checked;
+  renderPane();
+});
+el('ideas-all').addEventListener('change', (ev) => {
+  document.querySelectorAll('#ideas-list [data-pick]:not(:disabled)').forEach((box) => {
+    box.checked = ev.target.checked;
+    if (box.checked) S.picked.add(box.dataset.pick); else S.picked.delete(box.dataset.pick);
+    box.closest('.rf-idea').classList.toggle('is-picked', box.checked);
+  });
+  updateSpawnLabel();
+});
+
 el('btn-paper-build').addEventListener('click', async () => {
   const d = await act(S.slug, 'build', {}, 'Build');
   if (d && d.build && !d.build.ok) toast(d.build.error || 'Build failed', true);
@@ -919,7 +1093,13 @@ el('btn-paper-submission').addEventListener('click', async () => {
   }
   loadTask();
 });
-el('btn-loop-start').addEventListener('click', async () => { await act(S.slug, 'loop/start', {}, 'Start loop'); loadTask(); });
+el('btn-loop-start').addEventListener('click', async () => {
+  // Seeding the skeleton and resuming the rounds are one button, because from
+  // here both mean "hand it back to the author"; the server names which it is.
+  const can = (S.data && S.data.actions && S.data.actions.start) || {};
+  await act(S.slug, can.action || 'loop/start', {}, 'Start');
+  loadTask();
+});
 el('btn-loop-stop').addEventListener('click', async () => { await act(S.slug, 'loop/stop', {}, 'Stop loop'); loadTask(); });
 el('btn-review-now').addEventListener('click', async () => { await act(S.slug, 'review', {}, 'Review'); loadTask(); });
 
@@ -1012,6 +1192,7 @@ el('btn-studio-create').addEventListener('click', async () => {
   }
   readHash();
   startPolling();
+  pollPane();
   window.addEventListener('hashchange', readHash);
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape' && S.graphSel) {

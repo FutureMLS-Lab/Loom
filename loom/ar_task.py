@@ -2011,6 +2011,57 @@ def progress_summary(state: dict[str, Any]) -> str:
     return label
 
 
+def available_actions(
+    state: dict[str, Any],
+    *,
+    loop_running: bool = False,
+    review_running: bool = False,
+    has_source: bool = False,
+    pdf_available: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Which actions this paper can accept right now, and why not otherwise.
+
+    The stage machine already refuses the wrong action, but only after it has
+    been pressed - so every button looked live and half of them answered with
+    an error. Deciding it here rather than in the page keeps one copy of the
+    rule, and the reason travels with the answer so a disabled button can say
+    what it is waiting for.
+    """
+    stage = str(state.get("stage") or STAGE_DRAFT)
+    at_gate = stage in (STAGE_AWAIT_DRAFT_REVIEW, STAGE_AWAIT_FINAL_REVIEW)
+    waiting = f"waiting for you: {STAGE_LABELS.get(stage, stage)}"
+
+    def allow(ok: bool, why: str = "") -> dict[str, Any]:
+        return {"ok": bool(ok), "why": "" if ok else why}
+
+    if stage == STAGE_DRAFT:
+        start = allow(not loop_running, "the author is already working")
+    elif stage == STAGE_LOOP:
+        start = allow(not loop_running, "the loop is already running")
+    elif at_gate:
+        start = allow(False, waiting)
+    else:
+        start = allow(False, "this paper has been delivered")
+
+    return {
+        # One button covers both, because from the outside they are the same
+        # act: hand the paper back to the author.
+        "start": {**start, "label": "Start the draft" if stage == STAGE_DRAFT else "Start the loop",
+                  "action": "draft" if stage == STAGE_DRAFT else "loop/start"},
+        "stop": allow(loop_running, "the loop is not running"),
+        "review": allow(
+            has_source and not review_running and stage != STAGE_DRAFT,
+            "a review is already running" if review_running
+            else ("there is no draft to review yet" if not has_source
+                  else "the draft has not been written yet"),
+        ),
+        "gate": allow(at_gate, "this paper is not waiting on your review"),
+        "build": allow(has_source, "there is no LaTeX source yet"),
+        "pdf": allow(pdf_available, "no PDF has been built yet"),
+        "submission": allow(has_source, "there is no paper to check yet"),
+    }
+
+
 # --- OpenReview submission prep ---------------------------------------------
 #
 # Loom prepares a submission; it never posts one. Everything below is
@@ -2417,6 +2468,101 @@ def figure_skills_block() -> str:
         lines.append(f"  {skill['name']} - {skill['description']}")
         lines.append(f"      {skill['path']}")
     return "\n".join(lines)
+
+
+# --- Browsing what the author wrote -----------------------------------------
+#
+# The experiments live as ordinary files under the task's work directory, and
+# there is no git history to diff against - the AR root is not a repository.
+# So the honest view is the tree itself.
+
+# Anything that is regenerated, huge, or not text. Showing them is noise at
+# best and a way to stream a checkpoint through the browser at worst.
+FILE_SKIP_DIRS = {
+    "__pycache__", ".git", ".ipynb_checkpoints", "node_modules", ".venv",
+    "venv", ".mypy_cache", ".pytest_cache", "wandb",
+}
+FILE_TEXT_SUFFIXES = {
+    ".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini",
+    ".sh", ".tex", ".bib", ".csv", ".log", ".jsonl", ".sty", ".bst", ".gitignore",
+}
+MAX_FILE_BYTES = 400_000
+
+
+def browse_dir(root: Path) -> list[dict[str, Any]]:
+    """One directory listing, folders first, skipping generated clutter."""
+    if not root.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in sorted(root.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
+        if entry.name in FILE_SKIP_DIRS or entry.name.startswith("."):
+            if entry.name not in (".gitignore",):
+                continue
+        try:
+            size = entry.stat().st_size if entry.is_file() else 0
+        except OSError:
+            continue
+        out.append({
+            "name": entry.name,
+            "dir": entry.is_dir(),
+            "size": size,
+            "readable": entry.is_file() and (
+                entry.suffix in FILE_TEXT_SUFFIXES and size <= MAX_FILE_BYTES
+            ),
+        })
+    return out
+
+
+def read_text_file(path: Path, limit: int = MAX_FILE_BYTES) -> str:
+    if not path.is_file() or path.suffix not in FILE_TEXT_SUFFIXES:
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[:limit]
+    except OSError:
+        return ""
+
+
+ROLE_SKILLS = (
+    (SKILL_STUDIO, "Studio", "Surveys the field and proposes grounded ideas."),
+    (SKILL_AUTHOR, "Author", "Writes the paper and runs the experiments behind it."),
+    (SKILL_REVIEWER, "Reviewer", "Reviews each round the way a venue would."),
+)
+
+
+def skill_catalog() -> list[dict[str, str]]:
+    """Every skill an AR agent is given, so the instructions can be read.
+
+    An agent's behaviour is mostly these files, and they were invisible from
+    the outside: you could see what an author did but not what it was told.
+    """
+    out: list[dict[str, str]] = []
+    for filename, role, summary in ROLE_SKILLS:
+        path = ar_skills_dir() / filename
+        if not path.is_file():
+            continue
+        out.append({
+            "id": filename, "name": filename.removesuffix(".md"), "role": role,
+            "description": summary, "path": str(path),
+        })
+    for skill in figure_skills():
+        doc = Path(skill["path"])
+        out.append({
+            "id": f"{FIGURE_SKILLS_SUBDIR}/{doc.parent.name}/SKILL.md",
+            "name": skill["name"], "role": "Figures",
+            "description": skill["description"], "path": skill["path"],
+        })
+    return out
+
+
+def skill_body(skill_id: str, limit: int = 60000) -> str:
+    """The text of one catalogued skill, refusing anything not in the catalog."""
+    for entry in skill_catalog():
+        if entry["id"] == skill_id:
+            try:
+                return Path(entry["path"]).read_text(encoding="utf-8", errors="replace")[:limit]
+            except OSError:
+                return ""
+    return ""
 
 
 def ar_skill_text(name: str, limit: int = 24000) -> str:

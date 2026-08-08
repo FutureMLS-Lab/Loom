@@ -77,6 +77,7 @@ from loom.rud_task import (
     load_skills_text,
     merge_worktree_to_base,
     normalize_agent,
+    path_under_task,
     prepare_task_worktree_from,
     push_worktree_branch,
     read_kernel_interview,
@@ -4723,6 +4724,18 @@ def make_handler(
                 },
             }
             if ar.is_paper(state):
+                payload["actions"] = ar.available_actions(
+                    state,
+                    loop_running=bool(payload["loop"].get("running")),
+                    review_running=str(state.get("review_status")) == "running",
+                    has_source=(paper_dir / "main.tex").is_file(),
+                    pdf_available=payload["pdf_available"],
+                )
+                # The pane the author runs in, so the Factory can show the work
+                # happening instead of only its result.
+                payload["pane"] = (
+                    (getattr(meta, "tmux_interview_target", "") or "") if meta else ""
+                )
                 payload["stage_label"] = ar.progress_summary(state)
                 payload["latest_review"] = ar.latest_review(state) or {}
                 payload["plateaued"] = ar.is_plateaued(state)
@@ -5375,6 +5388,51 @@ def make_handler(
                     self._bad_project()
                     return
                 st, b, h = _json_bytes({"tasks": [m.to_dict() for m in list_tasks(root)]})
+                self._send(st, b, h)
+                return
+
+            if path == "/api/ar/skills":
+                # What the agents are told, readable from the outside. One
+                # skill's body when asked for, otherwise the catalogue.
+                qs = parse_qs(parsed.query or "")
+                wanted = (qs.get("id") or [""])[0].strip()
+                if wanted:
+                    body = ar.skill_body(wanted)
+                    st, b, h = _json_bytes(
+                        {"ok": bool(body), "id": wanted, "body": body}
+                        if body else {"ok": False, "error": "no such skill"},
+                        200 if body else 404,
+                    )
+                else:
+                    st, b, h = _json_bytes({"ok": True, "skills": ar.skill_catalog()})
+                self._send(st, b, h)
+                return
+
+            m_ar_files = re.match(r"^/api/tasks/([^/]+)/ar/files$", path)
+            if m_ar_files:
+                root, _pid = self._resolve_scope(parsed)
+                if root is None:
+                    self._bad_project()
+                    return
+                slug = m_ar_files.group(1)
+                if not _SLUG_RE.match(slug):
+                    st, b, h = _json_bytes({"error": "invalid slug"}, 400)
+                    self._send(st, b, h)
+                    return
+                qs = parse_qs(parsed.query or "")
+                rel = (qs.get("path") or [""])[0].strip().lstrip("/")
+                base = task_root(root, slug) / "work"
+                target = path_under_task(base, rel) if rel else base
+                if target is None or not target.exists():
+                    st, b, h = _json_bytes({"ok": False, "error": "not found"}, 404)
+                elif target.is_dir():
+                    st, b, h = _json_bytes(
+                        {"ok": True, "path": rel, "dir": True, "entries": ar.browse_dir(target)}
+                    )
+                else:
+                    st, b, h = _json_bytes(
+                        {"ok": True, "path": rel, "dir": False, "body": ar.read_text_file(target)}
+                    )
                 self._send(st, b, h)
                 return
 

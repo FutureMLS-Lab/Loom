@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Research Factory</title>
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
-  <link rel="stylesheet" href="/static/factory.css?v=20260808-1" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260808-2" />
 </head>
 <body>
 
@@ -19,6 +19,7 @@
     <span class="rf-stat" id="stat-papers"><b>—</b> papers</span>
     <span class="rf-stat rf-stat--alert" id="stat-waiting" hidden><b>—</b> waiting on you</span>
     <span class="rf-stat" id="stat-cost"><b>—</b> spent</span>
+    <button type="button" class="rf-btn rf-btn--ghost" id="btn-skills">Skills</button>
     <button type="button" class="rf-btn rf-btn--ghost" id="btn-refresh">Refresh</button>
     <a class="rf-btn rf-btn--ghost" href="/">Loom</a>
   </nav>
@@ -105,7 +106,7 @@
         <h3>Create papers</h3>
         <p>Every idea you tick becomes its own task: a LaTeX draft, your review, then the author and reviewer rounds.</p>
         <div class="rf-step__actions">
-          <button type="button" class="rf-btn rf-btn--primary" id="btn-spawn">Create papers</button>
+          <button type="button" class="rf-btn" id="btn-goto-ideas">Choose ideas below</button>
           <span class="rf-hint" id="step-spawn-state"></span>
         </div>
       </div>
@@ -134,6 +135,13 @@
       <div class="rf-section__head">
         <h2>Ideas</h2>
         <span class="rf-hint" id="ideas-status"></span>
+      </div>
+      <!-- The control sits with the tick boxes it reads, not four steps up
+           the page where you cannot see what is selected. -->
+      <div class="rf-ideas__bar">
+        <label class="rf-check"><input type="checkbox" id="ideas-all" /> select all</label>
+        <span class="rf-hint" id="ideas-picked">none selected</span>
+        <button type="button" class="rf-btn rf-btn--primary rf-btn--sm" id="btn-spawn" disabled>Create papers</button>
       </div>
       <pre class="rf-log" id="ideas-log" hidden></pre>
       <div class="rf-ideas" id="ideas-list"></div>
@@ -193,6 +201,30 @@
     <ol class="rf-rounds" id="rounds-list"></ol>
   </section>
 
+  <section class="rf-section">
+    <div class="rf-section__head">
+      <h2>The agent at work</h2>
+      <div class="rf-section__actions">
+        <label class="rf-check"><input type="checkbox" id="pane-follow" /> live</label>
+        <a class="rf-btn rf-btn--sm rf-btn--ghost" id="btn-open-loom" href="/" target="_blank" rel="noreferrer">Open in Loom</a>
+      </div>
+    </div>
+    <p class="rf-hint" id="pane-status"></p>
+    <pre class="rf-pane" id="pane-view" hidden></pre>
+  </section>
+
+  <section class="rf-section">
+    <div class="rf-section__head">
+      <h2>What the author wrote</h2>
+      <span class="rf-hint">Experiments and manuscript, straight off disk.</span>
+    </div>
+    <nav class="rf-crumbs" id="files-crumbs"></nav>
+    <div class="rf-files">
+      <ul class="rf-files__list" id="files-list"></ul>
+      <pre class="rf-files__body" id="files-body" hidden></pre>
+    </div>
+  </section>
+
   <section class="rf-section" id="submission-section" hidden>
     <div class="rf-section__head"><h2>Submission readiness</h2></div>
     <ul class="rf-checklist" id="submission-checks"></ul>
@@ -247,8 +279,26 @@
   </div>
 </div>
 
+<!-- ============ Skills: what the agents are told ============ -->
+<div class="rf-modal" id="skills-modal" hidden>
+  <div class="rf-modal__card rf-modal__card--wide" role="dialog" aria-modal="true" aria-labelledby="skills-modal-title">
+    <div class="rf-modal__head">
+      <h2 id="skills-modal-title">Skills</h2>
+      <button type="button" class="rf-x" id="btn-skills-close" aria-label="Close">×</button>
+    </div>
+    <p class="rf-hint">
+      An agent's behaviour is mostly these instructions. The author is handed the
+      figure skills by name and reads the one it needs.
+    </p>
+    <div class="rf-skills">
+      <ul class="rf-skills__list" id="skills-list"></ul>
+      <pre class="rf-skills__body" id="skills-body">Pick a skill to read it.</pre>
+    </div>
+  </div>
+</div>
+
 <div class="rf-toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/factory.js?v=20260808-1"></script>
+<script src="/static/factory.js?v=20260808-2"></script>
 </body>
 </html>
