@@ -487,8 +487,14 @@ function drawGraph(papers, ideas) {
   const top = 28;
   const height = top * 2 + Math.max(1, rows - 1) * rowH;
   const width = svg.clientWidth || 900;
-  const leftX = 210;
-  const rightX = Math.max(leftX + 220, width - 330);
+  // Label room decides the columns, rather than the columns being fixed and
+  // the labels running off the edge: paper titles get a slice on the left,
+  // ideas get more on the right because their titles are whole sentences.
+  const leftX = Math.max(150, Math.min(230, Math.round(width * 0.22)));
+  const rightX = Math.max(leftX + 200, width - Math.max(230, Math.round(width * 0.3)));
+  const CHAR = 6.1; // average px per character of the 11px label face
+  const leftChars = Math.max(12, Math.floor((leftX - 18) / CHAR));
+  const rightChars = Math.max(14, Math.floor((width - rightX - 22) / CHAR));
 
   ours.forEach((n, i) => { n.x = rightX; n.y = top + i * (ours.length > 1 ? (height - 2 * top) / (ours.length - 1) : 0); });
   works.forEach((n) => {
@@ -500,6 +506,12 @@ function drawGraph(papers, ideas) {
 
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   svg.setAttribute('height', String(height));
+  // Edge labels need a gap wide enough to sit in without touching either
+  // column; when the window is too narrow the detail panel carries the words
+  // instead.
+  const tagRoom = rightX - leftX >= 300;
+  const tagMin = leftX + 130;
+  const tagMax = rightX - 60;
   const gLinks = svgEl('g');
   const gTags = svgEl('g');
   const gNodes = svgEl('g');
@@ -521,11 +533,15 @@ function drawGraph(papers, ideas) {
     // rather than at the midpoint: every edge of one idea converges on the
     // same point, so midpoint labels land on top of each other, while near the
     // papers they inherit the row spacing and stay apart.
+    if (!tagRoom) return;
     const t = 0.25;
     const u = 1 - t;
+    const curveX = u * u * u * b.x + 3 * u * t * (u + t) * mid + t * t * t * a.x;
     const tag = svgEl('text', {
       class: 'rf-edge-tag',
-      x: u * u * u * b.x + 3 * u * t * (u + t) * mid + t * t * t * a.x,
+      // Held clear of the "n cites" marks sitting just right of the papers,
+      // which is what the quarter point collides with on a narrow window.
+      x: Math.max(tagMin, Math.min(tagMax, curveX)),
       y: (u * u * u + 3 * u * u * t) * b.y + (3 * u * t * t + t * t * t) * a.y - 5,
       'text-anchor': 'middle', opacity: '0',
       fill: RELATION_COLOR[link.relation] || RELATION_COLOR['relates-to'],
@@ -544,10 +560,11 @@ function drawGraph(papers, ideas) {
     const style = NODE_STYLE[node.kind] || NODE_STYLE.paper;
     // A generous invisible target. The circles are 5-8px across, which is a
     // hard thing to hit and an easy thing to fall off mid-read.
+    const reach = side === 'left' ? leftX - 12 : width - rightX - 12;
     g.appendChild(svgEl('rect', {
       class: 'rf-node-hit',
-      x: side === 'left' ? -230 : -(node.r + 10), y: -rowH / 2,
-      width: 230 + node.r + 10, height: rowH, fill: 'transparent',
+      x: side === 'left' ? -reach : -(node.r + 10), y: -rowH / 2,
+      width: reach + node.r + 10, height: rowH, fill: 'transparent',
     }));
     g.appendChild(svgEl('circle', {
       class: 'rf-node-dot',
@@ -558,7 +575,7 @@ function drawGraph(papers, ideas) {
       y: 3.5,
       'text-anchor': side === 'left' ? 'end' : 'start',
     });
-    label.textContent = clip(node.label, side === 'left' ? 26 : 40);
+    label.textContent = clip(node.label, side === 'left' ? leftChars : rightChars);
     g.appendChild(label);
     if (side === 'left' && node.meta) {
       const meta = svgEl('text', { x: node.r + 8, y: 3.5, class: 'rf-node-meta' });
