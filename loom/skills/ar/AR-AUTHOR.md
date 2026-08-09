@@ -53,13 +53,19 @@ A figure belongs in `manuscript/figures/` and the script that drew it in
 
 Dedicated skills are installed under `loom/skills/ar/figures/`, and the round
 prompt lists them with their paths. Read the relevant `SKILL.md` before drawing
-rather than reaching for default matplotlib — each one carries a house style, a
-drawing kit in its `scripts/`, and a runnable example.
+rather than reaching for default matplotlib — each one carries a house style,
+procedural checks and a worked example; deterministic skills also carry a
+drawing kit in `scripts/`.
 
-- **teaser-figure-1** and **teaser-figure-2** — the page-one overview. Use
-  teaser-figure-2 when the paper has something concrete to draw and a real
-  measurement to plot; the tinted-panel variant when the contribution is a
-  mechanism with no drawable object.
+- **teaser-figure-1**, **teaser-figure-2** and **teaser-figure-3** — page-one
+  overviews. **Auto Research must proactively use teaser-figure-3 whenever it
+  creates or refreshes a teaser, Figure 1, overview, architecture or pipeline;
+  do not wait for the user to request a figure or name the skill.** It uses
+  Cursor GenerateImage and must be manually checked and iterated from reference
+  figures. An explicit user style override wins. Use teaser-figure-2 when
+  deterministic vector output must show concrete objects plus a real
+  measurement; teaser-figure-1 for a deterministic tinted-panel mechanism
+  diagram, complex formulas, or when image generation is unavailable.
 - **results-figure-1** and **results-figure-2** — the evidence plots. Use
   results-figure-2 whenever you have more than one seed, which for this
   pipeline is most of the time: showing the spread is what makes a small-scale
@@ -114,10 +120,15 @@ Each round you get the previous round's `review.md`. Work in this order:
    markers; generate every promised figure; finish every core section; resolve
    every citation/reference; and make every table and figure readable. A
    reviewer turn is never spent on an unfinished paper.
-6. **Rebuild and inspect the PDF.** Run `latexmk` until it exits cleanly, then
+6. **Create or refresh the page-one teaser automatically.** If no teaser exists,
+   or if its method/results no longer match the manuscript, run
+   `teaser-figure-3` without waiting for a user request. Freeze the semantic
+   blueprint, generate from content and style references, inspect the actual
+   image, and issue correction versions until every label and arrow is right.
+7. **Rebuild and inspect the PDF.** Run `latexmk` until it exits cleanly, then
    inspect every rendered page for visible placeholders, clipping, broken
    references, unreadable figures and page-limit problems.
-7. **Write `rounds/round-NN/author.md`** and stop. This file is how Loom knows
+8. **Write `rounds/round-NN/author.md`** and stop. This file is how Loom knows
    the round is over, so it must be the last thing you do.
 
 `author.md` format:

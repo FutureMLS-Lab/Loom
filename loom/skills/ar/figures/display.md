@@ -25,3 +25,9 @@
 [查看 Skill 文档](./teaser-figure-2/SKILL.md)
 
 ![Teaser Figure 2 example](./teaser-figure-2/example.png)
+
+## Teaser Figure 3 — Default
+
+[查看 Skill 文档](./teaser-figure-3/SKILL.md)
+
+![Teaser Figure 3 example](./teaser-figure-3/example.png)

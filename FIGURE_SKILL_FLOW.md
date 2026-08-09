@@ -36,7 +36,7 @@ flowchart TD
 
 [`loom/skills/ar/figures/`](loom/skills/ar/figures/)
 
-### 真正负责画图的四个 Skill
+### 真正负责画图的五个 Skill
 
 | Skill | 用途 | 入口 |
 |---|---|---|
@@ -44,12 +44,28 @@ flowchart TD
 | `results-figure-2` | 多 seed、per-trial、方差和分布图 | [`results-figure-2/SKILL.md`](loom/skills/ar/figures/results-figure-2/SKILL.md) |
 | `teaser-figure-1` | 彩色三栏 problem/method/result 方法概览图 | [`teaser-figure-1/SKILL.md`](loom/skills/ar/figures/teaser-figure-1/SKILL.md) |
 | `teaser-figure-2` | 白底会议风格 teaser，最后一栏使用真实测量图 | [`teaser-figure-2/SKILL.md`](loom/skills/ar/figures/teaser-figure-2/SKILL.md) |
+| `teaser-figure-3` | **默认 Teaser**；使用 Cursor GenerateImage / Nano Banana、参考图和语义修正迭代生成 icon-rich pipeline teaser | [`teaser-figure-3/SKILL.md`](loom/skills/ar/figures/teaser-figure-3/SKILL.md) |
 
 同一目录下还有：
 
 [`checkbib/SKILL.md`](loom/skills/ar/figures/checkbib/SKILL.md)
 
 它负责核验引用，不负责画图。但当前 `figure_skills()` 会扫描该目录下所有 `SKILL.md`，所以它也会出现在 Author 的 Skill 菜单里。
+
+默认选择规则：
+
+```text
+Auto Research 判断论文需要创建或刷新
+teaser / Figure 1 / overview / architecture / pipeline
+→ teaser-figure-3
+（不等待用户请求；明确的用户风格覆盖默认）
+
+明确要求确定性矢量、复杂公式，或图片生成不可用
+→ teaser-figure-1 / teaser-figure-2
+
+定量实验结果
+→ results-figure-1 / results-figure-2
+```
 
 ## 3. 第二步：Python 自动发现 Skill
 
@@ -176,6 +192,14 @@ Draft 阶段主要让 Author 知道后续可使用哪些画图能力。由于这
 - [`scripts/overview_style.py`](loom/skills/ar/figures/teaser-figure-1/scripts/overview_style.py)
 - [`example.py`](loom/skills/ar/figures/teaser-figure-1/example.py)
 - [`example.png`](loom/skills/ar/figures/teaser-figure-1/example.png)
+
+`teaser-figure-3` 自带：
+
+- [`PROMPT_TEMPLATE.md`](loom/skills/ar/figures/teaser-figure-3/PROMPT_TEMPLATE.md)
+- [`example.png`](loom/skills/ar/figures/teaser-figure-3/example.png)
+
+它不直接运行 matplotlib，而是先冻结语义 blueprint，再调用 Cursor
+`GenerateImage`，随后通过人工检查和版本化 correction prompt 修正文字与箭头端点。
 
 ## 7. 第六步：图片进入新的双 Repo 布局
 

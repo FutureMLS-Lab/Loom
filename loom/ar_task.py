@@ -2718,14 +2718,15 @@ def ar_skills_dir() -> Path:
 
 
 FIGURE_SKILLS_SUBDIR = "figures"
+DEFAULT_TEASER_SKILL = "teaser-figure-3"
 
 
 def figure_skills() -> list[dict[str, str]]:
     """Paper-figure skills available to the author, newest listing each time.
 
     Only the name, the one-line description and the path go into a prompt: the
-    five SKILL.md files together are ~38k characters, so the author is pointed
-    at them and reads the one it needs, rather than carrying all five into
+    Figure SKILL.md files together are large, so the author is pointed at them
+    and reads the one it needs, rather than carrying every full skill into
     every round.
     """
     root = ar_skills_dir() / FIGURE_SKILLS_SUBDIR
@@ -2761,12 +2762,26 @@ def figure_skills_block() -> str:
     if not skills:
         return ""
     lines = [
-        "Figure skills are installed. Read the SKILL.md before drawing - each",
-        "carries a house style, a drawing kit under its scripts/, and a worked",
-        "example you can run:",
+        f"AUTO-RESEARCH DEFAULT TEASER: {DEFAULT_TEASER_SKILL}. Whenever the AR",
+        "author decides the manuscript needs a new or refreshed teaser, Figure 1,",
+        "overview, architecture, or pipeline, automatically use this Cursor",
+        "GenerateImage / Nano Banana workflow. Do not wait for the user to ask",
+        "for a figure or name the skill. An explicit user style override wins.",
+        "Use teaser-figure-1/2 only when the user requests deterministic vector",
+        "output, the figure is equation-heavy, or image generation is unavailable.",
+        "For quantitative evidence plots, use results-figure-1/2 instead.",
+        "Read the selected SKILL.md before drawing:",
     ]
-    for skill in skills:
-        lines.append(f"  {skill['name']} - {skill['description']}")
+    ordered = sorted(
+        skills,
+        key=lambda skill: (
+            skill["name"] != DEFAULT_TEASER_SKILL,
+            skill["name"],
+        ),
+    )
+    for skill in ordered:
+        marker = " [DEFAULT TEASER]" if skill["name"] == DEFAULT_TEASER_SKILL else ""
+        lines.append(f"  {skill['name']}{marker} - {skill['description']}")
         lines.append(f"      {skill['path']}")
     return "\n".join(lines)
 
