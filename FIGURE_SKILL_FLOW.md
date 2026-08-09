@@ -357,31 +357,31 @@ Reviewer 看不到绘图脚本和 LaTeX，只评价人类最终会看到的 PDF�
 
 按以下顺序阅读代码：
 
-1. [`loom/skills/ar/figures/`](loom/skills/ar/figures/)  
+1. [`loom/skills/ar/figures/`](loom/skills/ar/figures/)
    先了解有哪些 Skill。
 
-2. [`loom/ar_task.py`](loom/ar_task.py) → `figure_skills()`  
+2. [`loom/ar_task.py`](loom/ar_task.py) → `figure_skills()`
    看 Python 如何扫描目录。
 
-3. [`loom/ar_task.py`](loom/ar_task.py) → `figure_skills_block()`  
+3. [`loom/ar_task.py`](loom/ar_task.py) → `figure_skills_block()`
    看菜单文本如何生成。
 
-4. [`loom/ar_task.py`](loom/ar_task.py) → `author_draft_prompt()`  
+4. [`loom/ar_task.py`](loom/ar_task.py) → `author_draft_prompt()`
    看 Draft 阶段如何注入。
 
-5. [`loom/ar_task.py`](loom/ar_task.py) → `author_round_prompt()`  
+5. [`loom/ar_task.py`](loom/ar_task.py) → `author_round_prompt()`
    看正式写作轮次如何注入。
 
-6. 任意一个画图 [`SKILL.md`](loom/skills/ar/figures/results-figure-1/SKILL.md)  
+6. 任意一个画图 [`SKILL.md`](loom/skills/ar/figures/results-figure-1/SKILL.md)
    跟进 Skill 的脚本、示例和输出规范。
 
-7. [`loom/ar_task.py`](loom/ar_task.py) → `init_paper_workspace()`  
+7. [`loom/ar_task.py`](loom/ar_task.py) → `init_paper_workspace()`
    确认双 repo 目录布局。
 
-8. [`loom/ar_task.py`](loom/ar_task.py) → `review_readiness()`  
+8. [`loom/ar_task.py`](loom/ar_task.py) → `review_readiness()`
    看图片完成度如何硬门控。
 
-9. [`loom/ar_task.py`](loom/ar_task.py) → `run_reviewer()`  
+9. [`loom/ar_task.py`](loom/ar_task.py) → `run_reviewer()`
    看最终 PDF 如何进入三模型 Reviewer Panel。
 
 ## 11. 一句话总结
