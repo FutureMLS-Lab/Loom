@@ -3010,6 +3010,95 @@ textarea.editable__input {
   background: var(--bg-elev-1);
   color: var(--text-dim);
 }
+.ar-reviewer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
+  gap: 7px;
+  margin-top: 8px;
+}
+.ar-reviewer-card {
+  position: relative;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-elev-1);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+}
+.ar-reviewer-card.is-deciding {
+  border-color: var(--bad);
+  box-shadow: inset 3px 0 0 var(--bad);
+}
+.ar-reviewer-card__model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+.ar-reviewer-card__score {
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.ar-reviewer-card__verdict {
+  grid-column: 1 / -1;
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+.ar-reviewer-card__badge {
+  position: absolute;
+  right: 8px;
+  bottom: 7px;
+  font-size: 9px;
+  font-weight: 800;
+  color: var(--bad);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ar-panel-verdict {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev-2);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.ar-reviewer-report {
+  margin: 0 0 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elev-1);
+}
+.ar-reviewer-report.is-deciding {
+  border-color: var(--bad);
+  box-shadow: inset 4px 0 0 var(--bad);
+}
+.ar-reviewer-report__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.ar-reviewer-report__head h3 { margin: 0; font-size: 15px; }
+.ar-reviewer-report__eyebrow {
+  margin: 0 0 3px;
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.ar-reviewer-report__body { margin-top: 10px; }
 .ar-round__summary {
   margin: 8px 0 0;
   padding: 8px 10px;

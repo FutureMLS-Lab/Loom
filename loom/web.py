@@ -3825,6 +3825,115 @@ def _ar_logger(root: Path, slug: str, job: str, *, reset: bool = True):
     return lambda line: ar.append_job_log(path, line)
 
 
+def _ar_reviewer_slug(model: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str(model or "")).strip("-._")
+    return slug or "reviewer"
+
+
+def _ar_store_panel_reviews(
+    root: Path,
+    slug: str,
+    n: int,
+    reviewers: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Persist each independent review and return compact state metadata."""
+    directory = ar.round_dir(root, slug, n)
+    directory.mkdir(parents=True, exist_ok=True)
+    stored: list[dict[str, Any]] = []
+    for item in reviewers:
+        model = str(item.get("model") or "reviewer")
+        text = str(item.get("review") or "").strip()
+        path = directory / f"review-{_ar_reviewer_slug(model)}.md"
+        if text:
+            path.write_text(text + "\n", encoding="utf-8")
+        metadata = {
+            key: item.get(key)
+            for key in ("model", "scores", "headline", "duration_seconds", "cost")
+        }
+        metadata["path"] = str(path) if text else ""
+        stored.append(metadata)
+    return stored
+
+
+_PANEL_REVIEW_RE = re.compile(
+    r"(?ms)^# Reviewer: `([^`]+)`\s*\n(.*?)(?=^\s*---\s*$|\Z)"
+)
+
+
+def _ar_review_payload(root: Path, slug: str, n: int) -> dict[str, Any] | None:
+    """Review API payload with every model's full report.
+
+    New rounds read per-model files. Existing panel rounds are recovered from
+    the combined review.md, and old single-model rounds remain readable.
+    """
+    combined_path = ar.review_note_path(root, slug, n)
+    if not combined_path.is_file():
+        return None
+    combined = _ar_read_text(combined_path)
+    state = ar.read_ar_state(root, slug)
+    rec = ar.round_record(state, n) or {}
+    review = rec.get("review") if isinstance(rec.get("review"), dict) else {}
+    metadata = (
+        review.get("reviewers")
+        if isinstance(review.get("reviewers"), list)
+        else []
+    )
+    parsed = {
+        model: body.strip()
+        for model, body in _PANEL_REVIEW_RE.findall(combined)
+    }
+    directory = ar.round_dir(root, slug, n).resolve()
+    reviewers: list[dict[str, Any]] = []
+    for item in metadata:
+        if not isinstance(item, dict):
+            continue
+        model = str(item.get("model") or "")
+        body = ""
+        path_value = str(item.get("path") or "")
+        if path_value:
+            candidate: Path | None = Path(path_value).expanduser().resolve()
+            try:
+                candidate.relative_to(directory)
+            except ValueError:
+                candidate = None
+            if candidate is not None and candidate.is_file():
+                body = _ar_read_text(candidate)
+        if not body:
+            body = parsed.get(model, "")
+        reviewers.append({**item, "review": body})
+
+    if not reviewers and parsed:
+        for model, body in parsed.items():
+            scores = ar.parse_review_scores(body)
+            reviewers.append(
+                {
+                    "model": model,
+                    "scores": scores,
+                    "headline": ar.review_headline(scores),
+                    "review": body,
+                }
+            )
+    if not reviewers:
+        model = str(review.get("model") or "")
+        reviewers = [
+            {
+                "model": model or "reviewer",
+                "scores": review.get("scores") or {},
+                "headline": review.get("headline") or "",
+                "review": combined,
+            }
+        ]
+    return {
+        "ok": True,
+        "round": n,
+        "review": combined,
+        "scores": review.get("scores") or {},
+        "headline": review.get("headline") or "",
+        "deciding_model": str(review.get("deciding_model") or ""),
+        "reviewers": reviewers,
+    }
+
+
 def _ar_mine_job(root: Path, slug: str, limit: int, venue_only: bool) -> None:
     state = ar.read_ar_state(root, slug)
     log = _ar_logger(root, slug, ar.JOB_PAPERS)
@@ -3977,6 +4086,15 @@ def _ar_review_job(root: Path, slug: str) -> None:
         return
     state = ar.read_ar_state(root, slug)
     rec = ar.ensure_round(state, n)
+    try:
+        stored_reviewers = _ar_store_panel_reviews(
+            root, slug, n, list(res.get("reviewers") or [])
+        )
+    except OSError as exc:
+        ar.update_ar_state(
+            root, slug, review_status="error", review_error=str(exc)
+        )
+        return
     rec["review"] = {
         "created_at": _iso_now(),
         "model": ar.CURSOR_REVIEWER_PANEL,
@@ -3986,13 +4104,7 @@ def _ar_review_job(root: Path, slug: str) -> None:
         "headline": res.get("headline") or "",
         "deciding_model": res.get("deciding_model") or "",
         "input_pdf": res.get("input_pdf") or str(paper_dir / "main.pdf"),
-        "reviewers": [
-            {
-                key: item.get(key)
-                for key in ("model", "scores", "headline", "duration_seconds", "cost")
-            }
-            for item in (res.get("reviewers") or [])
-        ],
+        "reviewers": stored_reviewers,
     }
     state["review_status"] = "done"
     state["review_error"] = ""
@@ -4473,6 +4585,12 @@ class _ARLoopDriver:
         review_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             review_path.write_text(str(result.get("review") or ""), encoding="utf-8")
+            stored_reviewers = _ar_store_panel_reviews(
+                self.project_root,
+                self.slug,
+                n,
+                list(result.get("reviewers") or []),
+            )
         except OSError as exc:
             self.last_error = f"could not write review: {exc}"
             self._save(state)
@@ -4487,13 +4605,7 @@ class _ARLoopDriver:
             "headline": result.get("headline") or "",
             "deciding_model": result.get("deciding_model") or "",
             "input_pdf": result.get("input_pdf") or str(self._paper_dir() / "main.pdf"),
-            "reviewers": [
-                {
-                    key: item.get(key)
-                    for key in ("model", "scores", "headline", "duration_seconds", "cost")
-                }
-                for item in (result.get("reviewers") or [])
-            ],
+            "reviewers": stored_reviewers,
         }
         rec.pop("review_error", None)
         state["cost_usd"] = round(
@@ -5731,16 +5843,14 @@ def make_handler(
                     self._send(st, b, h)
                     return
                 n = int(m_ar_review.group(2))
-                path_n = ar.review_note_path(root, slug, n)
-                if not path_n.is_file():
+                payload = _ar_review_payload(root, slug, n)
+                if payload is None:
                     st, b, h = _json_bytes(
                         {"ok": False, "error": f"no review for round {n}"}, 404
                     )
                     self._send(st, b, h)
                     return
-                st, b, h = _json_bytes(
-                    {"ok": True, "round": n, "review": _ar_read_text(path_n)}
-                )
+                st, b, h = _json_bytes(payload)
                 self._send(st, b, h)
                 return
 
