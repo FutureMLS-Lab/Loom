@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Research Factory</title>
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
-  <link rel="stylesheet" href="/static/factory.css?v=20260807-1" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260808-2" />
 </head>
 <body>
 
@@ -19,6 +19,7 @@
     <span class="rf-stat" id="stat-papers"><b>—</b> papers</span>
     <span class="rf-stat rf-stat--alert" id="stat-waiting" hidden><b>—</b> waiting on you</span>
     <span class="rf-stat" id="stat-cost"><b>—</b> spent</span>
+    <button type="button" class="rf-btn rf-btn--ghost" id="btn-skills">Skills</button>
     <button type="button" class="rf-btn rf-btn--ghost" id="btn-refresh">Refresh</button>
     <a class="rf-btn rf-btn--ghost" href="/">Loom</a>
   </nav>
@@ -59,28 +60,72 @@
       <h1 id="studio-title">…</h1>
       <p class="rf-lede" id="studio-sub"></p>
     </div>
-    <div class="rf-studio-actions">
-      <label class="rf-check"><input type="checkbox" id="studio-venue-only" /> venue-tagged only</label>
-      <button type="button" class="rf-btn" id="btn-mine">Mine arXiv</button>
-      <label class="rf-check">ideas <input type="number" id="studio-count" min="1" max="12" value="6" /></label>
-      <button type="button" class="rf-btn" id="btn-ideas">Generate ideas</button>
-      <button type="button" class="rf-btn rf-btn--primary" id="btn-spawn">Create papers</button>
-    </div>
   </section>
+
+  <!-- The studio is a sequence, so show it as one: each step says what it is
+       for, whether it is done, and carries its own control. -->
+  <ol class="rf-steps" id="studio-steps">
+    <li class="rf-step" data-step="mine">
+      <div class="rf-step__n">1</div>
+      <div class="rf-step__body">
+        <h3>Mine recent work</h3>
+        <p>Pull the newest arXiv papers in this direction so the ideas are proposed against what the field actually published, not against memory.</p>
+        <div class="rf-step__actions">
+          <label class="rf-check"><input type="checkbox" id="studio-venue-only" /> venue-tagged only</label>
+          <button type="button" class="rf-btn" id="btn-mine">Mine arXiv</button>
+          <span class="rf-hint" id="step-mine-state"></span>
+        </div>
+      </div>
+    </li>
+    <li class="rf-step" data-step="ideas">
+      <div class="rf-step__n">2</div>
+      <div class="rf-step__body">
+        <h3>Generate ideas</h3>
+        <p>Turn the survey into specific, falsifiable idea cards — each with a hypothesis, the prior work it stands against, and the experiments that would settle it.</p>
+        <div class="rf-step__actions">
+          <label class="rf-check">how many <input type="number" id="studio-count" min="1" max="12" value="6" /></label>
+          <button type="button" class="rf-btn" id="btn-ideas">Generate ideas</button>
+          <span class="rf-hint" id="step-ideas-state"></span>
+        </div>
+      </div>
+    </li>
+    <li class="rf-step" data-step="link">
+      <div class="rf-step__n">3</div>
+      <div class="rf-step__body">
+        <h3>Ground and verify</h3>
+        <p>Read each idea's novelty claim back out as citations, then check every cited arXiv id against OpenAlex so a fabricated reference cannot pass as grounding.</p>
+        <div class="rf-step__actions">
+          <button type="button" class="rf-btn" id="btn-link">Ground and verify</button>
+          <span class="rf-hint" id="step-link-state"></span>
+        </div>
+      </div>
+    </li>
+    <li class="rf-step" data-step="spawn">
+      <div class="rf-step__n">4</div>
+      <div class="rf-step__body">
+        <h3>Create papers</h3>
+        <p>Every idea you tick becomes its own task: a LaTeX draft, your review, then the author and reviewer rounds.</p>
+        <div class="rf-step__actions">
+          <button type="button" class="rf-btn" id="btn-goto-ideas">Choose ideas below</button>
+          <span class="rf-hint" id="step-spawn-state"></span>
+        </div>
+      </div>
+    </li>
+  </ol>
 
   <section class="rf-section">
     <div class="rf-section__head">
       <h2>Knowledge graph</h2>
       <span class="rf-hint">
-        What the field published, and how each idea stands against it.
-        Drag a node. Click to open.
+        Cited work on the left, your ideas on the right. Click a node to inspect it.
       </span>
     </div>
     <div class="rf-graph-wrap">
-      <svg id="graph" class="rf-graph" role="img" aria-label="Papers and the ideas derived from them"></svg>
+      <svg id="graph" class="rf-graph" aria-label="Prior work and the ideas derived from it"></svg>
+      <div class="rf-graph-detail" id="graph-detail" aria-live="polite"></div>
       <div class="rf-graph-legend" id="graph-legend"></div>
       <div class="rf-graph-empty" id="graph-empty">
-        Mine papers and generate ideas to draw the graph.
+        Run steps 1 to 3 and the graph appears here.
       </div>
     </div>
   </section>
@@ -90,6 +135,13 @@
       <div class="rf-section__head">
         <h2>Ideas</h2>
         <span class="rf-hint" id="ideas-status"></span>
+      </div>
+      <!-- The control sits with the tick boxes it reads, not four steps up
+           the page where you cannot see what is selected. -->
+      <div class="rf-ideas__bar">
+        <label class="rf-check"><input type="checkbox" id="ideas-all" /> select all</label>
+        <span class="rf-hint" id="ideas-picked">none selected</span>
+        <button type="button" class="rf-btn rf-btn--primary rf-btn--sm" id="btn-spawn" disabled>Create papers</button>
       </div>
       <pre class="rf-log" id="ideas-log" hidden></pre>
       <div class="rf-ideas" id="ideas-list"></div>
@@ -149,6 +201,30 @@
     <ol class="rf-rounds" id="rounds-list"></ol>
   </section>
 
+  <section class="rf-section">
+    <div class="rf-section__head">
+      <h2>The agent at work</h2>
+      <div class="rf-section__actions">
+        <label class="rf-check"><input type="checkbox" id="pane-follow" /> live</label>
+        <a class="rf-btn rf-btn--sm rf-btn--ghost" id="btn-open-loom" href="/" target="_blank" rel="noreferrer">Open in Loom</a>
+      </div>
+    </div>
+    <p class="rf-hint" id="pane-status"></p>
+    <pre class="rf-pane" id="pane-view" hidden></pre>
+  </section>
+
+  <section class="rf-section">
+    <div class="rf-section__head">
+      <h2>What the author wrote</h2>
+      <span class="rf-hint">Experiments and manuscript, straight off disk.</span>
+    </div>
+    <nav class="rf-crumbs" id="files-crumbs"></nav>
+    <div class="rf-files">
+      <ul class="rf-files__list" id="files-list"></ul>
+      <pre class="rf-files__body" id="files-body" hidden></pre>
+    </div>
+  </section>
+
   <section class="rf-section" id="submission-section" hidden>
     <div class="rf-section__head"><h2>Submission readiness</h2></div>
     <ul class="rf-checklist" id="submission-checks"></ul>
@@ -203,8 +279,26 @@
   </div>
 </div>
 
+<!-- ============ Skills: what the agents are told ============ -->
+<div class="rf-modal" id="skills-modal" hidden>
+  <div class="rf-modal__card rf-modal__card--wide" role="dialog" aria-modal="true" aria-labelledby="skills-modal-title">
+    <div class="rf-modal__head">
+      <h2 id="skills-modal-title">Skills</h2>
+      <button type="button" class="rf-x" id="btn-skills-close" aria-label="Close">×</button>
+    </div>
+    <p class="rf-hint">
+      An agent's behaviour is mostly these instructions. The author is handed the
+      figure skills by name and reads the one it needs.
+    </p>
+    <div class="rf-skills">
+      <ul class="rf-skills__list" id="skills-list"></ul>
+      <pre class="rf-skills__body" id="skills-body">Pick a skill to read it.</pre>
+    </div>
+  </div>
+</div>
+
 <div class="rf-toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/factory.js?v=20260807-1"></script>
+<script src="/static/factory.js?v=20260808-2"></script>
 </body>
 </html>

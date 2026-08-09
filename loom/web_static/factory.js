@@ -17,6 +17,11 @@ const S = {
   picked: new Set(),
   timer: null,
   busy: false,
+  graphSel: '',              // node the user clicked into, '' when nothing is
+  graphHide: new Set(),      // relations switched off in the legend
+  pane: '',                  // tmux target of the open paper's author
+  paneFollow: false,         // whether to keep tailing it
+  filePath: '',              // where the file browser is, under work/
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -73,11 +78,15 @@ async function act(slug, action, body, label) {
 // ===== routing =====
 
 function show(view) {
+  // Every poll re-renders through here, so only move the viewport when the
+  // view actually changed. Scrolling the reader to the top every six seconds
+  // makes the page unusable while a job is running.
+  const changed = S.view !== view;
   S.view = view;
   for (const name of ['fleet', 'studio', 'paper']) {
     el(`view-${name}`).hidden = name !== view;
   }
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (changed) window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function openFleet() {
@@ -89,6 +98,7 @@ function openFleet() {
 
 function openStudio(slug) {
   S.slug = slug; S.parent = slug; S.picked = new Set(); S.data = null;
+  S.graphSel = ''; S.graphHide = new Set();
   show('studio');
   loadTask();
   writeHash(`studio/${slug}`);
@@ -98,8 +108,10 @@ function openPaper(slug, parent) {
   S.slug = slug;
   if (parent) S.parent = parent;
   S.data = null;
+  S.pane = ''; S.filePath = '';
   show('paper');
   loadTask();
+  openFiles('');
   writeHash(`paper/${slug}`);
 }
 
@@ -241,8 +253,12 @@ function renderStudio(d, state) {
 
   el('ideas-list').innerHTML = ideas.map((idea) => {
     const spawned = idea.status === 'spawned';
-    const edges = (idea.derived_from || []).map((e) =>
-      `<span class="rf-edge-chip">${esc(e.relation)} · ${esc(e.title || e.paper)}</span>`).join('');
+    const edges = (idea.derived_from || []).map((e) => {
+      const mark = e.verified === true ? ' ✓' : (e.paper && e.verified === false ? ' ✗' : '');
+      const cls = e.verified === false && e.paper ? ' is-unverified' : '';
+      return `<span class="rf-edge-chip${cls}" title="${esc(e.real_title || '')}">`
+        + `${esc(e.relation)} · ${esc(e.title || e.paper)}${mark}</span>`;
+    }).join('');
     return `<article class="rf-idea${spawned ? ' is-spawned' : ''}${S.picked.has(idea.id) ? ' is-picked' : ''}" data-idea="${esc(idea.id)}">
       <div class="rf-idea__head">
         <input type="checkbox" data-pick="${esc(idea.id)}" ${S.picked.has(idea.id) ? 'checked' : ''} ${spawned ? 'disabled' : ''} />
@@ -270,19 +286,86 @@ function renderStudio(d, state) {
     link.addEventListener('click', (ev) => { ev.preventDefault(); openPaper(link.dataset.openPaper, S.slug); });
   });
   updateSpawnLabel();
+  renderSteps(state, papers, ideas);
   drawGraph(papers, ideas);
+}
+
+// Each step reports its own state, and the first unfinished one is marked
+// current so there is always one obvious next thing to press.
+function renderSteps(state, papers, ideas) {
+  const edges = ideas.reduce((n, i) => n + (i.derived_from || []).length, 0);
+  const spawned = ideas.filter((i) => i.status === 'spawned').length;
+  const running = (job) => state[`${job}_status`] === 'running';
+
+  const steps = [
+    {
+      id: 'mine',
+      done: papers.length > 0,
+      state: running('papers') ? 'mining…'
+        : papers.length ? `${papers.length} papers mined`
+        : (state.papers_error || 'not run yet'),
+    },
+    {
+      id: 'ideas',
+      done: ideas.length > 0,
+      state: running('ideas') ? 'generating, a few minutes…'
+        : ideas.length ? `${ideas.length} ideas`
+        : (state.ideas_error || 'not run yet'),
+    },
+    {
+      id: 'link',
+      done: edges > 0,
+      state: running('link') ? 'grounding and verifying…'
+        : edges ? `${edges} citations across ${ideas.filter((i) => (i.derived_from || []).length).length} ideas`
+        : (state.link_error || 'ideas are not grounded yet'),
+    },
+    {
+      id: 'spawn',
+      done: spawned > 0,
+      state: spawned ? `${spawned} paper task(s) created` : 'nothing picked yet',
+    },
+  ];
+  const current = steps.findIndex((s) => !s.done);
+  steps.forEach((s, i) => {
+    const node = document.querySelector(`.rf-step[data-step="${s.id}"]`);
+    if (!node) return;
+    node.classList.toggle('is-done', s.done);
+    node.classList.toggle('is-current', i === current);
+    const label = el(`step-${s.id}-state`);
+    if (label) label.textContent = s.state;
+  });
+
+  // A step whose input does not exist yet cannot run, so say so on the button
+  // rather than letting it be pressed and answer with an error.
+  const busy = running('papers') || running('ideas') || running('link');
+  setAction('btn-mine', { ok: !running('papers'), why: 'already mining' });
+  setAction('btn-ideas', {
+    ok: !busy && (papers.length > 0 || state.mode === 'seed'),
+    why: busy ? 'a job is already running' : 'mine the field first, or start the studio from your own idea',
+  });
+  setAction('btn-link', {
+    ok: !busy && ideas.length > 0,
+    why: busy ? 'a job is already running' : 'generate ideas first',
+  });
 }
 
 function updateSpawnLabel() {
   const n = S.picked.size;
-  el('btn-spawn').textContent = n ? `Create ${n} paper${n === 1 ? '' : 's'}` : 'Create papers';
+  const btn = el('btn-spawn');
+  btn.textContent = n ? `Create ${n} paper${n === 1 ? '' : 's'}` : 'Create papers';
+  btn.disabled = !n;
+  btn.title = n ? '' : 'Tick the ideas you want turned into papers';
+  el('ideas-picked').textContent = n ? `${n} selected` : 'none selected';
 }
 
 // ===== knowledge graph =====
 //
-// A small force simulation rather than a charting library: the graph is two
-// node kinds and one edge kind, and 120 lines of Verlet-ish relaxation keeps
-// the page dependency-free and instant to load.
+// The data is bipartite - ideas derive from prior work, never from each other -
+// so it is drawn as two columns rather than relaxed into a force layout. A
+// force graph of the same edges was unreadable: labels sit beside their node
+// and collide long before the circles do, and the result looked like tangle
+// however it was tuned. Columns cannot overlap, and reading left to right is
+// the same direction as "this idea came from that paper".
 
 // Readable on the paper-white ground, and distinguishable under the common
 // colour-vision deficiencies.
@@ -295,13 +378,22 @@ const RELATION_COLOR = {
   'relates-to': '#8a8f97',
 };
 
+// The relation read as a sentence. Colour alone means holding a six-item
+// legend in your head; the wording lets a selected edge explain itself.
+const RELATION_TEXT = {
+  extends: 'builds on',
+  contradicts: 'argues against',
+  combines: 'combines',
+  ports: 'ports the method from',
+  'controls-for': 'controls for',
+  'relates-to': 'relates to',
+};
+
 const NODE_STYLE = {
   idea: { fill: '#4f46e5', stroke: '#312e81', width: '2' },
   paper: { fill: '#ffffff', stroke: '#8a8f97', width: '1.4' },
   external: { fill: '#f5f3ed', stroke: '#cfc9bb', width: '1.2' },
 };
-
-let GRAPH = { nodes: [], links: [], raf: 0, drag: null };
 
 function graphNodesFrom(papers, ideas) {
   const nodes = [];
@@ -312,8 +404,7 @@ function graphNodesFrom(papers, ideas) {
     if (byKey.has(key)) return byKey.get(key);
     const node = {
       id: key, kind: mined ? 'paper' : 'external',
-      label, url, r: mined ? 7 : 5.5,
-      x: 0, y: 0, vx: 0, vy: 0,
+      label, url, r: mined ? 6.5 : 5, x: 0, y: 0,
     };
     byKey.set(key, node);
     nodes.push(node);
@@ -328,8 +419,8 @@ function graphNodesFrom(papers, ideas) {
   ideas.forEach((idea) => {
     const node = {
       id: `idea:${idea.id}`, kind: 'idea', label: idea.title,
-      idea, r: 9 + Math.min(5, Number(idea.score || 0) * 5),
-      x: 0, y: 0, vx: 0, vy: 0,
+      idea, r: 8 + Math.min(4, Number(idea.score || 0) * 4), x: 0, y: 0,
+      hover: idea.hypothesis || idea.title,
     };
     nodes.push(node);
     (idea.derived_from || []).forEach((edge) => {
@@ -349,140 +440,424 @@ function graphNodesFrom(papers, ideas) {
         target = addPaper(edge.paper || edge.title, edge.title || edge.paper,
           edge.paper ? `https://arxiv.org/abs/${edge.paper}` : '', false);
       }
-      links.push({ source: node, target, relation: edge.relation });
+      // What OpenAlex confirmed about this citation, shown beside the node so
+      // an unverified reference is visible rather than implied.
+      if (edge.verified === true) {
+        target.meta = `✓${edge.cited_by ? ` ${edge.cited_by} cites` : ''}`;
+        target.hover = `${edge.real_title || target.label}${edge.year ? ` (${edge.year})` : ''}`;
+      } else if (edge.paper && edge.verified === false) {
+        target.meta = '✗ unverified';
+        target.hover = `${target.label} — arXiv ${edge.paper} could not be confirmed`;
+      }
+      links.push({ source: node, target, relation: edge.relation, edge });
     });
   });
 
-  return { nodes, links };
+  // A mined paper nobody derived from is not part of a derivation graph - it
+  // is just a search result, and it is already listed under Recent work. With
+  // thirty of them they crowd the connected subgraph into a corner, so keep
+  // only the papers an idea actually points at.
+  const connected = new Set();
+  links.forEach((l) => { connected.add(l.source.id); connected.add(l.target.id); });
+  const kept = nodes.filter((n) => n.kind === 'idea' || connected.has(n.id));
+  return { nodes: kept, links, dropped: nodes.length - kept.length };
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+
+function svgEl(name, attrs = {}) {
+  const node = document.createElementNS(SVG_NS, name);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
+  return node;
 }
 
 function drawGraph(papers, ideas) {
   const svg = el('graph');
-  const { nodes, links } = graphNodesFrom(papers || [], ideas || []);
-  el('graph-empty').hidden = nodes.length > 0;
-  el('graph-legend').innerHTML = nodes.length
-    ? Object.entries(RELATION_COLOR).map(([name, color]) =>
-        `<span class="rf-legend-item"><span class="rf-legend-dot" style="background:${color}"></span>${name}</span>`).join('')
-    : '';
-  cancelAnimationFrame(GRAPH.raf);
+  const all = graphNodesFrom(papers || [], ideas || []);
+
+  // Legend switches drop a relation's edges, and any cited work left with
+  // nothing pointing at it goes with them - a lone circle in the left column
+  // would otherwise read as "cited by nothing", which is not what it means.
+  const links = all.links.filter((l) => !S.graphHide.has(l.relation || 'relates-to'));
+  const live = new Set();
+  links.forEach((l) => { live.add(l.source.id); live.add(l.target.id); });
+  const nodes = all.nodes.filter((n) => n.kind === 'idea' || live.has(n.id));
+  const works = nodes.filter((n) => n.kind !== 'idea');
+  const ours = nodes.filter((n) => n.kind === 'idea');
+
+  drawLegend(all, works.length, ours.length);
   svg.innerHTML = '';
-  if (!nodes.length) return;
+  const empty = el('graph-empty');
+  if (!links.length) {
+    // Either nothing has been generated yet, or the legend has every relation
+    // switched off - which looks identical without saying so.
+    empty.textContent = all.links.length
+      ? 'Every relation is hidden. Turn one back on in the legend below.'
+      : 'Run steps 1 to 3 and the graph appears here.';
+    empty.hidden = false;
+    svg.removeAttribute('height');
+    renderGraphDetail(null, []);
+    return;
+  }
+  empty.hidden = true;
 
-  const w = svg.clientWidth || 900;
-  const h = svg.clientHeight || 520;
-  nodes.forEach((n, i) => {
-    // Seed ideas and papers on two rings so the first frame is already legible.
-    const ring = n.kind === 'idea' ? 0.22 : 0.40;
-    const a = (i / nodes.length) * Math.PI * 2;
-    n.x = w / 2 + Math.cos(a) * w * ring;
-    n.y = h / 2 + Math.sin(a) * h * ring;
+  // Order the left column so edges cross as little as possible: a cited work
+  // sits at the average height of the ideas that cite it.
+  const rows = Math.max(works.length, ours.length);
+  const rowH = 34;
+  const top = 28;
+  const height = top * 2 + Math.max(1, rows - 1) * rowH;
+  const width = svg.clientWidth || 900;
+  // Label room decides the columns, rather than the columns being fixed and
+  // the labels running off the edge: paper titles get a slice on the left,
+  // ideas get more on the right because their titles are whole sentences.
+  const leftX = Math.max(150, Math.min(230, Math.round(width * 0.22)));
+  const rightX = Math.max(leftX + 200, width - Math.max(230, Math.round(width * 0.3)));
+  const CHAR = 6.1; // average px per character of the 11px label face
+  const leftChars = Math.max(12, Math.floor((leftX - 18) / CHAR));
+  const rightChars = Math.max(14, Math.floor((width - rightX - 22) / CHAR));
+
+  ours.forEach((n, i) => { n.x = rightX; n.y = top + i * (ours.length > 1 ? (height - 2 * top) / (ours.length - 1) : 0); });
+  works.forEach((n) => {
+    const mine = links.filter((l) => l.target === n).map((l) => l.source.y);
+    n.order = mine.length ? mine.reduce((a, b) => a + b, 0) / mine.length : height;
   });
+  works.sort((a, b) => a.order - b.order);
+  works.forEach((n, i) => { n.x = leftX; n.y = top + i * (works.length > 1 ? (height - 2 * top) / (works.length - 1) : 0); });
 
-  const ns = 'http://www.w3.org/2000/svg';
-  const gLinks = document.createElementNS(ns, 'g');
-  const gNodes = document.createElementNS(ns, 'g');
-  svg.append(gLinks, gNodes);
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('height', String(height));
+  // Edge labels need a gap wide enough to sit in without touching either
+  // column; when the window is too narrow the detail panel carries the words
+  // instead.
+  const tagRoom = rightX - leftX >= 300;
+  const tagMin = leftX + 130;
+  const tagMax = rightX - 60;
+  const gLinks = svgEl('g');
+  const gTags = svgEl('g');
+  const gNodes = svgEl('g');
+  svg.append(gLinks, gTags, gNodes);
 
   links.forEach((link) => {
-    link.line = document.createElementNS(ns, 'line');
-    link.line.setAttribute('class', 'rf-edge-line');
-    link.line.setAttribute('stroke', RELATION_COLOR[link.relation] || RELATION_COLOR['relates-to']);
-    link.line.setAttribute('stroke-opacity', '0.65');
-    gLinks.appendChild(link.line);
+    const { source: a, target: b } = link;
+    const mid = (a.x + b.x) / 2;
+    link.path = svgEl('path', {
+      class: 'rf-edge-line',
+      d: `M ${b.x} ${b.y} C ${mid} ${b.y}, ${mid} ${a.y}, ${a.x} ${a.y}`,
+      stroke: RELATION_COLOR[link.relation] || RELATION_COLOR['relates-to'],
+      'stroke-opacity': 0.55,
+    });
+    gLinks.appendChild(link.path);
+
+    // Revealed only while one end is in focus - labelling all eighteen at once
+    // would bury the picture it explains. Sat a quarter along from the paper
+    // rather than at the midpoint: every edge of one idea converges on the
+    // same point, so midpoint labels land on top of each other, while near the
+    // papers they inherit the row spacing and stay apart.
+    if (!tagRoom) return;
+    const t = 0.25;
+    const u = 1 - t;
+    const curveX = u * u * u * b.x + 3 * u * t * (u + t) * mid + t * t * t * a.x;
+    const tag = svgEl('text', {
+      class: 'rf-edge-tag',
+      // Held clear of the "n cites" marks sitting just right of the papers,
+      // which is what the quarter point collides with on a narrow window.
+      x: Math.max(tagMin, Math.min(tagMax, curveX)),
+      y: (u * u * u + 3 * u * u * t) * b.y + (3 * u * t * t + t * t * t) * a.y - 5,
+      'text-anchor': 'middle', opacity: '0',
+      fill: RELATION_COLOR[link.relation] || RELATION_COLOR['relates-to'],
+    });
+    tag.textContent = RELATION_TEXT[link.relation] || link.relation || '';
+    link.tag = tag;
+    gTags.appendChild(tag);
   });
 
-  nodes.forEach((node) => {
-    const g = document.createElementNS(ns, 'g');
-    g.setAttribute('class', `rf-node is-${node.kind}`);
+  const paint = (node, side) => {
+    const g = svgEl('g', {
+      class: `rf-node is-${node.kind}`, transform: `translate(${node.x},${node.y})`,
+      tabindex: '0', role: 'button',
+      'aria-label': `${node.kind === 'idea' ? 'Idea' : 'Cited work'}: ${node.label}`,
+    });
     const style = NODE_STYLE[node.kind] || NODE_STYLE.paper;
-    const c = document.createElementNS(ns, 'circle');
-    c.setAttribute('r', String(node.r));
-    c.setAttribute('fill', style.fill);
-    c.setAttribute('stroke', style.stroke);
-    c.setAttribute('stroke-width', style.width);
-    const label = document.createElementNS(ns, 'text');
-    const short = node.label.length > 34 ? node.label.slice(0, 33) + '…' : node.label;
-    label.textContent = short;
-    label.setAttribute('x', String(node.r + 6));
-    label.setAttribute('y', '3.5');
-    g.append(c, label);
+    // A generous invisible target. The circles are 5-8px across, which is a
+    // hard thing to hit and an easy thing to fall off mid-read.
+    const reach = side === 'left' ? leftX - 12 : width - rightX - 12;
+    g.appendChild(svgEl('rect', {
+      class: 'rf-node-hit',
+      x: side === 'left' ? -reach : -(node.r + 10), y: -rowH / 2,
+      width: reach + node.r + 10, height: rowH, fill: 'transparent',
+    }));
+    g.appendChild(svgEl('circle', {
+      class: 'rf-node-dot',
+      r: node.r, fill: style.fill, stroke: style.stroke, 'stroke-width': style.width,
+    }));
+    const label = svgEl('text', {
+      x: side === 'left' ? -(node.r + 8) : node.r + 8,
+      y: 3.5,
+      'text-anchor': side === 'left' ? 'end' : 'start',
+    });
+    label.textContent = clip(node.label, side === 'left' ? leftChars : rightChars);
+    g.appendChild(label);
+    if (side === 'left' && node.meta) {
+      const meta = svgEl('text', { x: node.r + 8, y: 3.5, class: 'rf-node-meta' });
+      meta.textContent = node.meta;
+      g.appendChild(meta);
+    }
+    const select = () => {
+      S.graphSel = S.graphSel === node.id ? '' : node.id;
+      applyGraphFocus(nodes, links);
+    };
+    g.addEventListener('click', (ev) => { ev.stopPropagation(); select(); });
+    g.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); select(); }
+    });
+    // Hover is a preview only. It used to be the only way to isolate a node,
+    // which meant the answer vanished the moment you moved to read it.
+    g.addEventListener('mouseenter', () => { if (!S.graphSel) applyGraphFocus(nodes, links, node); });
+    g.addEventListener('mouseleave', () => { if (!S.graphSel) applyGraphFocus(nodes, links); });
     gNodes.appendChild(g);
     node.g = g;
-
-    g.addEventListener('pointerdown', (ev) => {
-      GRAPH.drag = node; node.fixed = true;
-      g.setPointerCapture(ev.pointerId);
-    });
-    g.addEventListener('pointermove', (ev) => {
-      if (GRAPH.drag !== node) return;
-      const pt = svgPoint(svg, ev);
-      node.x = pt.x; node.y = pt.y; node.vx = node.vy = 0;
-    });
-    g.addEventListener('pointerup', () => { GRAPH.drag = null; node.fixed = false; });
-    g.addEventListener('click', () => {
-      if (node.kind === 'idea') {
-        const card = document.querySelector(`[data-idea="${CSS.escape(node.idea.id)}"]`);
-        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      } else if (node.url) {
-        window.open(node.url, '_blank', 'noreferrer');
-      }
-    });
-  });
-
-  GRAPH = { nodes, links, raf: 0, drag: GRAPH.drag };
-  let alpha = 1;
-  const step = () => {
-    alpha *= 0.985;
-    simulate(nodes, links, w, h, alpha);
-    links.forEach((l) => {
-      l.line.setAttribute('x1', l.source.x); l.line.setAttribute('y1', l.source.y);
-      l.line.setAttribute('x2', l.target.x); l.line.setAttribute('y2', l.target.y);
-    });
-    nodes.forEach((n) => n.g.setAttribute('transform', `translate(${n.x},${n.y})`));
-    if (alpha > 0.02) GRAPH.raf = requestAnimationFrame(step);
   };
-  step();
+
+  works.forEach((n) => paint(n, 'left'));
+  ours.forEach((n) => paint(n, 'right'));
+
+  const heading = (x, text, anchor) => {
+    const t = svgEl('text', { x, y: 14, class: 'rf-graph-heading', 'text-anchor': anchor });
+    t.textContent = text;
+    svg.appendChild(t);
+  };
+  heading(leftX, 'PRIOR WORK', 'end');
+  heading(rightX, 'IDEAS', 'start');
+
+  svg.onclick = () => { S.graphSel = ''; applyGraphFocus(nodes, links); };
+  applyGraphFocus(nodes, links);
 }
 
-function svgPoint(svg, ev) {
-  const rect = svg.getBoundingClientRect();
-  return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
-}
+// Dim everything off the focused node's edges and name the relations that
+// remain. `hover` is the transient version; with nothing hovered it falls back
+// to whatever is selected, and to the plain picture when neither is set.
+function applyGraphFocus(nodes, links, hover) {
+  const focus = hover || nodes.find((n) => n.id === S.graphSel) || null;
+  const mine = focus ? links.filter((l) => l.source === focus || l.target === focus) : [];
+  const near = new Set(focus ? [focus] : []);
+  mine.forEach((l) => { near.add(l.source); near.add(l.target); });
 
-function simulate(nodes, links, w, h, alpha) {
-  // Repulsion between every pair, springs along the edges, and a gentle pull
-  // to the middle. Node counts here are tens, so O(n^2) is free.
-  for (let i = 0; i < nodes.length; i++) {
-    const a = nodes[i];
-    for (let j = i + 1; j < nodes.length; j++) {
-      const b = nodes[j];
-      let dx = b.x - a.x, dy = b.y - a.y;
-      let dist = Math.hypot(dx, dy) || 0.01;
-      const push = (2600 * alpha) / (dist * dist);
-      dx /= dist; dy /= dist;
-      a.vx -= dx * push; a.vy -= dy * push;
-      b.vx += dx * push; b.vy += dy * push;
-    }
-  }
-  links.forEach((l) => {
-    const dx = l.target.x - l.source.x, dy = l.target.y - l.source.y;
-    const dist = Math.hypot(dx, dy) || 0.01;
-    const force = (dist - 150) * 0.012 * alpha;
-    const ux = (dx / dist) * force, uy = (dy / dist) * force;
-    l.source.vx += ux; l.source.vy += uy;
-    l.target.vx -= ux; l.target.vy -= uy;
-  });
   nodes.forEach((n) => {
-    n.vx += (w / 2 - n.x) * 0.0016 * alpha;
-    n.vy += (h / 2 - n.y) * 0.0016 * alpha;
-    if (!n.fixed) {
-      n.x += (n.vx *= 0.82);
-      n.y += (n.vy *= 0.82);
-    }
-    const pad = 70;
-    n.x = Math.max(pad, Math.min(w - pad, n.x));
-    n.y = Math.max(24, Math.min(h - 24, n.y));
+    n.g.classList.toggle('is-dim', Boolean(focus) && !near.has(n));
+    n.g.classList.toggle('is-selected', Boolean(S.graphSel) && n.id === S.graphSel);
   });
+  links.forEach((l) => {
+    const on = !focus || mine.includes(l);
+    l.path.setAttribute('stroke-opacity', focus ? (on ? '0.95' : '0.07') : '0.55');
+    l.path.classList.toggle('is-lit', Boolean(focus) && on);
+    if (l.tag) l.tag.setAttribute('opacity', focus && on ? '1' : '0');
+  });
+  renderGraphDetail(hover ? null : focus, mine);
+}
+
+// What the picture cannot say: full titles, whether a citation checked out,
+// and where to go next. Clicking a node used to jump straight to arXiv, which
+// took you off the page before you knew what you had clicked.
+function renderGraphDetail(node, links) {
+  const host = el('graph-detail');
+  if (!host) return;
+  if (!node) {
+    host.innerHTML = '<p class="rf-detail-hint">Click any node to see what it is,'
+      + ' what it connects to, and where to open it. Use the legend to hide a relation.</p>';
+    return;
+  }
+  const rel = (l) => `<span class="rf-detail-rel" style="color:${RELATION_COLOR[l.relation] || RELATION_COLOR['relates-to']}">`
+    + `${esc(RELATION_TEXT[l.relation] || l.relation || 'relates to')}</span>`;
+
+  if (node.kind === 'idea') {
+    const idea = node.idea || {};
+    host.innerHTML = `
+      <div class="rf-detail-head">
+        <span class="rf-pill rf-pill--idea">idea</span>
+        <b>${esc(idea.title || node.label)}</b>
+        <span class="rf-detail-score">${Number(idea.score || 0).toFixed(2)}</span>
+      </div>
+      ${idea.hypothesis ? `<p class="rf-detail-body">${esc(idea.hypothesis)}</p>` : ''}
+      <ul class="rf-detail-links">${links.map((l) =>
+        `<li>${rel(l)} <span>${esc(l.target.label)}</span>${
+          l.edge && l.edge.verified === true ? '<span class="rf-detail-ok">verified</span>' : ''}${
+          l.edge && l.edge.verified === false && l.edge.paper ? '<span class="rf-detail-bad">unverified</span>' : ''}</li>`).join('')
+        || '<li class="rf-detail-hint">No grounding recorded for this idea.</li>'}</ul>
+      <div class="rf-detail-actions">
+        <button type="button" class="rf-btn rf-btn--ghost rf-btn--sm" data-detail="card">Show the full card</button>
+        ${idea.child_slug ? '<button type="button" class="rf-btn rf-btn--ghost rf-btn--sm" data-detail="paper">Open the paper</button>' : ''}
+      </div>`;
+    host.querySelector('[data-detail="card"]').onclick = () => {
+      const card = document.querySelector(`[data-idea="${CSS.escape(idea.id)}"]`);
+      if (card) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.classList.add('is-flash');
+        setTimeout(() => card.classList.remove('is-flash'), 1200);
+      }
+    };
+    const open = host.querySelector('[data-detail="paper"]');
+    if (open) open.onclick = () => openPaper(idea.child_slug, S.slug);
+    return;
+  }
+
+  const verified = node.meta && node.meta.startsWith('✓');
+  host.innerHTML = `
+    <div class="rf-detail-head">
+      <span class="rf-pill">${node.kind === 'paper' ? 'mined' : 'cited'}</span>
+      <b>${esc(node.hover || node.label)}</b>
+      ${verified ? `<span class="rf-detail-ok">${esc(node.meta.slice(1).trim() || 'verified')}</span>`
+        : (node.meta ? `<span class="rf-detail-bad">${esc(node.meta.replace('✗', '').trim())}</span>` : '')}
+    </div>
+    <ul class="rf-detail-links">${links.map((l) =>
+      `<li><span>${esc(l.source.label)}</span> ${rel(l)} this</li>`).join('')}</ul>
+    <div class="rf-detail-actions">
+      ${node.url ? `<a class="rf-btn rf-btn--ghost rf-btn--sm" href="${esc(node.url)}" target="_blank" rel="noreferrer">Open on arXiv</a>` : ''}
+    </div>`;
+}
+
+// Counts make the legend a summary as well as a control, and switching a
+// relation off is the quickest way to read a busy picture.
+function drawLegend(all, workCount, ideaCount) {
+  const host = el('graph-legend');
+  if (!all.links.length) { host.innerHTML = ''; return; }
+  const counts = {};
+  all.links.forEach((l) => {
+    const r = l.relation || 'relates-to';
+    counts[r] = (counts[r] || 0) + 1;
+  });
+  host.innerHTML = `<span class="rf-legend-count">${ideaCount} ideas · ${workCount} cited works`
+    + `${all.dropped ? ` · ${all.dropped} mined but uncited` : ''}</span>`
+    + Object.keys(counts).sort().map((name) => {
+      const off = S.graphHide.has(name);
+      return `<button type="button" class="rf-legend-item${off ? ' is-off' : ''}" data-rel="${esc(name)}"`
+        + ` aria-pressed="${off ? 'false' : 'true'}" title="${off ? 'Show' : 'Hide'} ${esc(name)} edges">`
+        + `<span class="rf-legend-dot" style="background:${RELATION_COLOR[name] || RELATION_COLOR['relates-to']}"></span>`
+        + `${esc(name)}<span class="rf-legend-n">${counts[name]}</span></button>`;
+    }).join('');
+
+  host.querySelectorAll('[data-rel]').forEach((btn) => {
+    btn.onclick = () => {
+      const name = btn.dataset.rel;
+      if (S.graphHide.has(name)) S.graphHide.delete(name); else S.graphHide.add(name);
+      S.graphSel = '';
+      const st = (S.data && S.data.state) || {};
+      drawGraph(st.papers || [], st.ideas || []);
+    };
+  });
+}
+
+// ===== the agent at work =====
+//
+// A read-only tail of the author's tmux pane. Loom owns the interactive
+// terminal; repeating it here would mean a second place to get input handling
+// wrong, and watching is the thing you actually want from this page.
+
+function renderPane() {
+  const status = el('pane-status');
+  const view = el('pane-view');
+  el('btn-open-loom').href = S.slug
+    ? `/?project=${encodeURIComponent(S.project)}#task=${encodeURIComponent(S.slug)}`
+    : '/';
+  if (!S.pane) {
+    view.hidden = true;
+    status.textContent = 'No agent session yet — it starts when the author does.';
+    return;
+  }
+  status.textContent = S.paneFollow ? `Watching ${S.pane}` : `Session ${S.pane} — tick "live" to watch.`;
+  view.hidden = !S.paneFollow;
+}
+
+async function pollPane() {
+  if (S.paneFollow && S.pane && S.view === 'paper') {
+    try {
+      const d = await api(`/api/tmux/capture?target=${encodeURIComponent(S.pane)}&lines=60`);
+      const view = el('pane-view');
+      const atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 40;
+      view.textContent = d.text || '(the pane is empty)';
+      if (atBottom) view.scrollTop = view.scrollHeight;
+    } catch { /* the pane can die between polls; the next one will say so */ }
+  }
+  setTimeout(pollPane, 2000);
+}
+
+// ===== what the author wrote =====
+
+async function openFiles(path = '') {
+  S.filePath = path;
+  try {
+    const d = await api(`${taskPath(S.slug, '/files')}?path=${encodeURIComponent(path)}`);
+    renderFiles(d);
+  } catch (err) {
+    el('files-list').innerHTML = `<li class="rf-empty">${esc(err.message)}</li>`;
+    el('files-body').hidden = true;
+  }
+}
+
+function renderFiles(d) {
+  const crumbs = el('files-crumbs');
+  const parts = (d.path || '').split('/').filter(Boolean);
+  crumbs.innerHTML = ['work', ...parts].map((name, i) => {
+    const upto = parts.slice(0, i).join('/');
+    return i === parts.length
+      ? `<span>${esc(name)}</span>`
+      : `<button type="button" data-path="${esc(upto)}">${esc(name)}</button>`;
+  }).join('<span class="rf-crumbs__sep">/</span>');
+  crumbs.querySelectorAll('[data-path]').forEach((b) => {
+    b.onclick = () => openFiles(b.dataset.path);
+  });
+
+  const list = el('files-list');
+  const body = el('files-body');
+  if (!d.dir) {
+    body.hidden = false;
+    body.textContent = d.body || '(not a text file, or too large to show)';
+    return;
+  }
+  body.hidden = true;
+  const dir = d.path ? `${d.path}/` : '';
+  list.innerHTML = (d.entries || []).map((e) => {
+    const kb = e.dir ? '' : `${(e.size / 1024).toFixed(e.size < 10240 ? 1 : 0)} kB`;
+    const open = e.dir || e.readable;
+    return `<li class="${e.dir ? 'is-dir' : ''}${open ? '' : ' is-flat'}">
+      ${open ? `<button type="button" data-open="${esc(dir + e.name)}">${esc(e.name)}</button>`
+             : `<span>${esc(e.name)}</span>`}
+      <em>${esc(kb)}</em></li>`;
+  }).join('') || '<li class="rf-empty">Nothing here yet.</li>';
+  list.querySelectorAll('[data-open]').forEach((b) => {
+    b.onclick = () => openFiles(b.dataset.open);
+  });
+}
+
+// ===== skills =====
+
+async function openSkills() {
+  el('skills-modal').hidden = false;
+  const list = el('skills-list');
+  try {
+    const d = await api('/api/ar/skills');
+    let role = '';
+    list.innerHTML = (d.skills || []).map((s) => {
+      const head = s.role !== role ? `<li class="rf-skills__role">${esc(s.role)}</li>` : '';
+      role = s.role;
+      return `${head}<li><button type="button" data-skill="${esc(s.id)}">
+        <b>${esc(s.name)}</b><small>${esc(s.description)}</small></button></li>`;
+    }).join('') || '<li class="rf-empty">No skills installed.</li>';
+    list.querySelectorAll('[data-skill]').forEach((b) => {
+      b.onclick = async () => {
+        list.querySelectorAll('[data-skill]').forEach((o) => o.classList.remove('is-on'));
+        b.classList.add('is-on');
+        el('skills-body').textContent = 'Loading…';
+        try {
+          const one = await api(`/api/ar/skills?id=${encodeURIComponent(b.dataset.skill)}`);
+          el('skills-body').textContent = one.body || '(empty)';
+        } catch (err) { el('skills-body').textContent = err.message; }
+      };
+    });
+  } catch (err) {
+    list.innerHTML = `<li class="rf-empty">${esc(err.message)}</li>`;
+  }
 }
 
 // ===== paper =====
@@ -495,11 +870,33 @@ const STAGES = [
   ['delivered', 'Delivered'],
 ];
 
+// The server decides what this paper can accept; the page only reflects it.
+// A disabled button carries the reason, so "why can't I press this" is
+// answered by the button itself rather than by pressing it and reading a toast.
+function setAction(id, rule, fallback) {
+  const btn = el(id);
+  if (!btn) return;
+  const ok = rule ? rule.ok !== false : Boolean(fallback);
+  btn.disabled = !ok;
+  btn.title = ok ? '' : ((rule && rule.why) || 'not available at this stage');
+  if (rule && rule.label) btn.textContent = rule.label;
+}
+
 function renderPaper(d, state) {
   const idea = state.idea || {};
   el('paper-title').textContent = idea.title || S.slug;
   el('paper-eyebrow').textContent = `Paper · ${String(state.venue || '').toUpperCase()}`;
   el('paper-hypothesis').textContent = idea.hypothesis || '';
+
+  const can = d.actions || {};
+  setAction('btn-paper-build', can.build);
+  setAction('btn-paper-pdf', can.pdf);
+  setAction('btn-paper-submission', can.submission);
+  setAction('btn-loop-start', can.start);
+  setAction('btn-loop-stop', can.stop);
+  setAction('btn-review-now', can.review);
+  S.pane = d.pane || '';
+  renderPane();
 
   const at = STAGES.findIndex(([id]) => id === state.stage);
   el('paper-pipeline').innerHTML = STAGES.map(([id, label], i) => {
@@ -648,6 +1045,10 @@ el('btn-ideas').addEventListener('click', async () => {
   await act(S.slug, 'ideas', { count: Number(el('studio-count').value || 6) }, 'Idea generation');
   loadTask();
 });
+el('btn-link').addEventListener('click', async () => {
+  await act(S.slug, 'link', {}, 'Linking ideas');
+  loadTask();
+});
 el('btn-spawn').addEventListener('click', async () => {
   if (!S.picked.size) { toast('Pick at least one idea first.'); return; }
   const d = await act(S.slug, 'spawn', { idea_ids: [...S.picked] }, 'Creating papers');
@@ -656,6 +1057,24 @@ el('btn-spawn').addEventListener('click', async () => {
   toast(`Created ${(d.spawned || []).length} paper task(s).`);
   (d.errors || []).forEach((e) => toast(e, true));
   loadTask();
+});
+
+el('btn-skills').addEventListener('click', openSkills);
+el('btn-skills-close').addEventListener('click', () => { el('skills-modal').hidden = true; });
+el('btn-goto-ideas').addEventListener('click', () => {
+  el('btn-spawn').closest('.rf-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+el('pane-follow').addEventListener('change', (ev) => {
+  S.paneFollow = ev.target.checked;
+  renderPane();
+});
+el('ideas-all').addEventListener('change', (ev) => {
+  document.querySelectorAll('#ideas-list [data-pick]:not(:disabled)').forEach((box) => {
+    box.checked = ev.target.checked;
+    if (box.checked) S.picked.add(box.dataset.pick); else S.picked.delete(box.dataset.pick);
+    box.closest('.rf-idea').classList.toggle('is-picked', box.checked);
+  });
+  updateSpawnLabel();
 });
 
 el('btn-paper-build').addEventListener('click', async () => {
@@ -674,7 +1093,13 @@ el('btn-paper-submission').addEventListener('click', async () => {
   }
   loadTask();
 });
-el('btn-loop-start').addEventListener('click', async () => { await act(S.slug, 'loop/start', {}, 'Start loop'); loadTask(); });
+el('btn-loop-start').addEventListener('click', async () => {
+  // Seeding the skeleton and resuming the rounds are one button, because from
+  // here both mean "hand it back to the author"; the server names which it is.
+  const can = (S.data && S.data.actions && S.data.actions.start) || {};
+  await act(S.slug, can.action || 'loop/start', {}, 'Start');
+  loadTask();
+});
 el('btn-loop-stop').addEventListener('click', async () => { await act(S.slug, 'loop/stop', {}, 'Stop loop'); loadTask(); });
 el('btn-review-now').addEventListener('click', async () => { await act(S.slug, 'review', {}, 'Review'); loadTask(); });
 
@@ -767,7 +1192,15 @@ el('btn-studio-create').addEventListener('click', async () => {
   }
   readHash();
   startPolling();
+  pollPane();
   window.addEventListener('hashchange', readHash);
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && S.graphSel) {
+      S.graphSel = '';
+      const st = (S.data && S.data.state) || {};
+      drawGraph(st.papers || [], st.ideas || []);
+    }
+  });
   window.addEventListener('resize', () => {
     if (S.view === 'studio' && S.data) {
       const st = S.data.state || {};

@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+from loom import agent_hooks
 from loom import ar_task as ar
 from loom.openclaw import OpenClawClient, OpenClawConfig, openclaw_status
 from loom.paths import (
@@ -76,6 +77,7 @@ from loom.rud_task import (
     load_skills_text,
     merge_worktree_to_base,
     normalize_agent,
+    path_under_task,
     prepare_task_worktree_from,
     push_worktree_branch,
     read_kernel_interview,
@@ -2979,8 +2981,13 @@ class ClaudeRegistry:
                 "already_running": True,
             }
 
+        # Name the task in the pane's environment. The agent's stop hook
+        # inherits it and can say exactly which task just finished - its own
+        # event only reports the repository root, which is the same for every
+        # task in a project.
+        pane_env = {"LOOM_TASK_ID": f"{project_id}/{slug}", **(env or {})}
         env_args: list[str] = []
-        for key, value in (env or {}).items():
+        for key, value in pane_env.items():
             env_args += ["-e", f"{key}={value}"]
         try:
             subprocess.run(
@@ -3496,6 +3503,176 @@ class _TaskMonitor:
             pass
 
 
+class AgentActivityWatcher:
+    """Watches every task's pane so the UI can show which ones just finished.
+
+    Distinct from ``TaskMonitorManager``, which the user opts into per task to
+    get an OpenClaw ping. This one is always on and purely visual: it answers
+    "which agent stopped while I was looking elsewhere", which is the question
+    a fleet of panes makes hard to answer by looking.
+
+    Capturing a short tail from every agent pane costs ~65ms for thirty of
+    them, so one poll for the whole host is cheaper than the per-task polling
+    the UI would otherwise need.
+    """
+
+    POLL_SECONDS = 4.0
+    RESCAN_SECONDS = 30.0
+    CAPTURE_LINES = 12
+    # Same confirmation the OpenClaw monitor uses: the working indicator
+    # flickers mid-turn, and a ring that blinks on every flicker is noise.
+    IDLE_CONFIRM = 3
+
+    def __init__(self, registry: WebProjectRegistry) -> None:
+        self.registry = registry
+        self._lock = threading.Lock()
+        self._state: dict[tuple[str, str], dict[str, Any]] = {}
+        self._targets: list[tuple[str, str, str]] = []
+        self._targets_at = 0.0
+        self._stop = threading.Event()
+        self.thread = threading.Thread(
+            target=self._loop, name="loom-activity", daemon=True
+        )
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _scan_targets(self) -> list[tuple[str, str, str]]:
+        """(project_id, slug, tmux target) for every task with a pane."""
+        out: list[tuple[str, str, str]] = []
+        for project in self.registry.list_projects():
+            pid, path = str(project.get("id") or ""), project.get("path")
+            if not pid or not path:
+                continue
+            try:
+                metas = list_tasks(Path(path))
+            except Exception:  # noqa: BLE001
+                continue
+            for meta in metas:
+                target = (getattr(meta, "tmux_interview_target", "") or "").strip()
+                if target:
+                    out.append((pid, meta.slug, target))
+        return out
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                now = time.time()
+                if now - self._targets_at > self.RESCAN_SECONDS:
+                    self._targets = self._scan_targets()
+                    self._targets_at = now
+                live = set()
+                for pid, slug, target in self._targets:
+                    key = (pid, slug)
+                    live.add(key)
+                    ok, text = capture_pane(target, self.CAPTURE_LINES)
+                    if not ok:
+                        continue
+                    working = bool(_AGENT_WORKING_RE.search(text or ""))
+                    with self._lock:
+                        entry = self._state.setdefault(
+                            key, {"working": False, "idle_polls": 0, "finished_at": 0.0}
+                        )
+                        if working:
+                            entry["working"] = True
+                            entry["idle_polls"] = 0
+                            # Working again supersedes an unread finish.
+                            entry["finished_at"] = 0.0
+                        else:
+                            entry["idle_polls"] += 1
+                            if entry["working"] and entry["idle_polls"] >= self.IDLE_CONFIRM:
+                                entry["working"] = False
+                                entry["finished_at"] = now
+                with self._lock:
+                    for key in [k for k in self._state if k not in live]:
+                        # Keep an unread finish that a stop hook reported: the
+                        # task may not be in the target list yet, and dropping
+                        # it here would silently swallow the notification.
+                        if self._state[key].get("finished_at"):
+                            continue
+                        self._state.pop(key, None)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[activity] loop error: {exc}", flush=True)
+            if self._stop.wait(self.POLL_SECONDS):
+                break
+
+    def snapshot(self) -> dict[str, Any]:
+        """Which tasks are working, and which finished without being seen."""
+        tasks: dict[str, Any] = {}
+        projects: dict[str, int] = {}
+        with self._lock:
+            for (pid, slug), entry in self._state.items():
+                finished = float(entry.get("finished_at") or 0)
+                tasks[f"{pid}/{slug}"] = {
+                    "project": pid,
+                    "slug": slug,
+                    "working": bool(entry.get("working")),
+                    "finished_at": finished,
+                }
+                if finished:
+                    projects[pid] = projects.get(pid, 0) + 1
+        return {"ok": True, "tasks": tasks, "projects": projects}
+
+    def ack(self, project_id: str, slug: str) -> None:
+        """Clear a task's finished flag once the user has looked at it."""
+        with self._lock:
+            entry = self._state.get((project_id, slug))
+            if entry:
+                entry["finished_at"] = 0.0
+
+    def report_finished(self, cwd: str, task_id: str = "") -> tuple[str, str] | None:
+        """Record a finish reported by the agent itself, via its stop hook.
+
+        Prefer the task Loom stamped on the pane. Fall back to matching the
+        reported directory against the task directories, for a pane started
+        outside Loom; longest match wins there, since a worktree sits inside a
+        task directory and the deeper path is the more specific answer.
+        """
+        if task_id and "/" in task_id:
+            pid, _, slug = task_id.partition("/")
+            if pid and slug:
+                self._mark_finished(pid, slug)
+                return pid, slug
+        try:
+            where = Path(cwd).expanduser().resolve()
+        except (OSError, RuntimeError):
+            return None
+        best: tuple[int, str, str] | None = None
+        for project in self.registry.list_projects():
+            pid, path = str(project.get("id") or ""), project.get("path")
+            if not pid or not path:
+                continue
+            try:
+                metas = list_tasks(Path(path))
+            except Exception:  # noqa: BLE001
+                continue
+            for meta in metas:
+                root = task_root(Path(path), meta.slug)
+                if where == root or root in where.parents:
+                    depth = len(root.parts)
+                    if best is None or depth > best[0]:
+                        best = (depth, pid, meta.slug)
+        if best is None:
+            return None
+        _, pid, slug = best
+        self._mark_finished(pid, slug)
+        return pid, slug
+
+    def _mark_finished(self, project_id: str, slug: str) -> None:
+        with self._lock:
+            entry = self._state.setdefault(
+                (project_id, slug), {"working": False, "idle_polls": 0, "finished_at": 0.0}
+            )
+            entry["working"] = False
+            # The agent said it stopped, so the poller has nothing left to
+            # confirm; without this it would re-announce the same finish.
+            entry["idle_polls"] = self.IDLE_CONFIRM
+            entry["finished_at"] = time.time()
+
+
 class TaskMonitorManager:
     """Owns per-task monitor threads keyed by ``(project_id, slug)``."""
 
@@ -3717,6 +3894,30 @@ def _ar_ideas_job(root: Path, slug: str, count: int, model: str) -> None:
             root, slug, ideas_status="error", ideas_error=str(res.get("error") or "")
         )
         print(f"[ar] {slug}: idea generation failed - {res.get('error')}", flush=True)
+
+
+def _ar_link_job(root: Path, slug: str, model: str) -> None:
+    state = ar.read_ar_state(root, slug)
+    log = _ar_logger(root, slug, ar.JOB_IDEAS, reset=False)
+    res = ar.link_ideas(state, model=model, on_line=log)
+    if not res.get("ok"):
+        log(f"failed: {res.get('error')}")
+        ar.update_ar_state(
+            root, slug, link_status="error", link_error=str(res.get("error") or "")
+        )
+        return
+    ar.update_ar_state(
+        root,
+        slug,
+        ideas=res.get("ideas") or state.get("ideas") or [],
+        link_status="done",
+        link_error="",
+        ideas_updated_at=_iso_now(),
+        cost_usd=round(
+            float(state.get("cost_usd") or 0.0) + float(res.get("cost") or 0.0), 4
+        ),
+    )
+    print(f"[ar] {slug}: linked {res.get('linked')} idea(s) to prior work", flush=True)
 
 
 def _ar_review_job(root: Path, slug: str) -> None:
@@ -4602,6 +4803,7 @@ def make_handler(
     multi_project_workspace: bool = False,
     monitor_manager: "TaskMonitorManager | None" = None,
     ar_manager: "ARLoopManager | None" = None,
+    activity_watcher: "AgentActivityWatcher | None" = None,
 ) -> type[BaseHTTPRequestHandler]:
     static_root = web_static_dir().resolve()
     required_token = auth_token.strip()
@@ -4612,6 +4814,9 @@ def make_handler(
     ar_manager = ar_manager or ARLoopManager(
         openclaw_client, claude_registry, default_skills
     )
+    if activity_watcher is None:
+        activity_watcher = AgentActivityWatcher(pr)
+        activity_watcher.start()
     terminal_streams = _TerminalStreamRegistry()
 
     class Handler(BaseHTTPRequestHandler):
@@ -4690,6 +4895,18 @@ def make_handler(
                 },
             }
             if ar.is_paper(state):
+                payload["actions"] = ar.available_actions(
+                    state,
+                    loop_running=bool(payload["loop"].get("running")),
+                    review_running=str(state.get("review_status")) == "running",
+                    has_source=(paper_dir / "main.tex").is_file(),
+                    pdf_available=payload["pdf_available"],
+                )
+                # The pane the author runs in, so the Factory can show the work
+                # happening instead of only its result.
+                payload["pane"] = (
+                    (getattr(meta, "tmux_interview_target", "") or "") if meta else ""
+                )
                 payload["stage_label"] = ar.progress_summary(state)
                 payload["latest_review"] = ar.latest_review(state) or {}
                 payload["plateaued"] = ar.is_plateaued(state)
@@ -4862,6 +5079,18 @@ def make_handler(
                 _ar_run_async(_ar_ideas_job, root, slug, count, model)
                 return {"ok": True, "status": "running"}, 202
 
+            if action == "link":
+                state, err = self._ar_require_state(root, slug, ar.ROLE_STUDIO)
+                if state is None:
+                    return {"ok": False, "error": err}, 400
+                if str(state.get("link_status")) == "running":
+                    return {"ok": True, "status": "running"}, 202
+                meta = read_meta(root, slug)
+                model = str(body.get("model", "")).strip() or _ar_headless_model(meta)
+                ar.update_ar_state(root, slug, link_status="running", link_error="")
+                _ar_run_async(_ar_link_job, root, slug, model)
+                return {"ok": True, "status": "running"}, 202
+
             if action == "spawn":
                 state, err = self._ar_require_state(root, slug, ar.ROLE_STUDIO)
                 if state is None:
@@ -5021,6 +5250,26 @@ def make_handler(
             self.end_headers()
             self.wfile.write(body)
             return False
+
+        def _agent_finished(self, body: dict[str, Any]) -> None:
+            """Handle an agent's own report that its turn ended.
+
+            Authorised by the hook token rather than the web session, and
+            deliberately loopback-only: the caller is a local process on this
+            host, so nothing about it should be reachable from the network.
+            """
+            client = (self.client_address or ("",))[0]
+            token = self.headers.get("X-Loom-Hook-Token", "")
+            expected = agent_hooks.hook_token()
+            if client not in ("127.0.0.1", "::1") or not expected or not hmac.compare_digest(token, expected):
+                st, b, h = _json_bytes({"ok": False}, status=403)
+                self._send(st, b, h)
+                return
+            hit = activity_watcher.report_finished(
+                str(body.get("cwd", "")), str(body.get("task", ""))
+            )
+            st, b, h = _json_bytes({"ok": bool(hit), "task": hit[1] if hit else ""})
+            self._send(st, b, h)
 
         def _claude_session_summary(self, project_id: str, slug: str, meta) -> dict[str, Any]:
             agent = normalize_agent(meta.agent)
@@ -5307,6 +5556,51 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
+            if path == "/api/ar/skills":
+                # What the agents are told, readable from the outside. One
+                # skill's body when asked for, otherwise the catalogue.
+                qs = parse_qs(parsed.query or "")
+                wanted = (qs.get("id") or [""])[0].strip()
+                if wanted:
+                    body = ar.skill_body(wanted)
+                    st, b, h = _json_bytes(
+                        {"ok": bool(body), "id": wanted, "body": body}
+                        if body else {"ok": False, "error": "no such skill"},
+                        200 if body else 404,
+                    )
+                else:
+                    st, b, h = _json_bytes({"ok": True, "skills": ar.skill_catalog()})
+                self._send(st, b, h)
+                return
+
+            m_ar_files = re.match(r"^/api/tasks/([^/]+)/ar/files$", path)
+            if m_ar_files:
+                root, _pid = self._resolve_scope(parsed)
+                if root is None:
+                    self._bad_project()
+                    return
+                slug = m_ar_files.group(1)
+                if not _SLUG_RE.match(slug):
+                    st, b, h = _json_bytes({"error": "invalid slug"}, 400)
+                    self._send(st, b, h)
+                    return
+                qs = parse_qs(parsed.query or "")
+                rel = (qs.get("path") or [""])[0].strip().lstrip("/")
+                base = task_root(root, slug) / "work"
+                target = path_under_task(base, rel) if rel else base
+                if target is None or not target.exists():
+                    st, b, h = _json_bytes({"ok": False, "error": "not found"}, 404)
+                elif target.is_dir():
+                    st, b, h = _json_bytes(
+                        {"ok": True, "path": rel, "dir": True, "entries": ar.browse_dir(target)}
+                    )
+                else:
+                    st, b, h = _json_bytes(
+                        {"ok": True, "path": rel, "dir": False, "body": ar.read_text_file(target)}
+                    )
+                self._send(st, b, h)
+                return
+
             m_ki = re.match(r"^/api/tasks/([^/]+)/kernel-interview$", path)
             if m_ki:
                 root, _pid = self._resolve_scope(parsed)
@@ -5319,6 +5613,13 @@ def make_handler(
                     self._send(st, b, h)
                     return
                 st, b, h = _json_bytes(read_kernel_interview(root, slug))
+                self._send(st, b, h)
+                return
+
+            if path == "/api/activity":
+                # Host-wide on purpose: the point is to surface an agent that
+                # finished in a project you are not currently looking at.
+                st, b, h = _json_bytes(activity_watcher.snapshot())
                 self._send(st, b, h)
                 return
 
@@ -6036,9 +6337,15 @@ def make_handler(
         # ===== POST =====
 
         def do_POST(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            # An agent's stop hook reports here. It runs outside any browser
+            # session, so it carries its own narrow credential instead of the
+            # web token - checked before _require_auth, which would reject it.
+            if parsed.path == "/api/activity/finished":
+                self._agent_finished(_read_json(self))
+                return
             if not self._require_auth():
                 return
-            parsed = urlparse(self.path)
             path = parsed.path
             body = _read_json(self)
 
@@ -6185,6 +6492,18 @@ def make_handler(
                     return
                 result = _kernel_interview_turn(msgs, str(body.get("model", "")))
                 st, b, h = _json_bytes(result, 200 if result.get("ok") else 502)
+                self._send(st, b, h)
+                return
+
+            if path == "/api/activity/ack":
+                root, project_id = self._resolve_scope(parsed)
+                if project_id is None:
+                    self._bad_project()
+                    return
+                slug = str(body.get("slug", "")).strip()
+                if slug:
+                    activity_watcher.ack(project_id, slug)
+                st, b, h = _json_bytes({"ok": True})
                 self._send(st, b, h)
                 return
 
@@ -7720,6 +8039,13 @@ def serve(
     if _resumed:
         print(f"  Resumed {_resumed} enabled run-monitor(s)", flush=True)
     sk = default_skills if default_skills.is_file() else bundled_skills_path().resolve()
+    activity_watcher = AgentActivityWatcher(web_project_registry)
+    activity_watcher.start()
+    # Agents that support a stop hook report their own completion, which beats
+    # watching their pane for it. The watcher above stays as the fallback for
+    # the ones that don't.
+    for _note in agent_hooks.install(port):
+        print(f"  Stop hook {_note}", flush=True)
     ar_manager = ARLoopManager(openclaw_client, claude_registry, sk)
     _ar_swept = ar_manager.sweep_stale_jobs(_monitor_projects)
     if _ar_swept:
@@ -7737,6 +8063,7 @@ def serve(
         multi_project_workspace=multi_project_workspace,
         monitor_manager=monitor_manager,
         ar_manager=ar_manager,
+        activity_watcher=activity_watcher,
     )
     server = ThreadingHTTPServer((host, port), handler)
     rud_root = project_root / ".RUD"

@@ -101,6 +101,8 @@ const STATE = {
   previewCache: {},
   previewDebounce: {},
   sidebarOpen: false,
+  activity: null,
+  activityTimer: null,
   notesDirty: false,
   notesSaving: false,
   taskFilter: '',
@@ -296,6 +298,52 @@ function buildTabs(meta) {
   }
 }
 
+// ===== Agent activity (which agent just stopped) =====
+//
+// Classes are toggled on the existing nodes rather than folded into the
+// renderers: re-rendering a list restarts every CSS animation, so a ring on a
+// four-second poll would stutter instead of spin.
+
+async function pollActivity() {
+  try {
+    STATE.activity = await apiNoProject('/api/activity');
+  } catch {
+    return; // a blip should not clear the rings
+  }
+  applyActivity();
+}
+
+function applyActivity() {
+  const data = STATE.activity;
+  if (!data) return;
+  const tasks = data.tasks || {};
+  const projects = data.projects || {};
+
+  document.querySelectorAll('#task-list li[data-slug]').forEach((li) => {
+    const entry = tasks[`${STATE.projectId}/${li.dataset.slug}`];
+    // The open task is being looked at, so it never needs to ask for attention.
+    const wants = !!(entry && entry.finished_at) && li.dataset.slug !== STATE.slug;
+    li.classList.toggle('is-finished', wants);
+  });
+
+  document.querySelectorAll('.project-toggle[data-project-id]').forEach((chip) => {
+    const pid = chip.dataset.projectId;
+    const count = projects[pid] || 0;
+    // Rings on the project you are already in would duplicate the task rings.
+    chip.classList.toggle('is-finished', count > 0 && pid !== STATE.projectId);
+  });
+}
+
+function ackActivity(slug) {
+  if (!slug || !STATE.projectId) return;
+  const entry = (STATE.activity && STATE.activity.tasks) || {};
+  if (!entry[`${STATE.projectId}/${slug}`]) return;
+  delete entry[`${STATE.projectId}/${slug}`];
+  applyActivity();
+  api('/api/activity/ack', { method: 'POST', body: JSON.stringify({ slug }) })
+    .catch(() => {});
+}
+
 // ===== Projects =====
 
 async function loadProjectsList() {
@@ -398,6 +446,7 @@ function renderProjectToggleBar() {
     const active = scroll.querySelector('.project-toggle.is-active');
     if (active) active.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
     syncProjectBarFades();
+    applyActivity();
   });
 }
 
@@ -1484,6 +1533,7 @@ function renderTasksFromState() {
     fragment.appendChild(li);
   }
   ul.appendChild(fragment);
+  applyActivity();
 }
 
 function clearTaskSelection() {
@@ -1557,6 +1607,7 @@ async function selectTask(slug) {
   STATE.changesData = null;
   STATE.changesSelected = '';
   resetArLab();
+  ackActivity(slug);
   document.querySelectorAll('#task-list li').forEach((li) => {
     li.classList.toggle('active', li.dataset.slug === slug);
   });
@@ -5630,6 +5681,10 @@ async function loadWorkspace() {
   initMarkdownPreviews();
   initFullscreenPreviews();
   loadLastTaskMap();
+  pollActivity();
+  STATE.activityTimer = setInterval(() => {
+    if (!document.hidden) pollActivity();
+  }, 4000);
   try {
     await loadWorkspace();
   } catch (e) {
