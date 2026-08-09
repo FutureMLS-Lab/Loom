@@ -1,16 +1,16 @@
 ---
-name: results-figure
-description: Draw a results figure for one of this repo's papers — a chart carrying measurements, in the house style the existing figures already use: Okabe-Ito colours, the paper's serif face, TrueType output, references drawn as labelled baselines rather than legend entries, and a printed summary of every number the figure asserts. Use when the user runs /results-figure, or asks for a results plot, an experiment figure, a scaling or ablation chart, or asks to fix, restyle or check an existing figure in a paper's latex/figs. Not for teasers or schematics — those are teaser-figure and teaser-figure-plain.
+name: results-figure-1
+description: Draw a results figure for one of this repo's papers — a chart carrying measurements, in the house style the existing figures already use: Okabe-Ito colours, the paper's serif face, TrueType output, references drawn as labelled baselines rather than legend entries, and a printed summary of every number the figure asserts. Use when the user runs /results-figure-1, or asks for a results plot, an experiment figure, a scaling or ablation chart, or asks to fix, restyle or check an existing figure in a paper's latex/figs. Not for teasers or schematics — those are teaser-figure-1 and teaser-figure-2.
 disable-model-invocation: true
 ---
 
-# results-figure
+# results-figure-1
 
 ## What this covers
 
-The **evidence** half of figure-making: a chart that carries measurements, lives in the results section or the supplement, and is read by someone deciding whether to believe a claim. The teaser skills (`teaser-figure`, `teaser-figure-plain`) cover the other half, schematics that explain an idea. The two sets of rules conflict — decoration is necessary in a teaser and is noise here — so do not carry technique across.
+The **evidence** half of figure-making: a chart that carries measurements, lives in the results section or the supplement, and is read by someone deciding whether to believe a claim. The teaser skills (`teaser-figure-1`, `teaser-figure-2`) cover the other half, schematics that explain an idea. The two sets of rules conflict — decoration is necessary in a teaser and is noise here — so do not carry technique across.
 
-There is also a sibling of this skill, `results-figure-replicates`, for when per-trial data exists and the point is the spread rather than the aggregate. Read this one first; that one is this plus one idea.
+There is also a sibling of this skill, `results-figure-2`, for when per-trial data exists and the point is the spread rather than the aggregate. Read this one first; that one is this plus one idea.
 
 ## The red line
 

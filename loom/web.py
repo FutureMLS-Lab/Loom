@@ -3777,10 +3777,10 @@ def _ar_run_async(fn, *args: Any) -> None:
 
 
 def _ar_headless_model(meta: Any) -> str:
-    """Model for headless AR calls.
+    """Claude model for headless Studio idea generation.
 
-    These go through ``claude -p``, so a task configured for Cursor or Codex
-    cannot lend its model id; fall back to the Claude default in that case.
+    Idea generation still goes through ``claude -p``. Paper reviews use the
+    fixed Cursor PDF reviewer panel defined in ``ar_task.py``.
     """
     if meta is not None and normalize_agent(getattr(meta, "agent", "")) == AGENT_CLAUDE:
         model = str(getattr(meta, "interview_model", "") or "").strip()
@@ -3823,6 +3823,115 @@ def _ar_logger(root: Path, slug: str, job: str, *, reset: bool = True):
     if reset:
         ar.reset_job_log(path)
     return lambda line: ar.append_job_log(path, line)
+
+
+def _ar_reviewer_slug(model: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str(model or "")).strip("-._")
+    return slug or "reviewer"
+
+
+def _ar_store_panel_reviews(
+    root: Path,
+    slug: str,
+    n: int,
+    reviewers: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Persist each independent review and return compact state metadata."""
+    directory = ar.round_dir(root, slug, n)
+    directory.mkdir(parents=True, exist_ok=True)
+    stored: list[dict[str, Any]] = []
+    for item in reviewers:
+        model = str(item.get("model") or "reviewer")
+        text = str(item.get("review") or "").strip()
+        path = directory / f"review-{_ar_reviewer_slug(model)}.md"
+        if text:
+            path.write_text(text + "\n", encoding="utf-8")
+        metadata = {
+            key: item.get(key)
+            for key in ("model", "scores", "headline", "duration_seconds", "cost")
+        }
+        metadata["path"] = str(path) if text else ""
+        stored.append(metadata)
+    return stored
+
+
+_PANEL_REVIEW_RE = re.compile(
+    r"(?ms)^# Reviewer: `([^`]+)`\s*\n(.*?)(?=^\s*---\s*$|\Z)"
+)
+
+
+def _ar_review_payload(root: Path, slug: str, n: int) -> dict[str, Any] | None:
+    """Review API payload with every model's full report.
+
+    New rounds read per-model files. Existing panel rounds are recovered from
+    the combined review.md, and old single-model rounds remain readable.
+    """
+    combined_path = ar.review_note_path(root, slug, n)
+    if not combined_path.is_file():
+        return None
+    combined = _ar_read_text(combined_path)
+    state = ar.read_ar_state(root, slug)
+    rec = ar.round_record(state, n) or {}
+    review = rec.get("review") if isinstance(rec.get("review"), dict) else {}
+    metadata = (
+        review.get("reviewers")
+        if isinstance(review.get("reviewers"), list)
+        else []
+    )
+    parsed = {
+        model: body.strip()
+        for model, body in _PANEL_REVIEW_RE.findall(combined)
+    }
+    directory = ar.round_dir(root, slug, n).resolve()
+    reviewers: list[dict[str, Any]] = []
+    for item in metadata:
+        if not isinstance(item, dict):
+            continue
+        model = str(item.get("model") or "")
+        body = ""
+        path_value = str(item.get("path") or "")
+        if path_value:
+            candidate: Path | None = Path(path_value).expanduser().resolve()
+            try:
+                candidate.relative_to(directory)
+            except ValueError:
+                candidate = None
+            if candidate is not None and candidate.is_file():
+                body = _ar_read_text(candidate)
+        if not body:
+            body = parsed.get(model, "")
+        reviewers.append({**item, "review": body})
+
+    if not reviewers and parsed:
+        for model, body in parsed.items():
+            scores = ar.parse_review_scores(body)
+            reviewers.append(
+                {
+                    "model": model,
+                    "scores": scores,
+                    "headline": ar.review_headline(scores),
+                    "review": body,
+                }
+            )
+    if not reviewers:
+        model = str(review.get("model") or "")
+        reviewers = [
+            {
+                "model": model or "reviewer",
+                "scores": review.get("scores") or {},
+                "headline": review.get("headline") or "",
+                "review": combined,
+            }
+        ]
+    return {
+        "ok": True,
+        "round": n,
+        "review": combined,
+        "scores": review.get("scores") or {},
+        "headline": review.get("headline") or "",
+        "deciding_model": str(review.get("deciding_model") or ""),
+        "reviewers": reviewers,
+    }
 
 
 def _ar_mine_job(root: Path, slug: str, limit: int, venue_only: bool) -> None:
@@ -3920,7 +4029,7 @@ def _ar_link_job(root: Path, slug: str, model: str) -> None:
     print(f"[ar] {slug}: linked {res.get('linked')} idea(s) to prior work", flush=True)
 
 
-def _ar_review_job(root: Path, slug: str, model: str) -> None:
+def _ar_review_job(root: Path, slug: str) -> None:
     """One out-of-band review, triggered from the panel rather than the loop."""
     state = ar.read_ar_state(root, slug)
     paper_dir = ar.paper_root(root, slug)
@@ -3932,23 +4041,41 @@ def _ar_review_job(root: Path, slug: str, model: str) -> None:
         if build.get("ok")
         else f"PDF build failed: {build.get('error')}"
     )
-    author_note = _ar_read_text(ar.author_note_path(root, slug, n))
     res = ar.run_reviewer(
         paper_dir,
         ar.ar_skill_text(ar.SKILL_REVIEWER),
         venue=str(state.get("venue") or ar.DEFAULT_VENUE),
-        idea=state.get("idea") or {},
         round_n=max(1, n),
-        author_note=author_note,
         build=build,
-        model=model,
+        models=ar.CURSOR_REVIEWER_MODELS,
         on_line=log,
     )
     if not res.get("ok"):
         log(f"failed: {res.get('error')}")
-        ar.update_ar_state(
-            root, slug, review_status="error", review_error=str(res.get("error") or "")
-        )
+        readiness = res.get("readiness")
+        if isinstance(readiness, dict):
+            report_path = ar.round_dir(root, slug, n) / "readiness.md"
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                report_path.write_text(
+                    ar.review_readiness_markdown(readiness), encoding="utf-8"
+                )
+                readiness["report_path"] = str(report_path)
+            except OSError:
+                pass
+            state = ar.read_ar_state(root, slug)
+            rec = ar.ensure_round(state, n)
+            rec["readiness"] = readiness
+            state["review_status"] = "error"
+            state["review_error"] = str(res.get("error") or "")
+            ar.write_ar_state(root, slug, state)
+        else:
+            ar.update_ar_state(
+                root,
+                slug,
+                review_status="error",
+                review_error=str(res.get("error") or ""),
+            )
         return
     path = ar.review_note_path(root, slug, n)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -3959,15 +4086,31 @@ def _ar_review_job(root: Path, slug: str, model: str) -> None:
         return
     state = ar.read_ar_state(root, slug)
     rec = ar.ensure_round(state, n)
+    try:
+        stored_reviewers = _ar_store_panel_reviews(
+            root, slug, n, list(res.get("reviewers") or [])
+        )
+    except OSError as exc:
+        ar.update_ar_state(
+            root, slug, review_status="error", review_error=str(exc)
+        )
+        return
     rec["review"] = {
         "created_at": _iso_now(),
-        "model": model,
+        "model": ar.CURSOR_REVIEWER_PANEL,
+        "models": res.get("models") or list(ar.CURSOR_REVIEWER_MODELS),
         "path": str(path),
         "scores": res.get("scores") or {},
         "headline": res.get("headline") or "",
+        "deciding_model": res.get("deciding_model") or "",
+        "input_pdf": res.get("input_pdf") or str(paper_dir / "main.pdf"),
+        "reviewers": stored_reviewers,
     }
     state["review_status"] = "done"
     state["review_error"] = ""
+    state["cost_usd"] = round(
+        float(state.get("cost_usd") or 0.0) + float(res.get("cost") or 0.0), 4
+    )
     ar.write_ar_state(root, slug, state)
 
 
@@ -4018,7 +4161,8 @@ def _ar_spawn_children(
                 custom_direction=str(state.get("custom_direction") or ""),
                 max_rounds=state.get("max_rounds", ar.DEFAULT_MAX_ROUNDS),
                 author_model=(parent.interview_model if parent else ""),
-                reviewer_model=_ar_headless_model(parent),
+                reviewer_model=ar.CURSOR_REVIEWER_PANEL,
+                reviewer_models=ar.CURSOR_REVIEWER_MODELS,
             )
             paper_state["paper_dir"] = str(paper_dir)
             ar.write_ar_state(root, child.slug, paper_state)
@@ -4219,6 +4363,17 @@ class _ARLoopDriver:
             self._start_round(state, n + 1)
             return
 
+        readiness = rec.get("readiness")
+        if isinstance(readiness, dict) and not readiness.get("ready"):
+            # A failed completion note is archived. Wait for the author to
+            # write a new one after receiving the deterministic failure list.
+            note = ar.author_note_path(self.project_root, self.slug, n)
+            if note.is_file():
+                self._close_round(state, n, note)
+            elif not readiness.get("repair_prompt_sent_at"):
+                self._send_readiness_prompt(state, n)
+            return
+
         # The author's note is the authoritative end-of-round signal, so check
         # it before the prompt bookkeeping: a round driven by hand, or one whose
         # prompt failed to paste and was sent another way, still closes.
@@ -4294,35 +4449,126 @@ class _ARLoopDriver:
         self._save(state)
         self._note(f"round {n} prompt sent to the agent pane")
 
+    def _send_readiness_prompt(self, state: dict[str, Any], n: int) -> None:
+        rec = ar.round_record(state, n) or {}
+        readiness = (
+            rec.get("readiness")
+            if isinstance(rec.get("readiness"), dict)
+            else {}
+        )
+        report_value = str(readiness.get("report_path") or "")
+        prompt = ar.author_readiness_repair_prompt(
+            task_root(self.project_root, self.slug),
+            self._paper_dir(),
+            state,
+            n,
+            readiness,
+            report_path=Path(report_value) if report_value else None,
+        )
+        ok, err = self._paste(prompt)
+        if not ok:
+            self.last_error = err
+            return
+        self.last_error = ""
+        state = self._state()
+        rec = ar.ensure_round(state, n)
+        latest = dict(rec.get("readiness") or {})
+        latest["repair_prompt_sent_at"] = _iso_now()
+        rec["readiness"] = latest
+        self._save(state)
+        self._note(f"round {n} readiness failures returned to the author")
+
     def _close_round(self, state: dict[str, Any], n: int, note: Path) -> None:
-        self._note(f"round {n} author finished - building and reviewing")
+        self._note(f"round {n} author finished - checking submission readiness")
         build = self._build()
-        author_text = _ar_read_text(note)
 
         state = self._state()
         rec = ar.ensure_round(state, n)
+        readiness = ar.review_readiness(
+            self._paper_dir(),
+            venue=str(state.get("venue") or ar.DEFAULT_VENUE),
+            build=build,
+        )
+        attempts = rec.setdefault("readiness_attempts", [])
+        attempt_n = len(attempts) + 1
+        report_path = (
+            ar.round_dir(self.project_root, self.slug, n)
+            / (
+                "readiness.md"
+                if readiness.get("ready")
+                else f"readiness-attempt-{attempt_n:02d}.md"
+            )
+        )
+        try:
+            report_path.write_text(
+                ar.review_readiness_markdown(readiness), encoding="utf-8"
+            )
+        except OSError as exc:
+            self.last_error = f"could not write readiness report: {exc}"
+            rec["review_error"] = self.last_error
+            self._save(state)
+            self.stop()
+            return
+        readiness["report_path"] = str(report_path)
+
+        if not readiness.get("ready"):
+            attempt_note = (
+                ar.round_dir(self.project_root, self.slug, n)
+                / f"author-attempt-{attempt_n:02d}.md"
+            )
+            summary = _ar_read_head(note)
+            attempts.append(
+                {
+                    "attempt": attempt_n,
+                    "ended_at": _iso_now(),
+                    "note": str(attempt_note),
+                    "summary": summary,
+                    "report": str(report_path),
+                    "failed": readiness.get("failed") or [],
+                }
+            )
+            rec["readiness"] = readiness
+            rec.pop("author", None)
+            rec.pop("review_error", None)
+            self._save(state)
+            # Persist the blocked state before consuming author.md. If Loom
+            # dies between these operations, restart sees the failed gate and
+            # safely rechecks the still-present note instead of wedging.
+            try:
+                note.replace(attempt_note)
+            except OSError as exc:
+                self.last_error = f"could not archive blocked author note: {exc}"
+                state = self._state()
+                rec = ar.ensure_round(state, n)
+                rec["review_error"] = self.last_error
+                self._save(state)
+                self.stop()
+                return
+            self._note(
+                f"round {n} review blocked by {len(readiness.get('failed') or [])} "
+                "readiness check(s)"
+            )
+            self._send_readiness_prompt(self._state(), n)
+            return
+
         rec["author"] = {
             "ended_at": _iso_now(),
             "note": str(note),
             "summary": _ar_read_head(note),
         }
+        rec["readiness"] = readiness
+        rec.pop("review_error", None)
         self._save(state)
+        self._note(f"round {n} readiness passed - starting reviewer panel")
 
-        base_model = str(state.get("reviewer_model") or "") or agent_default_model(
-            AGENT_CLAUDE
-        )
-        reviewer_model = ar.reviewer_model_for(state, base_model, n)
-        if reviewer_model != base_model:
-            self._note(f"round {n} plateaued - reviewing with {reviewer_model} instead")
         result = ar.run_reviewer(
             self._paper_dir(),
             ar.ar_skill_text(ar.SKILL_REVIEWER),
             venue=str(state.get("venue") or ar.DEFAULT_VENUE),
-            idea=state.get("idea") or {},
             round_n=n,
-            author_note=author_text,
             build=build,
-            model=reviewer_model,
+            readiness=readiness,
+            models=ar.CURSOR_REVIEWER_MODELS,
             on_line=_ar_logger(self.project_root, self.slug, ar.JOB_REVIEW),
         )
         state = self._state()
@@ -4339,6 +4585,12 @@ class _ARLoopDriver:
         review_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             review_path.write_text(str(result.get("review") or ""), encoding="utf-8")
+            stored_reviewers = _ar_store_panel_reviews(
+                self.project_root,
+                self.slug,
+                n,
+                list(result.get("reviewers") or []),
+            )
         except OSError as exc:
             self.last_error = f"could not write review: {exc}"
             self._save(state)
@@ -4346,15 +4598,20 @@ class _ARLoopDriver:
 
         rec["review"] = {
             "created_at": _iso_now(),
-            "model": reviewer_model,
+            "model": ar.CURSOR_REVIEWER_PANEL,
+            "models": result.get("models") or list(ar.CURSOR_REVIEWER_MODELS),
             "path": str(review_path),
             "scores": result.get("scores") or {},
             "headline": result.get("headline") or "",
+            "deciding_model": result.get("deciding_model") or "",
+            "input_pdf": result.get("input_pdf") or str(self._paper_dir() / "main.pdf"),
+            "reviewers": stored_reviewers,
         }
         rec.pop("review_error", None)
         state["cost_usd"] = round(
             float(state.get("cost_usd") or 0.0) + float(result.get("cost") or 0.0), 4
         )
+        ar.update_plateau_tracking(state, n)
         self._save(state)
         self._note(f"round {n} reviewed - {rec['review']['headline']}")
 
@@ -4362,8 +4619,8 @@ class _ARLoopDriver:
             state["stage"] = ar.STAGE_AWAIT_FINAL_REVIEW
             state["loop_running"] = False
             state["stop_reason"] = (
-                f"reviewer rated it {int(ar.best_rating(state))}/10, at or above "
-                f"the target of {ar.stop_rating(state)}"
+                f"the lowest panel reviewer rated it {int(ar.best_rating(state))}/10, "
+                f"at or above the target of {ar.stop_rating(state)}"
             )
             self._save(state)
             self._note(f"stopping early: {state['stop_reason']}")
@@ -4372,6 +4629,32 @@ class _ARLoopDriver:
                 (
                     f"Loom AR task {self.slug} hit its target rating at round {n} "
                     "and is waiting for your final review."
+                ),
+                {
+                    "event": "ar-loop-complete",
+                    "round": n,
+                    "headline": rec["review"]["headline"],
+                    "stop_reason": state["stop_reason"],
+                },
+            )
+            self.stop()
+            return
+
+        if ar.should_pause_for_plateau(state, n):
+            started = int(state.get("plateau_started_round") or n)
+            state["stage"] = ar.STAGE_AWAIT_FINAL_REVIEW
+            state["loop_running"] = False
+            state["stop_reason"] = (
+                f"the lowest panel rating plateaued at round {started} and did not "
+                f"improve after {ar.PLATEAU_HUMAN_GRACE_ROUNDS} structural repair rounds"
+            )
+            self._save(state)
+            self._note(f"pausing for human input: {state['stop_reason']}")
+            self._emit(
+                "ar-loop-complete",
+                (
+                    f"Loom AR task {self.slug} stayed on a score plateau through "
+                    f"round {n} and is waiting for your decision."
                 ),
                 {
                     "event": "ar-loop-complete",
@@ -5004,14 +5287,8 @@ def make_handler(
                     return {"ok": False, "error": err}, 400
                 if str(state.get("review_status")) == "running":
                     return {"ok": True, "status": "running"}, 202
-                meta = read_meta(root, slug)
-                model = (
-                    str(body.get("model", "")).strip()
-                    or str(state.get("reviewer_model") or "")
-                    or _ar_headless_model(meta)
-                )
                 ar.update_ar_state(root, slug, review_status="running", review_error="")
-                _ar_run_async(_ar_review_job, root, slug, model)
+                _ar_run_async(_ar_review_job, root, slug)
                 return {"ok": True, "status": "running"}, 202
 
             if action == "submission":
@@ -5566,16 +5843,14 @@ def make_handler(
                     self._send(st, b, h)
                     return
                 n = int(m_ar_review.group(2))
-                path_n = ar.review_note_path(root, slug, n)
-                if not path_n.is_file():
+                payload = _ar_review_payload(root, slug, n)
+                if payload is None:
                     st, b, h = _json_bytes(
                         {"ok": False, "error": f"no review for round {n}"}, 404
                     )
                     self._send(st, b, h)
                     return
-                st, b, h = _json_bytes(
-                    {"ok": True, "round": n, "review": _ar_read_text(path_n)}
-                )
+                st, b, h = _json_bytes(payload)
                 self._send(st, b, h)
                 return
 

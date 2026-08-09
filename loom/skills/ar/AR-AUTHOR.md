@@ -53,15 +53,21 @@ A figure belongs in `manuscript/figures/` and the script that drew it in
 
 Dedicated skills are installed under `loom/skills/ar/figures/`, and the round
 prompt lists them with their paths. Read the relevant `SKILL.md` before drawing
-rather than reaching for default matplotlib — each one carries a house style, a
-drawing kit in its `scripts/`, and a runnable example.
+rather than reaching for default matplotlib — each one carries a house style,
+procedural checks and a worked example; deterministic skills also carry a
+drawing kit in `scripts/`.
 
-- **teaser-figure** and **teaser-figure-plain** — the page-one overview. Use the
-  plain variant when the paper has something concrete to draw and a real
-  measurement to plot; the tinted-panel variant when the contribution is a
-  mechanism with no drawable object.
-- **results-figure** and **results-figure-replicates** — the evidence plots. Use
-  the replicates variant whenever you have more than one seed, which for this
+- **teaser-figure-1**, **teaser-figure-2** and **teaser-figure-3** — page-one
+  overviews. **Auto Research must proactively use teaser-figure-3 whenever it
+  creates or refreshes a teaser, Figure 1, overview, architecture or pipeline;
+  do not wait for the user to request a figure or name the skill.** It uses
+  Cursor GenerateImage and must be manually checked and iterated from reference
+  figures. An explicit user style override wins. Use teaser-figure-2 when
+  deterministic vector output must show concrete objects plus a real
+  measurement; teaser-figure-1 for a deterministic tinted-panel mechanism
+  diagram, complex formulas, or when image generation is unavailable.
+- **results-figure-1** and **results-figure-2** — the evidence plots. Use
+  results-figure-2 whenever you have more than one seed, which for this
   pipeline is most of the time: showing the spread is what makes a small-scale
   result credible.
 - **checkbib** — run it before every gate. The reviewer challenges citations,
@@ -109,8 +115,20 @@ Each round you get the previous round's `review.md`. Work in this order:
    that are now measured, and update the abstract and introduction so the
    claims match what the tables actually show. Claims shrink when results are
    weaker than hoped; that is the correct outcome, not a failure.
-5. **Rebuild the PDF** and fix any LaTeX errors.
-6. **Write `rounds/round-NN/author.md`** and stop. This file is how Loom knows
+5. **Finish the whole submission before review.** Replace every `\ARTODO`,
+   `\ARnum` and `\ARfig`; remove TODO/TBD/FIXME/XXX and unresolved `??`
+   markers; generate every promised figure; finish every core section; resolve
+   every citation/reference; and make every table and figure readable. A
+   reviewer turn is never spent on an unfinished paper.
+6. **Create or refresh the page-one teaser automatically.** If no teaser exists,
+   or if its method/results no longer match the manuscript, run
+   `teaser-figure-3` without waiting for a user request. Freeze the semantic
+   blueprint, generate from content and style references, inspect the actual
+   image, and issue correction versions until every label and arrow is right.
+7. **Rebuild and inspect the PDF.** Run `latexmk` until it exits cleanly, then
+   inspect every rendered page for visible placeholders, clipping, broken
+   references, unreadable figures and page-limit problems.
+8. **Write `rounds/round-NN/author.md`** and stop. This file is how Loom knows
    the round is over, so it must be the last thing you do.
 
 `author.md` format:
@@ -125,11 +143,20 @@ Each round you get the previous round's `review.md`. Work in this order:
 - <command> -> <result vs baseline> -> <where it landed in the paper>
 
 ## Still open
-- <point you could not address, and what it would take>
+- None. If anything remains open, do not write `author.md`; keep working.
 
 ## Build
 - latexmk: <clean | errors, with the first one>
 ```
+
+`author.md` enters a deterministic Review Readiness Gate before any reviewer is
+called. The gate requires a clean compiled PDF, no active or rendered
+placeholders, substantive core sections, real results, non-template
+bibliography entries, existing figure files, resolved citations/references and
+an inspectable page count within the venue allowance. If it fails, Loom archives
+the completion note, returns the exact failures to you, and keeps you in the
+same round. Fix every failure and write a new `author.md`; never ask reviewers
+to judge work you already know is incomplete.
 
 ## Experiments run locally
 

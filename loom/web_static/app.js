@@ -4924,6 +4924,52 @@ function renderArGate(state) {
   $('#btn-ar-approve').textContent = atDraft ? 'Approve draft' : 'Approve and deliver';
 }
 
+function arReviewerSummaryCards(review, cssPrefix = 'ar') {
+  const reviewers = review && Array.isArray(review.reviewers) ? review.reviewers : [];
+  if (!reviewers.length) return '';
+  const deciding = String((review && review.deciding_model) || '');
+  return `<div class="${cssPrefix}-reviewer-grid">${reviewers.map((item) => {
+    const model = String(item.model || 'reviewer');
+    const scores = item.scores || {};
+    const rating = scores.rating == null ? '–' : `${scores.rating}/10`;
+    const recommendation = String(scores.recommendation || '');
+    const winner = deciding && model === deciding;
+    return `<div class="${cssPrefix}-reviewer-card ${winner ? 'is-deciding' : ''}">
+      <div class="${cssPrefix}-reviewer-card__model">${escapeHtml(model)}</div>
+      <div class="${cssPrefix}-reviewer-card__score">${escapeHtml(rating)}</div>
+      <div class="${cssPrefix}-reviewer-card__verdict">${escapeHtml(recommendation)}</div>
+      ${winner ? `<span class="${cssPrefix}-reviewer-card__badge">lowest · final</span>` : ''}
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function renderArReviewerReports(payload) {
+  const reviewers = Array.isArray(payload.reviewers) ? payload.reviewers : [];
+  if (!reviewers.length) return renderMarkdown(payload.review || '');
+  const deciding = String(payload.deciding_model || '');
+  const verdict = deciding
+    ? `<div class="ar-panel-verdict">Final round score uses the lowest-Rating reviewer: <strong>${escapeHtml(deciding)}</strong>.</div>`
+    : '';
+  return verdict + reviewers.map((item) => {
+    const model = String(item.model || 'reviewer');
+    const scores = item.scores || {};
+    const winner = deciding && model === deciding;
+    const chips = Object.entries(scores)
+      .map(([key, value]) => `<span class="ar-score">${escapeHtml(key)} ${escapeHtml(String(value))}</span>`)
+      .join('');
+    return `<section class="ar-reviewer-report ${winner ? 'is-deciding' : ''}">
+      <header class="ar-reviewer-report__head">
+        <div>
+          <p class="ar-reviewer-report__eyebrow">Independent reviewer${winner ? ' · lowest score' : ''}</p>
+          <h3>${escapeHtml(model)}</h3>
+        </div>
+        <div class="ar-round__scores">${chips}</div>
+      </header>
+      <div class="ar-reviewer-report__body">${renderMarkdown(item.review || '')}</div>
+    </section>`;
+  }).join('');
+}
+
 function renderArRounds(d, state) {
   renderArLog(
     'ar-review-log',
@@ -4954,6 +5000,15 @@ function renderArRounds(d, state) {
     const label = r.n === 0 ? 'Draft' : `Round ${r.n}`;
     const author = r.author || null;
     const review = r.review || null;
+    const readiness = r.readiness || null;
+    const readinessFailures = readiness && Array.isArray(readiness.failed)
+      ? readiness.failed
+      : [];
+    const readinessHeadline = readiness
+      ? (readiness.ready
+        ? 'readiness passed'
+        : `review blocked: ${readinessFailures.length} readiness check(s) failed`)
+      : '';
     const scores = (review && review.scores) || {};
     const chips = Object.entries(scores)
       .map(([k, v]) => `<span class="ar-score">${escapeHtml(k)} ${escapeHtml(String(v))}</span>`)
@@ -4961,16 +5016,18 @@ function renderArRounds(d, state) {
     const reviewBtn = review
       ? `<button type="button" class="btn btn--sm ar-round__review" data-round="${r.n}">Read review</button>`
       : '';
+    const reviewerCards = arReviewerSummaryCards(review);
     const authorSummary = author && author.summary
       ? `<pre class="ar-round__summary">${escapeHtml(author.summary.slice(0, 900))}</pre>`
       : '<p class="ar-round__pending">Author working…</p>';
     return `<li class="ar-round">
       <div class="ar-round__head">
         <strong>${escapeHtml(label)}</strong>
-        <span class="ar-round__headline">${escapeHtml((review && review.headline) || (r.review_error ? `review failed: ${r.review_error}` : ''))}</span>
+        <span class="ar-round__headline">${escapeHtml((review && review.headline) || (r.review_error ? `review failed: ${r.review_error}` : readinessHeadline))}</span>
         ${reviewBtn}
       </div>
       <div class="ar-round__scores">${chips}</div>
+      ${reviewerCards}
       ${authorSummary}
     </li>`;
   }).join('');
@@ -4984,7 +5041,7 @@ async function openArReview(n) {
   try {
     const d = await api(arTaskPath('/review/' + n));
     $('#ar-review-title').textContent = n === 0 ? 'Draft review' : `Round ${n} review`;
-    $('#ar-review-content').innerHTML = renderMarkdown(d.review || '');
+    $('#ar-review-content').innerHTML = renderArReviewerReports(d);
     $('#ar-review-modal').hidden = false;
     document.body.classList.add('preview-open');
   } catch (err) {

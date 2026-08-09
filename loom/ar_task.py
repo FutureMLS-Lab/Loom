@@ -27,9 +27,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
+
+from pypdf import PdfReader
 
 from loom.paths import ar_root, bundled_skills_path, paper_templates_dir
 from loom.rud_task import RUD_DIR, WORK_SUBDIR, slugify, task_root
@@ -63,6 +67,7 @@ ROUNDS_SUBDIR = "rounds"
 # both show up in the Changes tab.
 CODE_SUBDIR = "code"
 MANUSCRIPT_SUBDIR = "manuscript"
+LEGACY_PAPER_SUBDIR = "paper"
 AUTHOR_NOTE = "author.md"
 REVIEW_NOTE = "review.md"
 
@@ -96,6 +101,18 @@ MAX_ROUNDS_LIMIT = 50
 
 MODE_AUTO = "auto"
 MODE_SEED = "seed"
+
+# Cursor's account-scoped model catalog exposes these as the strongest
+# non-fast variants currently available for the requested reviewer families.
+# Fable has an explicit Thinking variant. GPT-5.6 Sol and Cursor Grok do not
+# expose a separate Thinking switch; max/high is their strongest reasoning
+# preset, and Cursor intentionally suppresses private reasoning in print mode.
+CURSOR_REVIEWER_MODELS: tuple[str, ...] = (
+    "gpt-5.6-sol-max",
+    "claude-fable-5-thinking-max",
+    "cursor-grok-4.5-high",
+)
+CURSOR_REVIEWER_PANEL = "cursor-reviewer-panel"
 
 
 # --- Catalogs ---------------------------------------------------------------
@@ -437,6 +454,7 @@ def new_paper_state(
     max_rounds: Any = DEFAULT_MAX_ROUNDS,
     author_model: str = "",
     reviewer_model: str = "",
+    reviewer_models: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     v = (venue or "").strip().lower()
     if v not in VENUE_IDS:
@@ -455,9 +473,14 @@ def new_paper_state(
         "gates": [],
         "loop_running": False,
         "author_model": author_model,
+        # Keep the singular field so old ar.json readers remain compatible.
         "reviewer_model": reviewer_model,
+        "reviewer_models": list(
+            CURSOR_REVIEWER_MODELS if reviewer_models is None else reviewer_models
+        ),
         "stop_rating": DEFAULT_STOP_RATING,
         "stop_reason": "",
+        "plateau_started_round": 0,
         "cost_usd": 0.0,
         "paper_dir": "",
         "pdf_path": "",
@@ -645,8 +668,30 @@ def work_root(project_root: Path, slug: str) -> Path:
 
 
 def paper_root(project_root: Path, slug: str) -> Path:
-    """``<task>/work/manuscript/`` - the LaTeX sources, its own git repo."""
-    return work_root(project_root, slug) / MANUSCRIPT_SUBDIR
+    """The manuscript directory, preserving pre-split AR paper tasks.
+
+    New tasks use ``work/manuscript``. Tasks created before the code/manuscript
+    split stored their paper in ``work/paper`` and persisted that absolute path
+    in ``ar.json``. Respect an in-task persisted path first so a Loom upgrade
+    does not make existing PDFs, builds, readiness checks, or reviews vanish.
+    """
+    work = work_root(project_root, slug).resolve()
+    state = read_ar_state(project_root, slug)
+    persisted = str(state.get("paper_dir") or "").strip()
+    if persisted:
+        candidate: Path | None = Path(persisted).expanduser().resolve()
+        try:
+            candidate.relative_to(work)
+        except ValueError:
+            candidate = None
+        if candidate is not None and (
+            candidate.is_dir() or (candidate / "main.tex").is_file()
+        ):
+            return candidate
+    legacy = work / LEGACY_PAPER_SUBDIR
+    if (legacy / "main.tex").is_file():
+        return legacy
+    return work / MANUSCRIPT_SUBDIR
 
 
 def code_root(project_root: Path, slug: str) -> Path:
@@ -1760,6 +1805,194 @@ def review_headline(scores: dict[str, Any]) -> str:
     return " · ".join(bits) or "no scores parsed"
 
 
+def _cursor_models(timeout: int = 30) -> dict[str, Any]:
+    """Return the model ids advertised by the logged-in Cursor CLI account."""
+    try:
+        proc = subprocess.run(
+            ["agent", "models"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "error": "Cursor CLI `agent` is not on PATH", "models": []}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "error": f"could not list Cursor models: {exc}", "models": []}
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "unknown error").strip()
+        return {
+            "ok": False,
+            "error": f"`agent models` failed: {detail[-1000:]}",
+            "models": [],
+        }
+    models: list[str] = []
+    for line in (proc.stdout or "").splitlines():
+        match = re.match(r"^([a-zA-Z0-9][a-zA-Z0-9._-]*)\s+-\s+", line.strip())
+        if match:
+            models.append(match.group(1))
+    return {"ok": True, "models": models}
+
+
+def _run_cursor_headless(
+    prompt: str,
+    model: str,
+    workspace: Path,
+    *,
+    timeout: int = 900,
+    on_line: Any = None,
+) -> dict[str, Any]:
+    """Run one read-only Cursor reviewer and return its final Markdown.
+
+    Cursor's print mode never exposes private thinking tokens. The selected
+    model id controls the maximum available reasoning budget; Ask mode and the
+    absence of ``--force`` keep this reviewer read-only.
+    """
+    cmd = [
+        "agent",
+        "--print",
+        "--workspace",
+        str(workspace),
+        "--mode",
+        "ask",
+        "--trust",
+        "--model",
+        model,
+        "--output-format",
+        "json",
+        prompt,
+    ]
+    if on_line is not None:
+        on_line(f"{model}: reviewing compiled PDF")
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(workspace),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "model": model, "error": "Cursor CLI `agent` is not on PATH"}
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "model": model,
+            "error": f"Cursor review timed out after {timeout}s",
+        }
+    except OSError as exc:
+        return {"ok": False, "model": model, "error": str(exc)}
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "unknown error").strip()
+        return {
+            "ok": False,
+            "model": model,
+            "error": f"Cursor reviewer exited {proc.returncode}: {detail[-1500:]}",
+        }
+    try:
+        payload = json.loads(proc.stdout or "")
+    except json.JSONDecodeError as exc:
+        return {
+            "ok": False,
+            "model": model,
+            "error": f"Cursor reviewer returned invalid JSON: {exc}",
+            "raw": (proc.stdout or "")[-1500:],
+        }
+    if not isinstance(payload, dict):
+        return {"ok": False, "model": model, "error": "Cursor reviewer JSON is not an object"}
+    if payload.get("is_error") is True or payload.get("subtype") == "error":
+        return {
+            "ok": False,
+            "model": model,
+            "error": str(payload.get("result") or payload.get("error") or "Cursor review failed"),
+        }
+    text = str(payload.get("result") or "").strip()
+    if not text:
+        return {"ok": False, "model": model, "error": "Cursor reviewer returned no result"}
+    scores = parse_review_scores(text)
+    if "rating" not in scores:
+        return {
+            "ok": False,
+            "model": model,
+            "error": "Cursor reviewer omitted the required Rating score",
+        }
+    try:
+        cost = float(payload.get("total_cost_usd") or payload.get("cost_usd") or 0.0)
+    except (TypeError, ValueError):
+        cost = 0.0
+    elapsed = round(time.monotonic() - started, 1)
+    if on_line is not None:
+        on_line(f"{model}: {review_headline(scores)} ({elapsed}s)")
+    return {
+        "ok": True,
+        "model": model,
+        "review": text,
+        "scores": scores,
+        "headline": review_headline(scores),
+        "duration_seconds": elapsed,
+        "cost": cost,
+    }
+
+
+def _worst_panel_reviewer(reviewers: list[dict[str, Any]]) -> dict[str, Any]:
+    """The lowest-Rating reviewer, with deterministic pessimistic tie breaks."""
+
+    def key(item: dict[str, Any]) -> tuple[float, int, float, float, float]:
+        scores = item.get("scores") or {}
+        recommendation = str(scores.get("recommendation") or "")
+        severity = (
+            RECOMMENDATIONS.index(recommendation)
+            if recommendation in RECOMMENDATIONS
+            else len(RECOMMENDATIONS)
+        )
+        return (
+            float(scores.get("rating", float("-inf"))),
+            -severity,
+            float(scores.get("soundness", 0)),
+            float(scores.get("contribution", 0)),
+            float(scores.get("presentation", 0)),
+        )
+
+    return min(reviewers, key=key)
+
+
+def _panel_scores(reviewers: list[dict[str, Any]]) -> dict[str, Any]:
+    """Use one coherent score block: the lowest-Rating reviewer's verdict."""
+    if not reviewers:
+        return {}
+    return dict(_worst_panel_reviewer(reviewers).get("scores") or {})
+
+
+def _cursor_pdf_review_prompt(
+    skill_text: str,
+    *,
+    pdf_path: Path,
+    venue: str,
+    round_n: int,
+) -> str:
+    """Prompt one independent reviewer to judge only the compiled PDF."""
+    return (
+        f"{skill_text}\n\n"
+        "=== end reviewer instructions ===\n\n"
+        f"Venue: {venue_entry(venue).get('label')}\n"
+        f"Review round: {round_n}\n\n"
+        "You are one member of a three-model independent reviewer panel. Use the "
+        "full reasoning budget configured by your model and think deeply before "
+        "returning the report. Do not reveal private chain-of-thought; return only "
+        "the required review.\n\n"
+        "The sole paper artifact for this review is the compiled PDF below:\n"
+        f"{pdf_path}\n\n"
+        "Open and inspect every page of that PDF. Judge both the scientific content "
+        "and the rendered artifact (tables, figures, equations, clipping, legibility, "
+        "and page-level presentation). The PDF is the source of truth. Do not search "
+        "for, open, or infer from LaTeX source files, author notes, experiment code, "
+        "or another review. Review the submission cold and independently.\n\n"
+        "Write your review now, in exactly the required markdown structure."
+    )
+
+
 def run_reviewer(
     paper_dir: Path,
     skill_text: str,
@@ -1769,59 +2002,149 @@ def run_reviewer(
     round_n: int = 1,
     author_note: str = "",
     build: dict[str, Any] | None = None,
-    model: str = "",
+    readiness: dict[str, Any] | None = None,
+    models: list[str] | tuple[str, ...] | None = None,
     timeout: int = 900,
     on_line: Any = None,
 ) -> dict[str, Any]:
-    """Review the current state of the paper as a program committee member."""
-    source = paper_source_text(paper_dir)
-    if not source:
-        return {"ok": False, "error": f"no LaTeX sources under {paper_dir}"}
+    """Review a compiled PDF with the fixed three-model Cursor panel.
 
+    ``idea`` and ``author_note`` remain accepted for API compatibility, but are
+    deliberately not included: reviewers see the same PDF a human reviewer
+    would receive, not the author's framing or raw LaTeX.
+    """
+    del idea, author_note
     build = build or {}
-    if build.get("ok"):
-        build_line = (
-            "The paper compiles."
-            if build.get("clean")
-            else "The paper compiles with LaTeX warnings/errors."
+    pdf_value = str(build.get("pdf") or "").strip()
+    pdf = Path(pdf_value) if pdf_value else paper_dir / "main.pdf"
+    if not build.get("ok") or not pdf.is_file():
+        error = str(build.get("error") or f"compiled PDF not found at {pdf}")
+        return {"ok": False, "error": f"cannot review without a compiled PDF: {error}"}
+
+    gate = readiness or review_readiness(paper_dir, venue=venue, build=build)
+    if not gate.get("ready"):
+        failed = ", ".join(
+            str(item.get("label") or "readiness check")
+            for item in (gate.get("failed") or [])
         )
-    else:
-        build_line = f"The paper does NOT compile: {build.get('error', 'unknown error')}"
+        return {
+            "ok": False,
+            "error": "review readiness gate blocked the reviewer panel"
+            + (f": {failed}" if failed else ""),
+            "readiness": gate,
+        }
 
-    idea_block = idea_summary(idea) if idea else "(not recorded)"
-    author_block = (author_note or "").strip() or "(the author left no note this round)"
+    selected = tuple(models or CURSOR_REVIEWER_MODELS)
+    if selected != CURSOR_REVIEWER_MODELS:
+        return {
+            "ok": False,
+            "error": (
+                "reviewer panel must use exactly: "
+                + ", ".join(CURSOR_REVIEWER_MODELS)
+            ),
+        }
+    catalog = _cursor_models()
+    if not catalog.get("ok"):
+        return catalog
+    available = set(catalog.get("models") or [])
+    missing = [model for model in selected if model not in available]
+    if missing:
+        return {
+            "ok": False,
+            "error": "required Cursor reviewer model(s) unavailable: " + ", ".join(missing),
+            "available_models": sorted(available),
+        }
 
-    prompt = (
-        f"{skill_text}\n\n"
-        "=== end reviewer instructions ===\n\n"
-        f"Venue: {venue_entry(venue).get('label')}\n"
-        f"Review round: {round_n}\n"
-        f"Build status: {build_line}\n\n"
-        f"The idea this submission is meant to establish:\n{idea_block}\n\n"
-        f"What the authors say they did this round:\n{author_block}\n\n"
-        "LaTeX sources of the submission follow. Markers such as \\ARTODO{...}, "
-        "\\ARnum{} and \\ARfig{...} are deliberate placeholders for work that has "
-        "not been done yet - treat them as honest gaps, not as claims.\n\n"
-        f"{source}\n\n"
-        "Write your review now, in exactly the required markdown structure."
-    )
     if on_line is not None:
         on_line(
-            f"reviewing round {round_n} as {venue_entry(venue).get('label')} "
-            f"({len(source)} chars of LaTeX)"
+            f"reviewing compiled PDF with Cursor panel: {', '.join(selected)}"
         )
-    res = _run_headless(prompt, model=model, timeout=timeout, on_line=on_line)
-    if not res.get("ok"):
-        return res
-    text = str(res.get("text") or "").strip()
-    scores = parse_review_scores(text)
-    if on_line is not None:
-        on_line(review_headline(scores))
+
+    with TemporaryDirectory(prefix="loom-ar-pdf-review-") as tmp:
+        workspace = Path(tmp)
+        review_pdf = workspace / "submission.pdf"
+        try:
+            shutil.copy2(pdf, review_pdf)
+        except OSError as exc:
+            return {"ok": False, "error": f"could not isolate compiled PDF: {exc}"}
+        prompt = _cursor_pdf_review_prompt(
+            skill_text,
+            pdf_path=review_pdf,
+            venue=venue,
+            round_n=round_n,
+        )
+        by_model: dict[str, dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=len(selected)) as pool:
+            futures = {
+                pool.submit(
+                    _run_cursor_headless,
+                    prompt,
+                    model,
+                    workspace,
+                    timeout=timeout,
+                    on_line=on_line,
+                ): model
+                for model in selected
+            }
+            for future in as_completed(futures):
+                model = futures[future]
+                try:
+                    by_model[model] = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    by_model[model] = {"ok": False, "model": model, "error": str(exc)}
+
+    reviewers = [by_model[model] for model in selected]
+    failures = [item for item in reviewers if not item.get("ok")]
+    if failures:
+        detail = "; ".join(
+            f"{item.get('model')}: {item.get('error', 'unknown error')}"
+            for item in failures
+        )
+        return {
+            "ok": False,
+            "error": f"Cursor reviewer panel incomplete: {detail}",
+            "reviewers": reviewers,
+        }
+
+    scores = _panel_scores(reviewers)
+    deciding = _worst_panel_reviewer(reviewers)
+    deciding_model = str(deciding.get("model") or "")
+    headline = (
+        f"{len(reviewers)} reviewers · lowest: {deciding_model} · "
+        f"{review_headline(scores)}"
+    )
+    cost = round(sum(float(item.get("cost") or 0.0) for item in reviewers), 4)
+    sections = [
+        "# Cursor Reviewer Panel",
+        "",
+        f"**Round:** {round_n}",
+        f"**Input:** compiled PDF only (`{pdf.name}`)",
+        f"**Models:** {', '.join(selected)}",
+        f"**Deciding reviewer (lowest Rating):** `{deciding_model}`",
+        f"**Final score:** {review_headline(scores)}",
+    ]
+    for item in reviewers:
+        sections.extend(
+            [
+                "",
+                "---",
+                "",
+                f"# Reviewer: `{item['model']}`",
+                "",
+                str(item["review"]).strip(),
+            ]
+        )
+    text = "\n".join(sections).strip() + "\n"
     return {
         "ok": True,
         "review": text,
         "scores": scores,
-        "headline": review_headline(scores),
+        "headline": headline,
+        "models": list(selected),
+        "reviewers": reviewers,
+        "deciding_model": deciding_model,
+        "cost": cost,
+        "input_pdf": str(pdf),
     }
 
 
@@ -1912,9 +2235,10 @@ def loop_is_complete(state: dict[str, Any]) -> bool:
 DEFAULT_STOP_RATING = 8
 # Consecutive reviews without improvement before we treat the loop as stuck.
 PLATEAU_WINDOW = 3
-# Rotated through when the score stops moving: a second opinion from the same
-# model tends to repeat the same asks, and repeating them is what stalled.
-REVIEWER_ROTATION = ("claude-fable-5", "claude-opus-4-8", "claude-sonnet-5")
+# Keep the fixed three-model jury for a consistent yardstick. If two more
+# completed rounds fail to clear a plateau, stop and ask a human instead of
+# gaming the score by replacing the strictest reviewer.
+PLATEAU_HUMAN_GRACE_ROUNDS = 2
 
 SCORE_DIMENSIONS = ("soundness", "presentation", "contribution")
 
@@ -1966,12 +2290,29 @@ def stuck_dimensions(state: dict[str, Any], window: int = PLATEAU_WINDOW) -> lis
     return out
 
 
-def reviewer_model_for(state: dict[str, Any], base: str, round_n: int) -> str:
-    """Reviewer model for a round, rotated once the score stops moving."""
+def update_plateau_tracking(state: dict[str, Any], round_n: int) -> int:
+    """Record when the current score plateau began; reset after improvement."""
     if not is_plateaued(state):
-        return base
-    rotation = [m for m in REVIEWER_ROTATION if m != base] or list(REVIEWER_ROTATION)
-    return rotation[round_n % len(rotation)]
+        state["plateau_started_round"] = 0
+        return 0
+    try:
+        started = int(state.get("plateau_started_round") or 0)
+    except (TypeError, ValueError):
+        started = 0
+    if started <= 0:
+        started = int(round_n)
+        state["plateau_started_round"] = started
+    return started
+
+
+def should_pause_for_plateau(
+    state: dict[str, Any],
+    round_n: int,
+    grace_rounds: int = PLATEAU_HUMAN_GRACE_ROUNDS,
+) -> bool:
+    """Pause after a fixed jury stays plateaued through two repair rounds."""
+    started = update_plateau_tracking(state, round_n)
+    return started > 0 and int(round_n) - started >= int(grace_rounds)
 
 
 def plateau_note(state: dict[str, Any], window: int = PLATEAU_WINDOW) -> str:
@@ -1981,12 +2322,12 @@ def plateau_note(state: dict[str, Any], window: int = PLATEAU_WINDOW) -> str:
     ratings = score_history(state, "rating")
     stuck = stuck_dimensions(state, window)
     stuck_text = (
-        f" {', '.join(stuck)}ha{'s' if len(stuck) == 1 else 've'} not moved at all."
+        f" {', '.join(stuck)} {'has' if len(stuck) == 1 else 'have'} not moved at all."
         if stuck
         else ""
     )
     return (
-        f"The rating has not improved in {window} rounds "
+        f"The lowest panel rating has not improved in {window} rounds "
         f"({', '.join(str(int(r)) for r in ratings[-window:])}).{stuck_text}\n"
         "Incremental responses to the review are not working, so do not spend "
         "this round on another one. Pick exactly one:\n"
@@ -2218,16 +2559,48 @@ def extract_paper_fields(paper_dir: Path) -> dict[str, Any]:
     }
 
 
-def count_placeholder_markers(paper_dir: Path) -> int:
-    """Unfilled \\ARTODO / \\ARnum / \\ARfig slots left in the paper body."""
-    total = 0
-    sections = paper_dir / "sections"
-    files = list(sections.glob("*.tex")) if sections.is_dir() else []
-    for path in files:
+def _active_tex(text: str) -> str:
+    """Drop LaTeX comments while preserving line numbers for diagnostics."""
+    return re.sub(r"(?<!\\)%.*$", "", text or "", flags=re.MULTILINE)
+
+
+def _paper_tex_sources(paper_dir: Path) -> list[Path]:
+    """Authored TeX inputs, excluding the file that defines AR markers."""
+    if not paper_dir.is_dir():
+        return []
+    return [
+        path
+        for path in sorted(paper_dir.rglob("*.tex"))
+        if path.name != "ar_macros.tex"
+    ]
+
+
+def _source_findings(
+    paper_dir: Path, pattern: re.Pattern[str], limit: int = 12
+) -> list[str]:
+    findings: list[str] = []
+    for path in _paper_tex_sources(paper_dir):
         try:
-            total += len(_MARKER_RE.findall(path.read_text(encoding="utf-8", errors="replace")))
+            text = _active_tex(path.read_text(encoding="utf-8", errors="replace"))
         except OSError:
             continue
+        for match in pattern.finditer(text):
+            line = text.count("\n", 0, match.start()) + 1
+            findings.append(f"{path.relative_to(paper_dir)}:{line} ({match.group(0)})")
+            if len(findings) >= limit:
+                return findings
+    return findings
+
+
+def count_placeholder_markers(paper_dir: Path) -> int:
+    """Active ``\\ARTODO`` / ``\\ARnum`` / ``\\ARfig`` uses in paper sources."""
+    total = 0
+    for path in _paper_tex_sources(paper_dir):
+        try:
+            text = _active_tex(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        total += len(_MARKER_RE.findall(text))
     return total
 
 
@@ -2235,13 +2608,9 @@ def pdf_page_count(pdf: Path) -> int | None:
     if not pdf.is_file():
         return None
     try:
-        proc = subprocess.run(
-            ["pdfinfo", str(pdf)], capture_output=True, text=True, timeout=30
-        )
-    except (OSError, subprocess.TimeoutExpired):
+        return len(PdfReader(str(pdf), strict=False).pages)
+    except Exception:  # noqa: BLE001 - malformed third-party PDF input
         return None
-    match = re.search(r"^Pages:\s+(\d+)", proc.stdout or "", re.MULTILINE)
-    return int(match.group(1)) if match else None
 
 
 def _has_real_results(paper_dir: Path) -> bool:
@@ -2270,6 +2639,257 @@ def _bib_entry_count(paper_dir: Path) -> int:
 
 # The three entries the template ships so the bibliography compiles from day one.
 SEED_BIB_ENTRIES = 3
+
+
+_TEXT_PLACEHOLDER_RE = re.compile(r"\b(?:TODO|TBD|FIXME|XXX)\b", re.IGNORECASE)
+_QUESTION_PLACEHOLDER_RE = re.compile(r"\?{2,}")
+_INCLUDEGRAPHICS_RE = re.compile(
+    r"\\includegraphics\s*(?:\[[^\]]*\])?\s*\{([^{}]+)\}",
+    re.IGNORECASE,
+)
+_GRAPHIC_EXTENSIONS = (".pdf", ".png", ".jpg", ".jpeg", ".eps")
+_REQUIRED_SECTIONS = (
+    "00_abstract.tex",
+    "01_introduction.tex",
+    "02_related_work.tex",
+    "03_method.tex",
+    "04_experiments.tex",
+    "05_conclusion.tex",
+)
+_LATEX_BLOCKING_WARNING_RE = re.compile(
+    r"(undefined references?|undefined citations?|"
+    r"(?:Citation|Reference)\s+.+?\s+undefined|"
+    r"Rerun to get cross-references right|"
+    r"Label\(s\) may have changed|multiply defined)",
+    re.IGNORECASE,
+)
+
+
+def _missing_graphics(paper_dir: Path) -> list[str]:
+    missing: list[str] = []
+    seen: set[str] = set()
+    for source in _paper_tex_sources(paper_dir):
+        try:
+            text = _active_tex(source.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        for match in _INCLUDEGRAPHICS_RE.finditer(text):
+            raw = match.group(1).strip()
+            if raw in seen:
+                continue
+            seen.add(raw)
+            target = Path(raw)
+            roots = (paper_dir, source.parent)
+            candidates: list[Path] = []
+            for root in roots:
+                base = target if target.is_absolute() else root / target
+                if target.suffix:
+                    candidates.append(base)
+                else:
+                    candidates.extend(base.with_suffix(ext) for ext in _GRAPHIC_EXTENSIONS)
+            if not any(path.is_file() for path in candidates):
+                missing.append(raw)
+    return missing
+
+
+def _pdf_text(pdf: Path, timeout: int = 60) -> dict[str, Any]:
+    """Extract the rendered PDF text so visible placeholders cannot hide."""
+    del timeout  # Kept for compatibility with the previous subprocess helper.
+    try:
+        reader = PdfReader(str(pdf), strict=False)
+        text = "\n\f\n".join((page.extract_text() or "") for page in reader.pages)
+    except Exception as exc:  # noqa: BLE001 - malformed third-party PDF input
+        return {"ok": False, "error": f"could not inspect rendered PDF: {exc}"}
+    return {"ok": True, "text": text}
+
+
+def _latex_log(paper_dir: Path, build: dict[str, Any]) -> str:
+    try:
+        return (paper_dir / "main.log").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return str(build.get("log") or "")
+
+
+def review_readiness(
+    paper_dir: Path,
+    *,
+    venue: str = DEFAULT_VENUE,
+    build: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Hard gate before a paper may consume a reviewer turn.
+
+    This deliberately checks submission completeness rather than research
+    quality. A passing paper is compiled, fully rendered, free of placeholders
+    and unresolved references, and contains real results; only the reviewer
+    decides whether that complete submission is scientifically good.
+    """
+    build = build or {}
+    entry = venue_entry(venue)
+    pdf_value = str(build.get("pdf") or "").strip()
+    pdf = Path(pdf_value) if pdf_value else paper_dir / "main.pdf"
+    checks: list[dict[str, Any]] = []
+
+    def check(ok: bool, label: str, detail: str = "") -> None:
+        checks.append({"ok": bool(ok), "label": label, "detail": detail})
+
+    pdf_exists = pdf.is_file()
+    check(
+        bool(build.get("ok")) and pdf_exists,
+        "Compiled PDF exists",
+        str(pdf) if pdf_exists else str(build.get("error") or f"missing {pdf}"),
+    )
+    check(
+        bool(build.get("clean")),
+        "LaTeX build is clean",
+        "latexmk exited 0" if build.get("clean") else "fix every LaTeX build error",
+    )
+
+    marker_locations = _source_findings(paper_dir, _MARKER_RE)
+    marker_count = count_placeholder_markers(paper_dir)
+    check(
+        marker_count == 0,
+        "No AR placeholders remain",
+        "none"
+        if marker_count == 0
+        else f"{marker_count} marker(s): " + ", ".join(marker_locations),
+    )
+
+    text_placeholders = _source_findings(paper_dir, _TEXT_PLACEHOLDER_RE)
+    check(
+        not text_placeholders,
+        "No TODO/TBD/FIXME/XXX text remains",
+        "none" if not text_placeholders else ", ".join(text_placeholders),
+    )
+    question_placeholders = _source_findings(paper_dir, _QUESTION_PLACEHOLDER_RE)
+    check(
+        not question_placeholders,
+        "No unresolved ?? markers remain in sources",
+        "none" if not question_placeholders else ", ".join(question_placeholders),
+    )
+
+    incomplete_sections: list[str] = []
+    sections = paper_dir / "sections"
+    for name in _REQUIRED_SECTIONS:
+        path = sections / name
+        try:
+            active = _active_tex(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            incomplete_sections.append(f"{name} missing")
+            continue
+        if len(_delatex(active)) < 40:
+            incomplete_sections.append(f"{name} is empty or too short")
+    check(
+        not incomplete_sections,
+        "All core paper sections are substantive",
+        "complete" if not incomplete_sections else "; ".join(incomplete_sections),
+    )
+
+    fields = extract_paper_fields(paper_dir)
+    check(
+        bool(fields["title"]) and len(fields["title"]) <= MAX_TITLE_CHARS,
+        "Title is written and within length",
+        fields["title"] or "no paper title found",
+    )
+    abstract = str(fields["abstract"] or "")
+    check(
+        bool(abstract)
+        and fields["abstract_markers"] == 0
+        and len(abstract) <= MAX_ABSTRACT_CHARS,
+        "Abstract is complete",
+        f"{len(abstract)} chars, {fields['abstract_markers']} marker(s)",
+    )
+    check(
+        _has_real_results(paper_dir),
+        "Experiments contain a real table or figure",
+        "found" if _has_real_results(paper_dir) else "add measured results",
+    )
+    bib = _bib_entry_count(paper_dir)
+    check(
+        bib > SEED_BIB_ENTRIES,
+        "Bibliography goes beyond template seeds",
+        f"{bib} entries",
+    )
+
+    missing_graphics = _missing_graphics(paper_dir)
+    check(
+        not missing_graphics,
+        "Every referenced figure file exists",
+        "all present" if not missing_graphics else "missing: " + ", ".join(missing_graphics),
+    )
+
+    warnings = _LATEX_BLOCKING_WARNING_RE.findall(_latex_log(paper_dir, build))
+    check(
+        not warnings,
+        "No unresolved citations, references, or labels",
+        "none" if not warnings else ", ".join(dict.fromkeys(warnings)),
+    )
+
+    pages = pdf_page_count(pdf) if pdf_exists else None
+    page_limit = int(entry.get("page_limit") or 0)
+    page_ok = pages is not None and (not page_limit or pages <= page_limit + 2)
+    check(
+        page_ok,
+        f"PDF page count is inspectable and within {entry['label']} allowance",
+        (
+            f"{pages} pages (main-text limit {page_limit}, +2 allowance for references)"
+            if pages is not None
+            else "pdfinfo could not read the PDF"
+        ),
+    )
+
+    rendered = _pdf_text(pdf) if pdf_exists else {"ok": False, "error": "PDF missing"}
+    if rendered.get("ok"):
+        pdf_text = str(rendered.get("text") or "")
+        visible = []
+        if _QUESTION_PLACEHOLDER_RE.search(pdf_text):
+            visible.append("??")
+        for match in _TEXT_PLACEHOLDER_RE.finditer(pdf_text):
+            token = match.group(0).upper()
+            if token not in visible:
+                visible.append(token)
+        if "FIGURE PLACEHOLDER" in pdf_text.upper():
+            visible.append("FIGURE PLACEHOLDER")
+        check(
+            not visible,
+            "Rendered PDF has no visible placeholders or question marks",
+            "none" if not visible else ", ".join(visible),
+        )
+    else:
+        check(
+            False,
+            "Rendered PDF can be inspected for visible placeholders",
+            str(rendered.get("error") or "PDF text extraction failed"),
+        )
+
+    return {
+        "ready": all(item["ok"] for item in checks),
+        "checks": checks,
+        "failed": [item for item in checks if not item["ok"]],
+        "pdf": str(pdf),
+        "venue": str(entry.get("id") or venue),
+        "checked_at": _now_iso(),
+    }
+
+
+def review_readiness_markdown(result: dict[str, Any]) -> str:
+    status = "PASS — reviewer may run" if result.get("ready") else "BLOCKED — return to author"
+    lines = [
+        "# Review Readiness Gate",
+        "",
+        f"**Status:** {status}",
+        f"**Checked:** {result.get('checked_at', '')}",
+        f"**PDF:** `{result.get('pdf', '')}`",
+        "",
+        "## Checks",
+    ]
+    for item in result.get("checks") or []:
+        mark = "x" if item.get("ok") else " "
+        detail = str(item.get("detail") or "").strip()
+        lines.append(
+            f"- [{mark}] **{item.get('label', 'check')}**"
+            + (f" — {detail}" if detail else "")
+        )
+    return "\n".join(lines).strip() + "\n"
 
 
 def build_submission(
@@ -2417,14 +3037,15 @@ def ar_skills_dir() -> Path:
 
 
 FIGURE_SKILLS_SUBDIR = "figures"
+DEFAULT_TEASER_SKILL = "teaser-figure-3"
 
 
 def figure_skills() -> list[dict[str, str]]:
     """Paper-figure skills available to the author, newest listing each time.
 
     Only the name, the one-line description and the path go into a prompt: the
-    five SKILL.md files together are ~38k characters, so the author is pointed
-    at them and reads the one it needs, rather than carrying all five into
+    Figure SKILL.md files together are large, so the author is pointed at them
+    and reads the one it needs, rather than carrying every full skill into
     every round.
     """
     root = ar_skills_dir() / FIGURE_SKILLS_SUBDIR
@@ -2460,12 +3081,26 @@ def figure_skills_block() -> str:
     if not skills:
         return ""
     lines = [
-        "Figure skills are installed. Read the SKILL.md before drawing - each",
-        "carries a house style, a drawing kit under its scripts/, and a worked",
-        "example you can run:",
+        f"AUTO-RESEARCH DEFAULT TEASER: {DEFAULT_TEASER_SKILL}. Whenever the AR",
+        "author decides the manuscript needs a new or refreshed teaser, Figure 1,",
+        "overview, architecture, or pipeline, automatically use this Cursor",
+        "GenerateImage / Nano Banana workflow. Do not wait for the user to ask",
+        "for a figure or name the skill. An explicit user style override wins.",
+        "Use teaser-figure-1/2 only when the user requests deterministic vector",
+        "output, the figure is equation-heavy, or image generation is unavailable.",
+        "For quantitative evidence plots, use results-figure-1/2 instead.",
+        "Read the selected SKILL.md before drawing:",
     ]
-    for skill in skills:
-        lines.append(f"  {skill['name']} - {skill['description']}")
+    ordered = sorted(
+        skills,
+        key=lambda skill: (
+            skill["name"] != DEFAULT_TEASER_SKILL,
+            skill["name"],
+        ),
+    )
+    for skill in ordered:
+        marker = " [DEFAULT TEASER]" if skill["name"] == DEFAULT_TEASER_SKILL else ""
+        lines.append(f"  {skill['name']}{marker} - {skill['description']}")
         lines.append(f"      {skill['path']}")
     return "\n".join(lines)
 
@@ -2714,11 +3349,88 @@ The idea this paper must establish:
 Run the experiments first, then fold the real numbers into the paper, then
 rebuild the PDF. Never write a number an experiment did not produce.
 
+This is a hard review-readiness gate: do not write the completion note until
+the paper is a complete, ready-to-submit artifact. Every \\ARTODO, \\ARnum,
+\\ARfig, TODO/TBD/FIXME/XXX, unresolved ??, missing figure, undefined
+citation/reference, build error, and empty core section must be gone from both
+the sources and the rendered PDF. The experiments section must contain real
+measured results and the bibliography must go beyond the template seeds.
+
 When the round is finished, write your summary to:
 {note}
 
 Writing that file is how Loom knows the round is over and hands the paper to
-the reviewer, so make it the last thing you do, then stop.
+the deterministic readiness gate. Only a passing gate hands the PDF to the
+reviewers. Make the note the last thing you do, then stop.
+"""
+
+
+def author_readiness_repair_prompt(
+    task_dir: Path,
+    paper_dir: Path,
+    state: dict[str, Any],
+    round_n: int,
+    readiness: dict[str, Any],
+    *,
+    report_path: Path | None = None,
+) -> str:
+    """Return a blocked round to the author with deterministic failures."""
+    venue = venue_entry(str(state.get("venue") or DEFAULT_VENUE)).get("label")
+    note = author_note_path_for(task_dir, round_n)
+    failures = readiness.get("failed") or []
+    failure_lines = "\n".join(
+        f"- {item.get('label', 'check')}: {item.get('detail', '')}"
+        for item in failures
+    ) or "- The gate did not provide details; rerun every readiness check."
+    report = str(report_path) if report_path is not None else "(not written)"
+    return f"""You are still the author of Loom AR paper ROUND {round_n}.
+
+The reviewer panel was NOT called. The deterministic Review Readiness Gate
+blocked this paper because it is not yet a complete, ready-to-submit {venue}
+submission.
+
+Task directory:
+{task_dir}
+
+Paper directory:
+{paper_dir}
+
+Idea this paper must establish:
+{idea_summary(state.get("idea") or {})}
+
+Full gate report:
+{report}
+
+Failures that must all be fixed:
+{failure_lines}
+
+Continue the SAME round. Follow the AR author methodology exactly:
+{ar_skill_text(SKILL_AUTHOR) or "(AR author skill missing)"}
+
+Before signalling completion again, make the whole submission complete:
+
+1. Replace every active \\ARTODO, \\ARnum and \\ARfig with finished prose,
+   measured numbers and real generated figures.
+2. Remove every TODO/TBD/FIXME/XXX and unresolved ?? marker from both the
+   source and rendered PDF. Ordinary question-mark punctuation is allowed;
+   unresolved double-question-mark placeholders are not.
+3. Finish every core section: abstract, introduction, related work, method,
+   experiments and conclusion.
+4. Include real measured results, required baselines, ablations, analysis,
+   seeds/variance where applicable, and cost measurements.
+5. Ensure every \\includegraphics target exists and every figure/table is
+   readable in the compiled PDF.
+6. Resolve every citation, reference and label warning.
+7. Expand the bibliography beyond the three template seed entries.
+8. Run latexmk until it exits cleanly, inspect every PDF page, and stay within
+   the venue page allowance.
+
+Do not ask the reviewers to evaluate unfinished work. When and only when every
+failure above is fixed, write a NEW completion note to:
+{note}
+
+Writing that file is the final action. Loom will rerun the deterministic gate;
+the reviewer panel runs only after it passes.
 """
 
 

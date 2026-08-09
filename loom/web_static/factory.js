@@ -870,6 +870,52 @@ const STAGES = [
   ['delivered', 'Delivered'],
 ];
 
+function reviewerSummaryCards(review) {
+  const reviewers = review && Array.isArray(review.reviewers) ? review.reviewers : [];
+  if (!reviewers.length) return '';
+  const deciding = String((review && review.deciding_model) || '');
+  return `<div class="rf-reviewer-grid">${reviewers.map((item) => {
+    const model = String(item.model || 'reviewer');
+    const scores = item.scores || {};
+    const rating = scores.rating == null ? '–' : `${scores.rating}/10`;
+    const recommendation = String(scores.recommendation || '');
+    const winner = deciding && model === deciding;
+    return `<div class="rf-reviewer-card ${winner ? 'is-deciding' : ''}">
+      <span class="rf-reviewer-card__model">${esc(model)}</span>
+      <strong>${esc(rating)}</strong>
+      <small>${esc(recommendation)}</small>
+      ${winner ? '<em>lowest · final</em>' : ''}
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function reviewerReports(payload) {
+  const reviewers = Array.isArray(payload.reviewers) ? payload.reviewers : [];
+  if (!reviewers.length) return miniMarkdown(payload.review || '');
+  const deciding = String(payload.deciding_model || '');
+  const intro = deciding
+    ? `<div class="rf-panel-verdict">Final round score uses the lowest-Rating reviewer: <strong>${esc(deciding)}</strong>.</div>`
+    : '';
+  return intro + reviewers.map((item) => {
+    const model = String(item.model || 'reviewer');
+    const scores = item.scores || {};
+    const winner = deciding && model === deciding;
+    const chips = Object.entries(scores)
+      .map(([key, value]) => `<span class="rf-pill">${esc(key)} ${esc(value)}</span>`)
+      .join('');
+    return `<section class="rf-reviewer-report ${winner ? 'is-deciding' : ''}">
+      <header>
+        <div>
+          <p>${winner ? 'Independent reviewer · lowest score' : 'Independent reviewer'}</p>
+          <h3>${esc(model)}</h3>
+        </div>
+        <div class="rf-reviewer-report__scores">${chips}</div>
+      </header>
+      <div class="rf-reviewer-report__body">${miniMarkdown(item.review || '')}</div>
+    </section>`;
+  }).join('');
+}
+
 // The server decides what this paper can accept; the page only reflects it.
 // A disabled button carries the reason, so "why can't I press this" is
 // answered by the button itself rather than by pressing it and reading a toast.
@@ -953,6 +999,7 @@ function renderPaper(d, state) {
     const scores = (review && review.scores) || {};
     const chips = Object.entries(scores)
       .map(([k, v]) => `<span class="rf-pill">${esc(k)} ${esc(v)}</span>`).join(' ');
+    const reviewerCards = reviewerSummaryCards(review);
     return `<li class="rf-round">
       <div class="rf-round__head">
         <span class="rf-round__n">${r.n === 0 ? 'Draft' : `Round ${r.n}`}</span>
@@ -960,6 +1007,7 @@ function renderPaper(d, state) {
         ${chips}
         ${review ? `<button type="button" class="rf-btn rf-btn--sm" data-review="${r.n}">Read review</button>` : ''}
       </div>
+      ${reviewerCards}
       ${author && author.summary ? `<pre class="rf-round__summary">${esc(author.summary.slice(0, 1200))}</pre>` : ''}
     </li>`;
   }).join('') || '<div class="rf-empty">No rounds yet.</div>';
@@ -985,7 +1033,7 @@ async function openReview(n) {
   try {
     const d = await api(taskPath(S.slug, `/review/${n}`));
     el('review-modal-title').textContent = n === 0 ? 'Draft review' : `Round ${n} review`;
-    el('review-body').innerHTML = miniMarkdown(d.review || '');
+    el('review-body').innerHTML = reviewerReports(d);
     el('review-modal').hidden = false;
   } catch (err) { toast(err.message, true); }
 }

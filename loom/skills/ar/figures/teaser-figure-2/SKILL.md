@@ -1,16 +1,16 @@
 ---
-name: teaser-figure-plain
-description: Draw a paper's page-one teaser in the unadorned conference idiom — white ground, no tinted panels, the objects themselves drawn rather than named, panel names underneath as "(a) Obstacle: ...", and a real measured chart as the result panel. This is the SAM / FlashAttention look, and the second of this repo's two teaser styles. Emits a full-width vector PDF with embedded fonts. Use when the user runs /teaser-figure-plain, asks for the plain, unadorned, second or "v2" teaser style, names SAM or FlashAttention as the reference, or wants a Figure 1 whose panels draw the object instead of describing it in boxes.
+name: teaser-figure-2
+description: Draw a paper's page-one teaser in the unadorned conference idiom — white ground, no tinted panels, the objects themselves drawn rather than named, panel names underneath as "(a) Obstacle: ...", and a real measured chart as the result panel. This is the SAM / FlashAttention look, and the second of this repo's two teaser styles. Emits a full-width vector PDF with embedded fonts. Use when the user runs /teaser-figure-2, asks for the plain, unadorned, second or "v2" teaser style, names SAM or FlashAttention as the reference, or wants a Figure 1 whose panels draw the object instead of describing it in boxes.
 disable-model-invocation: true
 ---
 
-# teaser-figure-plain
+# teaser-figure-2
 
 ## Which of the two styles this is
 
 This repo has two teaser skills and they are not versions of each other.
 
-| | `teaser-figure` | `teaser-figure-plain` (this one) |
+| | `teaser-figure-1` | `teaser-figure-2` (this one) |
 |---|---|---|
 | ground | tinted panel per column, coloured title pill | white, thin vertical rules |
 | panel name | pill on the top edge | `(a) Obstacle: ...` underneath |
@@ -52,7 +52,7 @@ Same skeleton as the other style — **why**, **how**, **what** — but each pan
 
 ```
 - [ ] 1. Read the paper: abstract, method section, results table, and the scripts behind them
-- [ ] 2. Find the drawable object in each panel; if (a) or (b) has none, use teaser-figure instead
+- [ ] 2. Find the drawable object in each panel; if (a) or (b) has none, use teaser-figure-1 instead
 - [ ] 3. Find the numbers for (c) in a result file, and note what they were averaged over
 - [ ] 4. Write <name>_overview.py against scripts/plain_style.py
 - [ ] 5. Render; fix every OVERFLOW, TOO LONG and missing-glyph line
@@ -79,7 +79,7 @@ ratio(ax, x, y0, y1, "5.5×")                      # the factor between two bar 
 swatch(ax, x, y, "label", RED, dashed=False)      # a mark used in the panel, named
 arrow(ax, a, b, RED, rad=-0.16)                   # rad bends it
 tag(ax, x, y, "(1+ε) × tallest fresh", GREY)      # pill label for a line or arrow
-text / measure / audit / save                     # as in teaser-figure
+text / measure / audit / save                     # as in teaser-figure-1
 ```
 
 `chart()` is the piece to reach for first: `series` is `[(value, tone, name, note), ...]`, `note` being the condition the bar was measured under.
