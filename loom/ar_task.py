@@ -67,6 +67,7 @@ ROUNDS_SUBDIR = "rounds"
 # both show up in the Changes tab.
 CODE_SUBDIR = "code"
 MANUSCRIPT_SUBDIR = "manuscript"
+LEGACY_PAPER_SUBDIR = "paper"
 AUTHOR_NOTE = "author.md"
 REVIEW_NOTE = "review.md"
 
@@ -667,8 +668,30 @@ def work_root(project_root: Path, slug: str) -> Path:
 
 
 def paper_root(project_root: Path, slug: str) -> Path:
-    """``<task>/work/manuscript/`` - the LaTeX sources, its own git repo."""
-    return work_root(project_root, slug) / MANUSCRIPT_SUBDIR
+    """The manuscript directory, preserving pre-split AR paper tasks.
+
+    New tasks use ``work/manuscript``. Tasks created before the code/manuscript
+    split stored their paper in ``work/paper`` and persisted that absolute path
+    in ``ar.json``. Respect an in-task persisted path first so a Loom upgrade
+    does not make existing PDFs, builds, readiness checks, or reviews vanish.
+    """
+    work = work_root(project_root, slug).resolve()
+    state = read_ar_state(project_root, slug)
+    persisted = str(state.get("paper_dir") or "").strip()
+    if persisted:
+        candidate: Path | None = Path(persisted).expanduser().resolve()
+        try:
+            candidate.relative_to(work)
+        except ValueError:
+            candidate = None
+        if candidate is not None and (
+            candidate.is_dir() or (candidate / "main.tex").is_file()
+        ):
+            return candidate
+    legacy = work / LEGACY_PAPER_SUBDIR
+    if (legacy / "main.tex").is_file():
+        return legacy
+    return work / MANUSCRIPT_SUBDIR
 
 
 def code_root(project_root: Path, slug: str) -> Path:

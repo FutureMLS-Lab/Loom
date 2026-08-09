@@ -781,6 +781,29 @@ def test_work_layout(tmp_path: Path) -> None:
     assert ar.paper_root(root, meta.slug) == work / "manuscript"
 
 
+def test_paper_root_preserves_legacy_work_paper_layout(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+    meta = create_task(
+        root, "Legacy AR paper", "goal", kind=ar.KIND_AR, auto_worktree=False
+    )
+    legacy = task_root(root, meta.slug) / "work" / "paper"
+    legacy.mkdir(parents=True)
+    (legacy / "main.tex").write_text("\\documentclass{article}", encoding="utf-8")
+
+    # Legacy tasks are discovered even before their state carries paper_dir.
+    assert ar.paper_root(root, meta.slug) == legacy
+
+    state = ar.new_paper_state(parent_slug="studio", idea={"title": "Legacy"})
+    state["paper_dir"] = str(legacy)
+    ar.write_ar_state(root, meta.slug, state)
+    assert ar.paper_root(root, meta.slug) == legacy
+
+    # A persisted path outside this task is ignored rather than trusted.
+    state["paper_dir"] = str(tmp_path / "outside")
+    ar.write_ar_state(root, meta.slug, state)
+    assert ar.paper_root(root, meta.slug) == legacy
+
+
 def test_child_slug_groups_under_its_studio() -> None:
     assert ar.child_slug("low-bit-rl", "Matched-Entropy Controls") == (
         "low-bit-rl--matched-entropy-controls"
