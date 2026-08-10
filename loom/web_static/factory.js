@@ -143,16 +143,18 @@ async function loadFleet() {
   let d;
   try { d = await api('/api/ar/overview'); }
   catch (err) { toast(err.message, true); return; }
-  if (S.view !== 'fleet') return;
 
   const t = d.totals || {};
-  el('stat-studios').innerHTML = `<b>${t.studios || 0}</b> studios`;
-  el('stat-papers').innerHTML = `<b>${t.papers || 0}</b> papers`;
+  const studios = Number(t.studios || 0);
+  const papers = Number(t.papers || 0);
+  el('stat-studios').innerHTML = `<b>${studios}</b> ${studios === 1 ? 'studio' : 'studios'}`;
+  el('stat-papers').innerHTML = `<b>${papers}</b> ${papers === 1 ? 'paper' : 'papers'}`;
   el('stat-cost').innerHTML = `<b>$${(t.cost_usd || 0).toFixed(2)}</b> spent`;
   const waiting = el('stat-waiting');
   waiting.hidden = !t.awaiting_you;
   waiting.innerHTML = `<b>${t.awaiting_you}</b> waiting on you`;
   el('fleet-root').textContent = d.root || '';
+  if (S.view !== 'fleet') return;
 
   const groups = [...(d.studios || [])];
   if ((d.orphans || []).length) {
@@ -1164,8 +1166,8 @@ function startPolling() {
   if (S.timer) clearInterval(S.timer);
   S.timer = setInterval(() => {
     if (document.hidden) return;
-    if (S.view === 'fleet') loadFleet();
-    else loadTask();
+    loadFleet();
+    if (S.view !== 'fleet') loadTask();
   }, 6000);
 }
 
@@ -1177,7 +1179,10 @@ document.querySelectorAll('[data-back]').forEach((btn) => {
     else openFleet();
   });
 });
-el('btn-refresh').addEventListener('click', () => (S.view === 'fleet' ? loadFleet() : loadTask()));
+el('btn-refresh').addEventListener('click', () => {
+  loadFleet();
+  if (S.view !== 'fleet') loadTask();
+});
 
 el('studio-search-terms').addEventListener('input', () => {
   S.searchDirty = true;
@@ -1354,6 +1359,7 @@ el('btn-studio-create').addEventListener('click', async () => {
     toast('No AR project registered yet — restart Loom to create one.', true);
   }
   readHash();
+  loadFleet();
   startPolling();
   pollPane();
   window.addEventListener('hashchange', readHash);
