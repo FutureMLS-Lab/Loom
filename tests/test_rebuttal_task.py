@@ -17,10 +17,20 @@ def _pdf(path: Path) -> None:
         writer.write(handle)
 
 
+def _rebuttal_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "LOOM_REBUTTAL_REGISTRY",
+        str(tmp_path / "registry.json"),
+    )
+    monkeypatch.setenv(
+        "LOOM_REBUTTAL_ROOT",
+        str(tmp_path / "studios"),
+    )
+
+
 @pytest.fixture()
 def package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, str]:
-    registry = tmp_path / "registry.json"
-    monkeypatch.setenv("LOOM_REBUTTAL_REGISTRY", str(registry))
+    _rebuttal_env(tmp_path, monkeypatch)
     source = tmp_path / "submission-package"
     source.mkdir()
     _pdf(source / "main.pdf")
@@ -62,6 +72,174 @@ def test_register_rejects_missing_or_invalid_input(
         rebuttal.register_project("")
     with pytest.raises(ValueError, match="not a directory"):
         rebuttal.register_project(str(tmp_path / "missing"))
+
+
+def test_register_conference_studio_and_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _rebuttal_env(tmp_path, monkeypatch)
+    payload = rebuttal.register_studio(
+        "NeurIPS",
+        2027,
+        "https://neurips.test/call-for-papers",
+    )
+    studio = payload["studio"]
+    assert studio["id"] == "neurips-2027"
+    assert studio["stage"] == rebuttal.STUDIO_STAGE_POLICY_INPUT
+    assert studio["papers"] == []
+    listed = rebuttal.list_studios()
+    assert listed[0]["title"] == "NeurIPS 2027"
+    assert not listed[0]["policy_approved"]
+
+
+def test_policy_fetch_rejects_private_urls() -> None:
+    with pytest.raises(ValueError, match="public"):
+        rebuttal._public_url("http://127.0.0.1/private-policy")
+    with pytest.raises(ValueError, match="public"):
+        rebuttal._public_url("http://localhost/rebuttal")
+
+
+def test_policy_discovery_preserves_quotes_and_generates_strategy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _rebuttal_env(tmp_path, monkeypatch)
+    studio_id = rebuttal.register_studio(
+        "NeurIPS",
+        2027,
+        "https://neurips.test/cfp",
+    )["studio"]["id"]
+
+    def fake_fetcher(url: str):
+        return {
+            "url": url,
+            "ok": True,
+            "title": "NeurIPS 2027 CFP",
+            "text": (
+                "Author responses are limited to 10,000 characters. "
+                "The submitted PDF cannot be revised during rebuttal."
+            ),
+            "links": [],
+            "content_type": "text/html",
+        }
+
+    def fake_runner(*args, **kwargs):
+        return {
+            "ok": True,
+            "text": """{
+              "official_policy": {
+                "platform": {
+                  "value": "OpenReview",
+                  "source_url": "https://neurips.test/cfp",
+                  "quote": "Author responses",
+                  "confidence": "high"
+                },
+                "character_limit": {
+                  "value": 10000,
+                  "source_url": "https://neurips.test/cfp",
+                  "quote": "limited to 10,000 characters",
+                  "confidence": "high"
+                },
+                "manuscript_frozen": {
+                  "value": true,
+                  "source_url": "https://neurips.test/cfp",
+                  "quote": "submitted PDF cannot be revised",
+                  "confidence": "high"
+                }
+              },
+              "strategy": {
+                "summary": "Reply point by point.",
+                "response_structure": ["Thank the reviewer", "Answer W/Q items"],
+                "priorities": ["AC blockers first"],
+                "warnings": ["Keep 500 characters spare"]
+              },
+              "unknowns": ["Whether links are permitted"]
+            }""",
+            "cost": 0.12,
+        }
+
+    result = rebuttal.discover_studio_policy(
+        studio_id,
+        runner=fake_runner,
+        fetcher=fake_fetcher,
+    )
+    assert result["ok"]
+    assert result["policy"]["character_limit"] == 10_000
+    assert result["policy"]["manuscript_frozen"]
+    assert (
+        result["policy_evidence"]["character_limit"]["source_url"]
+        == "https://neurips.test/cfp"
+    )
+    assert result["strategy"]["priorities"] == ["AC blockers first"]
+    assert result["unknowns"] == ["Whether links are permitted"]
+    studio_dir = rebuttal.studio_path(studio_id).parent
+    assert (studio_dir / rebuttal.POLICY_SOURCES_FILE).is_file()
+    assert (studio_dir / rebuttal.POLICY_FILE).is_file()
+    assert (studio_dir / rebuttal.STRATEGY_FILE).is_file()
+    policy_markdown = (studio_dir / rebuttal.POLICY_MARKDOWN_FILE).read_text(
+        encoding="utf-8"
+    )
+    strategy_markdown = (studio_dir / rebuttal.STRATEGY_FILE).read_text(
+        encoding="utf-8"
+    )
+    assert "官方硬规则" in policy_markdown
+    assert "每份回复字符上限" in policy_markdown
+    assert "Rebuttal 接收策略" in strategy_markdown
+
+
+def test_policy_approval_gates_paper_creation_and_inherits_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _rebuttal_env(tmp_path, monkeypatch)
+    studio_id = rebuttal.register_studio(
+        "ICLR",
+        2027,
+        "https://iclr.test/cfp",
+    )["studio"]["id"]
+    source = tmp_path / "paper-package"
+    source.mkdir()
+    _pdf(source / "main.pdf")
+    _pdf(source / "review.pdf")
+    with pytest.raises(ValueError, match="approve"):
+        rebuttal.register_paper_for_studio(studio_id, str(source))
+
+    state = rebuttal.read_studio(studio_id)
+    state["sources"] = [{"url": "https://iclr.test/cfp", "ok": True}]
+    state["policy"] = rebuttal.normalize_policy(
+        {
+            **rebuttal.DEFAULT_POLICY,
+            "character_limit": 8_000,
+            "allow_links": True,
+        }
+    )
+    state["stage"] = rebuttal.STUDIO_STAGE_AWAIT_POLICY_REVIEW
+    rebuttal.write_studio(studio_id, state)
+    approved = rebuttal.approve_studio_policy(studio_id)
+    assert approved["studio"]["stage"] == rebuttal.STUDIO_STAGE_ACTIVE
+
+    paper = rebuttal.register_paper_for_studio(
+        studio_id,
+        str(source),
+        title="Paper A",
+    )["project"]
+    assert paper["studio_id"] == studio_id
+    assert paper["policy"]["character_limit"] == 8_000
+    assert paper["policy"]["allow_links"]
+    assert rebuttal.studio_payload(studio_id)["studio"]["papers"][0]["id"] == paper["id"]
+
+    rebuttal.save_studio_policy(
+        studio_id,
+        {
+            **state["policy"],
+            "character_limit": 7_000,
+            "allow_links": False,
+        },
+    )
+    rebuttal.approve_studio_policy(studio_id)
+    inherited = rebuttal.read_state(paper["id"])
+    assert inherited["policy"]["character_limit"] == 7_000
+    assert not inherited["policy"]["allow_links"]
+    with pytest.raises(ValueError, match="every Paper"):
+        rebuttal.delete_studio(studio_id)
 
 
 def test_analyze_reviews_writes_atomic_concern_matrix(

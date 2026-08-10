@@ -268,27 +268,31 @@ file by name rather than dumping the LaTeX log.
 
 #### Auto Rebuttal Factory
 
-Open `/rebuttal-factory` to import an existing paper/review package by absolute
-server path. The source directory should contain one submitted paper PDF,
-reviewer or meta-review PDFs whose filenames contain `review`, and any proof,
-experiment, result, or notes files needed as evidence.
+Open `/rebuttal-factory` and create one **Conference Studio** per venue cycle.
+The Studio starts from an official Call for Papers URL, follows relevant
+conference guidance, and separates:
 
-Loom creates `<input>/rebuttal-output/` and drives:
+- source-backed official policy — limits, deadlines, discussion, manuscript
+  freeze, links/attachments, score updates;
+- acceptance-oriented response strategy — ordering, reviewer-specific format,
+  and safe framing.
 
-1. **Package intake** — records a hash manifest without modifying the submitted
-   paper or review files.
-2. **Concern matrix** — a Headless Studio model atomizes every reviewer weakness
-   and question.
-3. **Draft responses** — one self-contained, point-by-point response per
-   reviewer using `loom/skills/ar/paper-rebuttal/SKILL.md`.
-4. **Policy validation** — checks concern coverage, character limits,
-   placeholders, links, anonymity, frozen-manuscript claims, and conditional
-   camera-ready language.
-5. **Human approval** — marks the on-disk package paste-ready. Loom never posts
-   to OpenReview or another venue.
+Every extracted rule retains its source URL, quote and confidence. A human must
+approve the policy before Paper Rebuttals can be added.
 
-Projects are registered in `~/.loom/rebuttal-projects.json`; forgetting one only
-removes that registry entry and preserves its source and generated output.
+Each Paper child imports an absolute server directory containing one submitted
+paper PDF, review/meta-review PDFs whose filenames contain `review`, and any
+proof, experiment, result or notes files needed as evidence. It then drives:
+
+1. SHA256 package intake;
+2. Reviewer-specific Concern Matrix;
+3. one point-by-point response per Reviewer;
+4. inherited Conference Policy validation;
+5. Human Approval. Loom never posts externally.
+
+Studios are stored under `~/.loom/rebuttal-studios/`; project registration is in
+`~/.loom/rebuttal-projects.json`; generated Paper artifacts remain under
+`<input>/rebuttal-output/`.
 
 **Kernel Lab needs a separate bundle.** The Kernel Hub stack (Dockerfiles,
 compose files, the `kernel_evaluator` service and its CUDA reference docs) is

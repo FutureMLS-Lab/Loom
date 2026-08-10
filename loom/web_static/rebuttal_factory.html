@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Auto Rebuttal Factory</title>
-  <link rel="stylesheet" href="/static/rebuttal_factory.css?v=20260810-2" />
+  <link rel="stylesheet" href="/static/rebuttal_factory.css?v=20260810-6" />
 </head>
 <body>
 
@@ -17,7 +17,8 @@
     </span>
   </a>
   <nav class="rb-nav">
-    <span id="stat-projects"><b>—</b> projects</span>
+    <span id="stat-studios"><b>—</b> studios</span>
+    <span id="stat-papers"><b>—</b> papers</span>
     <span id="stat-ready"><b>—</b> ready</span>
     <span id="stat-cost"><b>—</b> spent</span>
     <button type="button" class="rb-btn rb-btn--ghost" id="btn-refresh">Refresh</button>
@@ -29,58 +30,169 @@
 <main class="rb-main" id="view-fleet">
   <section class="rb-hero">
     <p class="rb-eyebrow">Reviewer response control plane</p>
-    <h1>Turn a review package into<br />a verified rebuttal.</h1>
+    <h1>One conference policy.<br />Many verified rebuttals.</h1>
     <p>
-      Import one server directory containing the submitted paper, reviewer PDF,
-      and supporting evidence. Loom freezes a manifest, atomizes every concern,
-      drafts one self-contained response per reviewer, validates venue policy,
-      and stops for human approval.
+      Create one Studio per conference cycle. Loom reads the official Call for
+      Papers and linked author guidance, separates hard policy from response
+      strategy, waits for your approval, then applies that policy to every
+      Paper Rebuttal in the Studio.
     </p>
   </section>
 
   <section class="rb-import">
     <div class="rb-section-head">
       <div>
-        <h2>Import a rebuttal package</h2>
-        <p>The source directory is never deleted. Generated files go into <code>rebuttal-output/</code>.</p>
+        <h2>Start a Conference Studio</h2>
+        <p>Step 1 is always official rebuttal-policy discovery and human approval.</p>
       </div>
     </div>
     <div class="rb-import-grid">
+      <label class="rb-field">
+        <span>Conference</span>
+        <input type="text" id="studio-conference" placeholder="NeurIPS" />
+      </label>
+      <label class="rb-field">
+        <span>Year</span>
+        <input type="number" id="studio-year" min="2000" max="2100" value="2027" />
+      </label>
       <label class="rb-field rb-field--wide">
-        <span>Server directory path</span>
-        <input type="text" id="import-path" placeholder="/absolute/path/to/paper-and-reviews" />
+        <span>Call for Papers URL</span>
+        <input type="url" id="studio-cfp-url" placeholder="https://conference.org/call-for-papers" />
       </label>
-      <label class="rb-field">
-        <span>Display title <em>optional</em></span>
-        <input type="text" id="import-title" placeholder="Paper rebuttal" />
-      </label>
-      <label class="rb-field">
-        <span>Character limit</span>
-        <input type="number" id="import-limit" min="500" max="100000" value="10000" />
+      <label class="rb-field rb-field--wide">
+        <span>Rebuttal policy URL <em>optional</em></span>
+        <input type="url" id="studio-policy-url" placeholder="https://conference.org/author-guidelines" />
       </label>
     </div>
     <div class="rb-import-options">
-      <label><input type="checkbox" id="import-frozen" checked /> submitted manuscript is frozen</label>
-      <label><input type="checkbox" id="import-links" /> venue permits links</label>
-      <label><input type="checkbox" id="import-global" /> venue permits a global response</label>
-      <button type="button" class="rb-btn rb-btn--primary" id="btn-import">Import and scan</button>
+      <button type="button" class="rb-btn rb-btn--primary" id="btn-create-studio">Start a Conference Studio</button>
     </div>
-    <p class="rb-status" id="import-status"></p>
+    <p class="rb-status" id="studio-create-status"></p>
   </section>
 
   <section class="rb-section">
     <div class="rb-section-head">
       <div>
-        <h2>Rebuttal projects</h2>
-        <p>Generated response packages remain on disk after a project is forgotten.</p>
+        <h2>Conference Studios</h2>
+        <p>Each Studio owns one approved policy and all Paper Rebuttals for that conference.</p>
       </div>
     </div>
-    <div class="rb-projects" id="project-list"></div>
+    <div class="rb-projects" id="studio-list"></div>
   </section>
 </main>
 
-<main class="rb-main" id="view-project" hidden>
-  <button type="button" class="rb-back" id="btn-back">← All rebuttal projects</button>
+<main class="rb-main" id="view-studio" hidden>
+  <button type="button" class="rb-back" id="btn-studio-back">← All Conference Studios</button>
+
+  <section class="rb-project-head">
+    <div>
+      <p class="rb-eyebrow" id="studio-stage">Conference Studio</p>
+      <h1 id="studio-title">…</h1>
+      <p class="rb-path" id="studio-cfp"></p>
+      <p class="rb-status" id="studio-meta"></p>
+    </div>
+    <div class="rb-project-actions">
+      <button type="button" class="rb-btn rb-btn--primary" id="btn-discover-policy">1. Discover policy</button>
+      <button type="button" class="rb-btn rb-btn--approve" id="btn-approve-policy">2. Approve policy</button>
+      <button type="button" class="rb-btn rb-btn--danger" id="btn-forget-studio">Forget Studio</button>
+    </div>
+  </section>
+
+  <ol class="rb-pipeline rb-pipeline--studio" id="studio-pipeline"></ol>
+
+  <section class="rb-section">
+    <article class="rb-card rb-markdown-card">
+      <div class="rb-section-head">
+        <div>
+          <h2>Conference Rebuttal Rules</h2>
+          <p>中文 Markdown；官方硬规则与接收策略分开，所有事实保留来源证据。</p>
+        </div>
+      </div>
+      <div class="rb-markdown" id="studio-policy-markdown"></div>
+      <hr />
+      <div class="rb-markdown" id="studio-strategy-markdown"></div>
+    </article>
+  </section>
+
+  <section class="rb-columns">
+    <article class="rb-card">
+      <div class="rb-section-head">
+        <div>
+          <h2>Official policy sources</h2>
+          <p>Every factual rule retains its source URL, quote, and confidence.</p>
+        </div>
+      </div>
+      <div id="studio-sources"></div>
+      <pre class="rb-log" id="studio-log">(no activity yet)</pre>
+    </article>
+
+    <article class="rb-card">
+      <details class="rb-advanced">
+        <summary>Advanced policy editing</summary>
+        <p class="rb-status">Edit model extraction only after comparing it with the embedded Markdown and official quotes.</p>
+      <div class="rb-policy rb-policy--studio">
+        <label class="rb-field"><span>Platform</span><input type="text" id="studio-policy-platform" /></label>
+        <label class="rb-field"><span>Character limit</span><input type="number" id="studio-policy-limit" min="500" max="100000" /></label>
+        <label class="rb-field"><span>Word limit</span><input type="number" id="studio-policy-word-limit" min="0" max="100000" /></label>
+        <label class="rb-field"><span>Response language</span><input type="text" id="studio-policy-language" /></label>
+        <label class="rb-field"><span>Rebuttal opens</span><input type="text" id="studio-policy-open" placeholder="official date/time" /></label>
+        <label class="rb-field"><span>Rebuttal deadline</span><input type="text" id="studio-policy-deadline" placeholder="official date/time" /></label>
+        <label class="rb-field"><span>Timezone / AoE</span><input type="text" id="studio-policy-timezone" /></label>
+        <label class="rb-field"><span>Discussion ends</span><input type="text" id="studio-policy-discussion-end" /></label>
+      </div>
+      <div class="rb-checks">
+        <label><input type="checkbox" id="studio-policy-frozen" /> manuscript frozen</label>
+        <label><input type="checkbox" id="studio-policy-revised-pdf" /> revised PDF allowed</label>
+        <label><input type="checkbox" id="studio-policy-experiments" /> new experiments allowed</label>
+        <label><input type="checkbox" id="studio-policy-links" /> links allowed</label>
+        <label><input type="checkbox" id="studio-policy-attachments" /> attachments allowed</label>
+        <label><input type="checkbox" id="studio-policy-global" /> global response allowed</label>
+        <label><input type="checkbox" id="studio-policy-ac" /> AC response allowed</label>
+        <label><input type="checkbox" id="studio-policy-anonymous" /> anonymous</label>
+        <label><input type="checkbox" id="studio-policy-score-update" /> reviewers may update scores</label>
+      </div>
+      <label class="rb-field">
+        <span>Submission instructions</span>
+        <textarea id="studio-policy-instructions" rows="3"></textarea>
+      </label>
+      <button type="button" class="rb-btn" id="btn-studio-policy-save">Save policy draft</button>
+      <div class="rb-policy-evidence" id="studio-policy-evidence"></div>
+      </details>
+    </article>
+  </section>
+
+  <section class="rb-import rb-studio-paper-import">
+    <div class="rb-section-head">
+      <div>
+        <h2>3. Add a Paper Rebuttal</h2>
+        <p>Enabled only after the Conference Policy is human-approved.</p>
+      </div>
+    </div>
+    <div class="rb-import-grid rb-import-grid--paper">
+      <label class="rb-field rb-field--wide">
+        <span>Paper materials directory</span>
+        <input type="text" id="paper-import-path" placeholder="/absolute/path/to/paper-and-reviews" />
+      </label>
+      <label class="rb-field">
+        <span>Paper title <em>optional</em></span>
+        <input type="text" id="paper-import-title" />
+      </label>
+      <button type="button" class="rb-btn rb-btn--primary" id="btn-add-paper">Add Paper &amp; Draft Rebuttal</button>
+    </div>
+    <p class="rb-status" id="paper-import-status"></p>
+  </section>
+
+  <section class="rb-section">
+    <div class="rb-section-head">
+      <div><h2>4. Paper Rebuttals</h2><p>All children inherit the approved Conference Policy.</p></div>
+      <span class="rb-count" id="studio-paper-count"></span>
+    </div>
+    <div class="rb-projects" id="studio-paper-list"></div>
+  </section>
+</main>
+
+<main class="rb-main" id="view-paper" hidden>
+  <button type="button" class="rb-back" id="btn-paper-back">← Back to Conference Studio</button>
 
   <section class="rb-project-head">
     <div>
@@ -91,7 +203,7 @@
     </div>
     <div class="rb-project-actions">
       <button type="button" class="rb-btn" id="btn-rescan">Rescan package</button>
-      <button type="button" class="rb-btn rb-btn--danger" id="btn-forget">Forget project</button>
+      <button type="button" class="rb-btn rb-btn--danger" id="btn-forget">Forget paper</button>
     </div>
   </section>
 
@@ -198,6 +310,6 @@
 
 <div class="rb-toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/rebuttal_factory.js?v=20260810-2"></script>
+<script src="/static/rebuttal_factory.js?v=20260810-6"></script>
 </body>
 </html>

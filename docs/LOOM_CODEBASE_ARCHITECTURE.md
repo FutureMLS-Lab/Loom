@@ -1936,12 +1936,16 @@ Auto Rebuttal Factory 是与 Research Factory 并列的独立工作流：
 
 ```text
 /rebuttal-factory
-    → import absolute server path
-    → scan submitted paper + review PDFs + evidence
-    → concern matrix
-    → reviewer-specific responses
-    → deterministic policy validation
-    → human approval
+    → Conference Studio
+        → fetch official CFP and author guidance
+        → source-backed Policy + separate Strategy
+        → Human Policy Gate
+        → multiple Paper Rebuttals
+            → import absolute server path
+            → concern matrix
+            → reviewer-specific responses
+            → inherited policy validation
+            → human approval
 ```
 
 关键文件：
@@ -1954,7 +1958,44 @@ Auto Rebuttal Factory 是与 Research Factory 并列的独立工作流：
 - [`loom/web_static/rebuttal_factory.css`](loom/web_static/rebuttal_factory.css)；
 - [`loom/skills/ar/paper-rebuttal/SKILL.md`](loom/skills/ar/paper-rebuttal/SKILL.md)。
 
-### 20.1 输入和输出
+### 20.1 Conference Studio
+
+每个 Conference + Year 建立一个 Studio：
+
+```text
+NeurIPS 2027
+ICLR 2027
+WACV 2027
+```
+
+输入 CFP URL 和可选的 Rebuttal Policy URL。Loom 只抓取公共官方页面和相关
+OpenReview 页面，拒绝 private/loopback/link-local 地址。
+
+Policy Discovery 输出：
+
+```text
+~/.loom/rebuttal-studios/<studio-id>/
+├── studio.json
+├── policy-sources.json
+├── rebuttal-policy.json
+├── rebuttal-policy.md
+└── rebuttal-strategy.md
+```
+
+`rebuttal-policy` 中每个官方字段都保存：
+
+```text
+value
+source_url
+quote
+confidence
+```
+
+模型生成的 Strategy 与官方 Policy 分开保存。用户批准 Policy 后，所有新建
+Paper 自动继承；重新批准后的 Policy 也会传播给已有 Paper，并使旧 Validation
+失效。
+
+### 20.2 Paper 输入和输出
 
 用户输入一个服务器目录。该目录至少包含：
 
@@ -1987,19 +2028,33 @@ rebuttal-output/
 删除 Factory Project 只会删除注册项，不会删除输入和
 `rebuttal-output/`。
 
-### 20.2 状态机
+### 20.3 双层状态机
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Intake
-    Intake --> ConcernsReady: analyze review PDFs
+    [*] --> PolicyInput
+    PolicyInput --> PolicyDraft: discover official policy
+    PolicyDraft --> AwaitPolicyReview: extraction complete
+    AwaitPolicyReview --> Active: human approves policy
+    Active --> PaperIntake: add Paper path
+    PaperIntake --> ConcernsReady: analyze review PDFs
     ConcernsReady --> ResponsesReady: draft per-reviewer responses
-    ResponsesReady --> Validated: policy checks pass
-    Validated --> Approved: human approval
-    Approved --> ResponsesReady: any response or policy edit
+    ResponsesReady --> Validated: inherited policy checks pass
+    Validated --> Approved: human approves response package
+    Approved --> ResponsesReady: response or policy edit
 ```
 
-阶段：
+Conference 阶段：
+
+```text
+policy_input
+policy_draft
+await_policy_review
+active
+closed
+```
+
+Paper 阶段：
 
 ```text
 intake
@@ -2009,15 +2064,19 @@ validated
 approved
 ```
 
-### 20.3 模型与确定性边界
+### 20.4 模型与确定性边界
 
 模型负责：
 
+- 将官方页面整理成带 Quote/URL 的 Policy 草案；
+- 根据 Policy 生成独立的接收导向 Strategy；
 - 从原始 Review PDF 拆出 Weakness/Question；
 - 根据 Paper、Evidence 和 `paper-rebuttal` Skill 起草逐 Reviewer 回复。
 
 Python 负责：
 
+- 公共 URL 与 SSRF 检查；
+- 页面抓取、Snapshot 和来源保留；
 - 文件分类和 SHA256 Manifest；
 - 字符限制；
 - Concern ID 覆盖；

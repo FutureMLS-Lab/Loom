@@ -4050,13 +4050,59 @@ def _rebuttal_logger(project_id: str):
     return log
 
 
+def _rebuttal_policy_job(studio_id: str, model: str) -> None:
+    def log(message: str) -> None:
+        state = rebuttal.read_studio(studio_id)
+        if not state:
+            return
+        rebuttal.append_log(state, str(message))
+        rebuttal.write_studio(studio_id, state)
+
+    result = rebuttal.discover_studio_policy(
+        studio_id,
+        model=model,
+        on_line=log,
+    )
+    state = rebuttal.read_studio(studio_id)
+    if not state:
+        return
+    state["active_job"] = ""
+    state["cost_usd"] = round(
+        float(state.get("cost_usd") or 0.0) + float(result.get("cost") or 0.0),
+        4,
+    )
+    if result.get("ok"):
+        state["policy"] = result.get("policy") or {}
+        state["policy_evidence"] = result.get("policy_evidence") or {}
+        state["strategy"] = result.get("strategy") or {}
+        state["unknowns"] = result.get("unknowns") or []
+        state["sources"] = result.get("sources") or []
+        state["stage"] = rebuttal.STUDIO_STAGE_AWAIT_POLICY_REVIEW
+        state["policy_approved_at"] = ""
+        state["error"] = ""
+        rebuttal.append_log(
+            state,
+            f"policy draft ready from {len(state['sources'])} source(s)",
+        )
+    else:
+        if isinstance(result.get("sources"), list):
+            state["sources"] = result["sources"]
+        state["stage"] = rebuttal.STUDIO_STAGE_POLICY_INPUT
+        state["error"] = str(result.get("error") or "policy discovery failed")
+        rebuttal.append_log(state, f"policy discovery failed: {state['error']}")
+    rebuttal.write_studio(studio_id, state)
+
+
 def _rebuttal_analyze_job(project_id: str, model: str) -> None:
     log = _rebuttal_logger(project_id)
     result = rebuttal.analyze_project(project_id, model=model, on_line=log)
     state = rebuttal.read_state(project_id)
     if not state:
         return
-    state["active_job"] = ""
+    auto_draft = bool(state.get("auto_draft"))
+    state["active_job"] = (
+        rebuttal.JOB_DRAFT if result.get("ok") and auto_draft else ""
+    )
     state["cost_usd"] = round(
         float(state.get("cost_usd") or 0.0) + float(result.get("cost") or 0.0),
         4,
@@ -4072,10 +4118,18 @@ def _rebuttal_analyze_job(project_id: str, model: str) -> None:
             f"extracted {sum(len(r.get('concerns') or []) for r in state['reviewers'])} "
             f"concern(s) across {len(state['reviewers'])} reviewer(s)",
         )
+        if auto_draft:
+            rebuttal.append_log(
+                state,
+                "automatically starting reviewer-specific rebuttal drafts",
+            )
     else:
+        state["auto_draft"] = False
         state["error"] = str(result.get("error") or "review analysis failed")
         rebuttal.append_log(state, f"analysis failed: {state['error']}")
     rebuttal.write_state(project_id, state)
+    if result.get("ok") and auto_draft:
+        _ar_run_async(_rebuttal_draft_job, project_id, model)
 
 
 def _rebuttal_draft_job(project_id: str, model: str) -> None:
@@ -4085,6 +4139,7 @@ def _rebuttal_draft_job(project_id: str, model: str) -> None:
     if not state:
         return
     state["active_job"] = ""
+    state["auto_draft"] = False
     state["cost_usd"] = round(
         float(state.get("cost_usd") or 0.0) + float(result.get("cost") or 0.0),
         4,
@@ -5977,8 +6032,40 @@ def make_handler(
                             rebuttal.STAGE_VALIDATED,
                             rebuttal.STAGE_APPROVED,
                         ],
+                        "studio_stages": [
+                            rebuttal.STUDIO_STAGE_POLICY_INPUT,
+                            rebuttal.STUDIO_STAGE_POLICY_DRAFT,
+                            rebuttal.STUDIO_STAGE_AWAIT_POLICY_REVIEW,
+                            rebuttal.STUDIO_STAGE_ACTIVE,
+                            rebuttal.STUDIO_STAGE_CLOSED,
+                        ],
                     }
                 )
+                self._send(st, b, h)
+                return
+
+            if path == "/api/rebuttal/studios":
+                st, b, h = _json_bytes(
+                    {"ok": True, "studios": rebuttal.list_studios()}
+                )
+                self._send(st, b, h)
+                return
+
+            m_rebuttal_studio_get = re.match(
+                r"^/api/rebuttal/studios/([a-z0-9][a-z0-9-]{0,79})$",
+                path,
+            )
+            if m_rebuttal_studio_get:
+                payload = rebuttal.studio_payload(
+                    m_rebuttal_studio_get.group(1)
+                )
+                if not payload:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "conference studio not found"},
+                        404,
+                    )
+                else:
+                    st, b, h = _json_bytes(payload)
                 self._send(st, b, h)
                 return
 
@@ -6802,6 +6889,177 @@ def make_handler(
             path = parsed.path
             body = _read_json(self)
 
+            if path == "/api/rebuttal/studios":
+                try:
+                    payload = rebuttal.register_studio(
+                        str(body.get("conference") or ""),
+                        body.get("year"),
+                        str(body.get("cfp_url") or ""),
+                        policy_url=str(body.get("policy_url") or ""),
+                        title=str(body.get("title") or ""),
+                    )
+                except ValueError as exc:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": str(exc)},
+                        400,
+                    )
+                except OSError as exc:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": f"could not create studio: {exc}"},
+                        500,
+                    )
+                else:
+                    st, b, h = _json_bytes(payload, 201)
+                self._send(st, b, h)
+                return
+
+            m_rebuttal_studio_action = re.match(
+                r"^/api/rebuttal/studios/([a-z0-9][a-z0-9-]{0,79})/([a-z-]+)$",
+                path,
+            )
+            if m_rebuttal_studio_action:
+                studio_id = m_rebuttal_studio_action.group(1)
+                action = m_rebuttal_studio_action.group(2)
+                state = rebuttal.read_studio(studio_id)
+                if not state:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "conference studio not found"},
+                        404,
+                    )
+                    self._send(st, b, h)
+                    return
+                active = str(state.get("active_job") or "")
+
+                if action == "discover-policy":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": True, "status": "running", "job": active},
+                            202,
+                        )
+                    else:
+                        state["active_job"] = rebuttal.JOB_POLICY
+                        state["stage"] = rebuttal.STUDIO_STAGE_POLICY_DRAFT
+                        state["error"] = ""
+                        state["policy_approved_at"] = ""
+                        rebuttal.append_log(state, "started official policy discovery")
+                        rebuttal.write_studio(studio_id, state)
+                        model = (
+                            str(body.get("model") or "").strip()
+                            or _ar_headless_model(None)
+                        )
+                        _ar_run_async(_rebuttal_policy_job, studio_id, model)
+                        st, b, h = _json_bytes(
+                            {
+                                "ok": True,
+                                "status": "running",
+                                "job": rebuttal.JOB_POLICY,
+                            },
+                            202,
+                        )
+                    self._send(st, b, h)
+                    return
+
+                if action == "policy":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        try:
+                            payload = rebuttal.save_studio_policy(
+                                studio_id,
+                                body.get("policy")
+                                if isinstance(body.get("policy"), dict)
+                                else {},
+                                strategy=body.get("strategy")
+                                if isinstance(body.get("strategy"), dict)
+                                else None,
+                            )
+                        except (ValueError, OSError) as exc:
+                            st, b, h = _json_bytes(
+                                {"ok": False, "error": str(exc)},
+                                400,
+                            )
+                        else:
+                            st, b, h = _json_bytes(payload)
+                    self._send(st, b, h)
+                    return
+
+                if action == "approve-policy":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        try:
+                            payload = rebuttal.approve_studio_policy(studio_id)
+                        except (ValueError, OSError) as exc:
+                            st, b, h = _json_bytes(
+                                {"ok": False, "error": str(exc)},
+                                409,
+                            )
+                        else:
+                            st, b, h = _json_bytes(payload)
+                    self._send(st, b, h)
+                    return
+
+                if action == "add-paper":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        try:
+                            payload = rebuttal.register_paper_for_studio(
+                                studio_id,
+                                str(body.get("path") or ""),
+                                title=str(body.get("title") or ""),
+                            )
+                        except (ValueError, OSError) as exc:
+                            st, b, h = _json_bytes(
+                                {"ok": False, "error": str(exc)},
+                                400,
+                            )
+                        else:
+                            project_id = str(payload["project"].get("id") or "")
+                            auto_draft = bool(body.get("auto_draft", True))
+                            manifest_ready = bool(
+                                (payload["project"].get("manifest") or {}).get("ready")
+                            )
+                            if project_id and auto_draft and manifest_ready:
+                                paper_state = rebuttal.read_state(project_id)
+                                paper_state["active_job"] = rebuttal.JOB_ANALYZE
+                                paper_state["auto_draft"] = True
+                                paper_state["error"] = ""
+                                rebuttal.append_log(
+                                    paper_state,
+                                    "automatically started review analysis after import",
+                                )
+                                rebuttal.write_state(project_id, paper_state)
+                                model = (
+                                    str(body.get("model") or "").strip()
+                                    or _ar_headless_model(None)
+                                )
+                                _ar_run_async(
+                                    _rebuttal_analyze_job,
+                                    project_id,
+                                    model,
+                                )
+                                payload = rebuttal.project_payload(project_id)
+                            st, b, h = _json_bytes(payload, 201)
+                    self._send(st, b, h)
+                    return
+
+                st, b, h = _json_bytes(
+                    {"ok": False, "error": f"unknown studio action: {action}"},
+                    404,
+                )
+                self._send(st, b, h)
+                return
+
             if path == "/api/rebuttal/projects":
                 try:
                     payload = rebuttal.register_project(
@@ -6882,11 +7140,14 @@ def make_handler(
                             409,
                         )
                     else:
-                        policy = rebuttal.normalize_policy(
-                            body.get("policy")
-                            if isinstance(body.get("policy"), dict)
+                        policy_input = dict(
+                            state.get("policy")
+                            if isinstance(state.get("policy"), dict)
                             else {}
                         )
+                        if isinstance(body.get("policy"), dict):
+                            policy_input.update(body["policy"])
+                        policy = rebuttal.normalize_policy(policy_input)
                         state["policy"] = policy
                         state["validation"] = {}
                         if state.get("stage") in (
@@ -8507,6 +8768,45 @@ def make_handler(
                 return
             parsed = urlparse(self.path)
             path = parsed.path
+
+            m_rebuttal_studio_del = re.match(
+                r"^/api/rebuttal/studios/([a-z0-9][a-z0-9-]{0,79})$",
+                path,
+            )
+            if m_rebuttal_studio_del:
+                studio_id = m_rebuttal_studio_del.group(1)
+                state = rebuttal.read_studio(studio_id)
+                if not state:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "conference studio not found"},
+                        404,
+                    )
+                elif state.get("active_job"):
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": False,
+                            "error": f"{state['active_job']} is still running",
+                        },
+                        409,
+                    )
+                else:
+                    try:
+                        rebuttal.delete_studio(studio_id)
+                    except ValueError as exc:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": str(exc)},
+                            409,
+                        )
+                    else:
+                        st, b, h = _json_bytes(
+                            {
+                                "ok": True,
+                                "id": studio_id,
+                                "note": "policy artifacts were preserved",
+                            }
+                        )
+                self._send(st, b, h)
+                return
 
             m_rebuttal_del = re.match(
                 r"^/api/rebuttal/projects/([0-9a-f]{12})$",

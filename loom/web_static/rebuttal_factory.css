@@ -235,6 +235,7 @@ code { font-family: var(--rb-mono); }
   padding: 0;
   list-style: none;
 }
+.rb-pipeline--studio { grid-template-columns: repeat(4, 1fr); }
 .rb-pipeline li {
   min-width: 0;
   padding: 10px 12px;
@@ -273,7 +274,51 @@ code { font-family: var(--rb-mono); }
 }
 .rb-card { padding: 17px; min-width: 0; }
 .rb-policy { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.rb-policy--studio { grid-template-columns: 1fr 1fr; }
 .rb-checks { margin: 12px 0; }
+.rb-policy-evidence { display: grid; gap: 7px; margin-top: 14px; }
+.rb-markdown-card { padding: 22px 24px; }
+.rb-markdown-card > hr { margin: 26px 0; border: 0; border-top: 1px solid var(--rb-line); }
+.rb-markdown { color: var(--rb-dim); overflow-wrap: anywhere; }
+.rb-markdown h1 { margin: 0 0 16px; color: var(--rb-text); font-size: 1.45rem; }
+.rb-markdown h2 { margin: 22px 0 10px; color: var(--rb-text); font-size: 1rem; }
+.rb-markdown h3 { margin: 17px 0 7px; color: var(--rb-text); font-size: 0.9rem; }
+.rb-markdown p { margin: 8px 0; }
+.rb-markdown ul, .rb-markdown ol { margin: 8px 0; padding-left: 22px; }
+.rb-markdown blockquote { margin: 10px 0; padding-left: 12px; border-left: 3px solid var(--rb-line-strong); color: var(--rb-faint); }
+.rb-markdown code { padding: 1px 5px; border-radius: 5px; background: var(--rb-soft); }
+.rb-markdown pre { overflow: auto; padding: 12px; border-radius: 9px; color: #d8dce4; background: #171a20; }
+.rb-markdown table { width: 100%; margin: 12px 0; border-collapse: collapse; font-size: 11px; }
+.rb-markdown th, .rb-markdown td { padding: 7px 8px; border: 1px solid var(--rb-line); text-align: left; vertical-align: top; }
+.rb-markdown th { color: var(--rb-text); background: var(--rb-soft); }
+.rb-markdown a { overflow-wrap: anywhere; }
+.rb-advanced > summary { cursor: pointer; color: var(--rb-text); font-weight: 700; }
+.rb-advanced[open] > summary { margin-bottom: 12px; }
+.rb-policy-source, .rb-policy-proof {
+  padding: 9px 10px;
+  border: 1px solid var(--rb-line);
+  border-radius: 9px;
+  background: var(--rb-soft);
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+.rb-policy-source b, .rb-policy-proof b { display: block; margin-bottom: 3px; }
+.rb-policy-source a { font-family: var(--rb-mono); font-size: 10px; }
+.rb-policy-proof blockquote {
+  margin: 5px 0 0;
+  padding-left: 9px;
+  border-left: 3px solid var(--rb-line-strong);
+  color: var(--rb-dim);
+}
+.rb-strategy-block { margin-top: 12px; }
+.rb-strategy-block:first-child { margin-top: 0; }
+.rb-strategy-block h3 { margin-bottom: 5px; font-size: 12px; }
+.rb-strategy-block ul, #studio-unknowns { margin: 0; padding-left: 18px; color: var(--rb-dim); }
+.rb-studio-paper-import { margin-top: 24px; }
+.rb-import-grid--paper {
+  grid-template-columns: minmax(0, 2fr) minmax(180px, 1fr) auto;
+  align-items: end;
+}
 
 .rb-file-list { display: grid; gap: 7px; }
 .rb-file {
@@ -403,6 +448,7 @@ code { font-family: var(--rb-mono); }
   .rb-nav { gap: 7px; }
   .rb-main { width: min(100% - 24px, 1180px); padding-top: 20px; }
   .rb-import-grid, .rb-columns, .rb-policy { grid-template-columns: 1fr; }
+  .rb-import-grid--paper { grid-template-columns: 1fr; }
   .rb-project { grid-template-columns: 1fr auto; }
   .rb-pipeline { grid-template-columns: 1fr 1fr; }
   .rb-action-bar { top: 104px; align-items: stretch; }
