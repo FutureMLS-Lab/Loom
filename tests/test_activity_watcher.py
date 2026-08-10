@@ -31,6 +31,21 @@ def test_ack_clears_the_ring():
     assert watcher.snapshot()["tasks"]["abc123/my-task"]["finished_at"] == 0
 
 
+def test_projects_aggregate_counts_working_and_finished():
+    """The project chip needs both counts: steady light while an agent runs,
+    a blink once one has finished unseen."""
+    watcher = AgentActivityWatcher(FakeRegistry([]))
+    watcher.report_finished("", "abc123/done-task")
+    with watcher._lock:
+        watcher._state[("abc123", "busy-task")] = {
+            "working": True,
+            "idle_polls": 0,
+            "finished_at": 0.0,
+        }
+    agg = watcher.snapshot()["projects"]["abc123"]
+    assert agg == {"working": 1, "finished": 1}
+
+
 def test_garbage_tags_are_ignored():
     watcher = AgentActivityWatcher(FakeRegistry([]))
     for bad in ("", "no-slash", "/", "abc/"):

@@ -321,16 +321,23 @@ function applyActivity() {
 
   document.querySelectorAll('#task-list li[data-slug]').forEach((li) => {
     const entry = tasks[`${STATE.projectId}/${li.dataset.slug}`];
-    // The open task is being looked at, so it never needs to ask for attention.
-    const wants = !!(entry && entry.finished_at) && li.dataset.slug !== STATE.slug;
-    li.classList.toggle('is-finished', wants);
+    // Running is plain status, so it shows even on the open task; a finish is
+    // an attention ask, and the open task is already being looked at.
+    const working = !!(entry && entry.working);
+    const finished = !!(entry && entry.finished_at) && li.dataset.slug !== STATE.slug;
+    li.classList.toggle('is-finished', finished);
+    li.classList.toggle('is-working', working && !finished);
   });
 
   document.querySelectorAll('.project-toggle[data-project-id]').forEach((chip) => {
     const pid = chip.dataset.projectId;
-    const count = projects[pid] || 0;
-    // Rings on the project you are already in would duplicate the task rings.
-    chip.classList.toggle('is-finished', count > 0 && pid !== STATE.projectId);
+    const agg = projects[pid] || {};
+    // Blinking on the project you are already in would duplicate the task
+    // rings; the steady running light is status, not a request, so it stays.
+    const finished = (agg.finished || 0) > 0 && pid !== STATE.projectId;
+    const working = (agg.working || 0) > 0;
+    chip.classList.toggle('is-finished', finished);
+    chip.classList.toggle('is-working', working && !finished);
   });
 }
 

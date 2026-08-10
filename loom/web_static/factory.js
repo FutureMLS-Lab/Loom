@@ -23,6 +23,8 @@ const S = {
   paneFollow: false,         // whether to keep tailing it
   filePath: '',              // where the file browser is, under work/
   searchDirty: false,        // protect edits from the six-second state poll
+  studioFp: '',              // last-rendered studio data, so unchanged polls
+  paperFp: '',               // ...skip the DOM rebuild that eats hover/scroll
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -101,6 +103,7 @@ function openStudio(slug) {
   S.slug = slug; S.parent = slug; S.picked = new Set(); S.data = null;
   S.graphSel = ''; S.graphHide = new Set();
   S.searchDirty = false;
+  S.studioFp = '';
   show('studio');
   loadTask();
   writeHash(`studio/${slug}`);
@@ -111,6 +114,7 @@ function openPaper(slug, parent) {
   if (parent) S.parent = parent;
   S.data = null;
   S.pane = ''; S.filePath = '';
+  S.paperFp = '';
   show('paper');
   loadTask();
   openFiles('');
@@ -150,6 +154,9 @@ async function loadFleet() {
   el('stat-studios').innerHTML = `<b>${studios}</b> ${studios === 1 ? 'studio' : 'studios'}`;
   el('stat-papers').innerHTML = `<b>${papers}</b> ${papers === 1 ? 'paper' : 'papers'}`;
   el('stat-cost').innerHTML = `<b>$${(t.cost_usd || 0).toFixed(2)}</b> spent`;
+  const live = el('stat-running');
+  live.hidden = !t.running;
+  live.innerHTML = `<b>${t.running}</b> running`;
   const waiting = el('stat-waiting');
   waiting.hidden = !t.awaiting_you;
   waiting.innerHTML = `<b>${t.awaiting_you}</b> waiting on you`;
@@ -328,8 +335,24 @@ function renderStudio(d, state) {
   el('papers-status').textContent = paperMiningState(state, papers);
   el('ideas-status').textContent = state.ideas_status === 'running'
     ? 'generating — a few minutes…'
-    : (state.ideas_error || `${ideas.length} idea(s)`);
+    : state.link_status === 'running'
+      ? 'grounding citations…'
+      : (state.ideas_error || `${ideas.length} idea(s)`);
 
+  // Statuses, steps and logs update on every poll, but rebuilding the lists
+  // and the graph destroys hover, text selection and scroll mid-read - and
+  // with unchanged data the rebuilt pixels would be identical anyway.
+  const fp = JSON.stringify([papers, ideas]);
+  const changed = fp !== S.studioFp;
+  S.studioFp = fp;
+  if (changed) {
+    renderStudioLists(papers, ideas);
+    drawGraph(papers, ideas);
+  }
+  renderSteps(state, papers, ideas);
+}
+
+function renderStudioLists(papers, ideas) {
   el('papers-list').innerHTML = papers.map((p) => `
     <li>
       <a href="${esc(p.url)}" target="_blank" rel="noreferrer">${esc(p.title)}</a>
@@ -342,7 +365,14 @@ function renderStudio(d, state) {
     const edges = (idea.derived_from || []).map((e) => {
       const mark = e.verified === true ? ' ✓' : (e.paper && e.verified === false ? ' ✗' : '');
       const cls = e.verified === false && e.paper ? ' is-unverified' : '';
-      return `<span class="rf-edge-chip${cls}" title="${esc(e.real_title || '')}">`
+      // The chip is one line; the tooltip carries what OpenAlex actually said.
+      const tip = e.verified === true
+        ? [e.real_title || e.title, e.year ? `(${e.year})` : '',
+           e.cited_by ? `· cited ${e.cited_by} times` : ''].filter(Boolean).join(' ')
+        : (e.paper && e.verified === false
+          ? `arXiv ${e.paper} could not be confirmed (${e.reason || 'no record'})`
+          : (e.real_title || ''));
+      return `<span class="rf-edge-chip${cls}" title="${esc(tip)}">`
         + `${esc(e.relation)} · ${esc(e.title || e.paper)}${mark}</span>`;
     }).join('');
     return `<article class="rf-idea${spawned ? ' is-spawned' : ''}${S.picked.has(idea.id) ? ' is-picked' : ''}" data-idea="${esc(idea.id)}">
@@ -372,8 +402,6 @@ function renderStudio(d, state) {
     link.addEventListener('click', (ev) => { ev.preventDefault(); openPaper(link.dataset.openPaper, S.slug); });
   });
   updateSpawnLabel();
-  renderSteps(state, papers, ideas);
-  drawGraph(papers, ideas);
 }
 
 // Each step reports its own state, and the first unfinished one is marked
@@ -382,12 +410,18 @@ function renderSteps(state, papers, ideas) {
   const edges = ideas.reduce((n, i) => n + (i.derived_from || []).length, 0);
   const spawned = ideas.filter((i) => i.status === 'spawned').length;
   const running = (job) => state[`${job}_status`] === 'running';
+  // A studio seeded from your own idea can go straight to step 2; pointing
+  // "current" at mining would say the opposite.
+  const seeded = state.mode === 'seed';
 
   const steps = [
     {
       id: 'mine',
       done: papers.length > 0,
-      state: paperMiningState(state, papers),
+      optional: seeded,
+      state: seeded && !papers.length && !state.papers_status
+        ? 'optional — this studio starts from your idea'
+        : paperMiningState(state, papers),
     },
     {
       id: 'ideas',
@@ -409,7 +443,7 @@ function renderSteps(state, papers, ideas) {
       state: spawned ? `${spawned} paper task(s) created` : 'nothing picked yet',
     },
   ];
-  const current = steps.findIndex((s) => !s.done);
+  const current = steps.findIndex((s) => !s.done && !s.optional);
   steps.forEach((s, i) => {
     const node = document.querySelector(`.rf-step[data-step="${s.id}"]`);
     if (!node) return;
@@ -543,7 +577,8 @@ function graphNodesFrom(papers, ideas) {
         target.hover = `${edge.real_title || target.label}${edge.year ? ` (${edge.year})` : ''}`;
       } else if (edge.paper && edge.verified === false) {
         target.meta = '✗ unverified';
-        target.hover = `${target.label} — arXiv ${edge.paper} could not be confirmed`;
+        target.hover = `${target.label} — arXiv ${edge.paper} could not be confirmed`
+          + (edge.reason ? ` (${edge.reason})` : '');
       }
       links.push({ source: node, target, relation: edge.relation, edge });
     });
@@ -675,6 +710,10 @@ function drawGraph(papers, ideas) {
       tabindex: '0', role: 'button',
       'aria-label': `${node.kind === 'idea' ? 'Idea' : 'Cited work'}: ${node.label}`,
     });
+    // Labels are clipped to the column; the native tooltip carries the rest.
+    const tip = svgEl('title');
+    tip.textContent = node.hover || node.label;
+    g.appendChild(tip);
     const style = NODE_STYLE[node.kind] || NODE_STYLE.paper;
     // A generous invisible target. The circles are 5-8px across, which is a
     // hard thing to hit and an easy thing to fall off mid-read.
@@ -1069,8 +1108,26 @@ function renderPaper(d, state) {
     el('btn-gate-approve').textContent = atDraft ? 'Approve draft' : 'Approve and deliver';
   }
 
-  // scores
+  const loop = d.loop || {};
+  const bits = [loop.running ? 'loop running' : 'loop stopped'];
+  if (loop.last_action) bits.push(loop.last_action);
+  if (loop.last_error) bits.push(`error: ${loop.last_error}`);
+  if (d.plateaued) bits.push('score has stalled — the author was told to change tack');
+  el('loop-status').textContent = bits.join(' · ');
+  renderLog('review-log', (d.logs || {}).review, state.review_status === 'running' || loop.running);
+
+  // Rebuilding the rounds resets their summaries' scroll on every poll, so
+  // skip the DOM work while the data underneath is unchanged.
   const rounds = state.rounds || [];
+  const fp = JSON.stringify(rounds);
+  const changed = fp !== S.paperFp;
+  S.paperFp = fp;
+  if (changed) renderRounds(rounds);
+
+  renderSubmission(d.submission);
+}
+
+function renderRounds(rounds) {
   const scored = rounds.filter((r) => (r.review || {}).scores);
   el('score-chart').innerHTML = scored.map((r) => {
     const v = Number(r.review.scores.rating || 0);
@@ -1080,14 +1137,6 @@ function renderPaper(d, state) {
       <span class="rf-score-bar__n">${r.n}</span>
     </div>`;
   }).join('');
-
-  const loop = d.loop || {};
-  const bits = [loop.running ? 'loop running' : 'loop stopped'];
-  if (loop.last_action) bits.push(loop.last_action);
-  if (loop.last_error) bits.push(`error: ${loop.last_error}`);
-  if (d.plateaued) bits.push('score has stalled — the author was told to change tack');
-  el('loop-status').textContent = bits.join(' · ');
-  renderLog('review-log', (d.logs || {}).review, state.review_status === 'running' || loop.running);
 
   el('rounds-list').innerHTML = rounds.slice().reverse().map((r) => {
     const review = r.review || null;
@@ -1111,8 +1160,6 @@ function renderPaper(d, state) {
   el('rounds-list').querySelectorAll('[data-review]').forEach((btn) => {
     btn.addEventListener('click', () => openReview(Number(btn.dataset.review)));
   });
-
-  renderSubmission(d.submission);
 }
 
 function renderSubmission(sub) {
@@ -1278,10 +1325,14 @@ el('btn-review-close').addEventListener('click', () => { el('review-modal').hidd
 el('review-modal').addEventListener('click', (ev) => {
   if (ev.target.id === 'review-modal') el('review-modal').hidden = true;
 });
+const anyModalOpen = () =>
+  ['review-modal', 'studio-modal', 'skills-modal'].some((id) => !el(id).hidden);
+
 document.addEventListener('keydown', (ev) => {
   if (ev.key !== 'Escape') return;
   if (!el('review-modal').hidden) el('review-modal').hidden = true;
   else if (!el('studio-modal').hidden) el('studio-modal').hidden = true;
+  else if (!el('skills-modal').hidden) el('skills-modal').hidden = true;
 });
 
 // --- new studio ---
@@ -1364,7 +1415,9 @@ el('btn-studio-create').addEventListener('click', async () => {
   pollPane();
   window.addEventListener('hashchange', readHash);
   document.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape' && S.graphSel) {
+    // A modal owns Escape while it is open; clearing the graph selection
+    // underneath it would be an invisible side effect.
+    if (ev.key === 'Escape' && S.graphSel && !anyModalOpen()) {
       S.graphSel = '';
       const st = (S.data && S.data.state) || {};
       drawGraph(st.papers || [], st.ideas || []);
