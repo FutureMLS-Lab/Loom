@@ -73,6 +73,14 @@ a:hover { text-decoration: underline; }
 .rf-stat { font-size: 12px; color: var(--rf-faint); white-space: nowrap; }
 .rf-stat b { color: var(--rf-text); font-variant-numeric: tabular-nums; font-weight: 620; }
 .rf-stat--alert b { color: var(--rf-warn); }
+.rf-stat--live b { color: var(--rf-good); }
+.rf-stat--live b::before {
+  content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 5px;
+  border-radius: 50%; background: var(--rf-good); vertical-align: 1px;
+  animation: rf-live-pulse 1.6s ease-in-out infinite;
+}
+@keyframes rf-live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .rf-stat--live b::before { animation: none; } }
 
 /* ---------- layout ---------- */
 

@@ -1921,6 +1921,12 @@ def link_ideas(
     ideas = [i for i in (state.get("ideas") or []) if isinstance(i, dict)]
     todo = [i for i in ideas if not i.get("derived_from")]
     if not todo:
+        # Nothing left to link, but verify anyway: an edge whose check failed
+        # on a flaky network heals on the next press, and the local store
+        # answers for everything already confirmed.
+        if on_line is not None:
+            on_line("every idea already has edges - re-checking them")
+        verify_idea_edges(ideas, on_line=on_line)
         return {"ok": True, "ideas": ideas, "linked": 0}
 
     papers = [p for p in (state.get("papers") or []) if isinstance(p, dict)]
