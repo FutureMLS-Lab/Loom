@@ -22,6 +22,7 @@ const S = {
   pane: '',                  // tmux target of the open paper's author
   paneFollow: false,         // whether to keep tailing it
   filePath: '',              // where the file browser is, under work/
+  searchDirty: false,        // protect edits from the six-second state poll
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -99,6 +100,7 @@ function openFleet() {
 function openStudio(slug) {
   S.slug = slug; S.parent = slug; S.picked = new Set(); S.data = null;
   S.graphSel = ''; S.graphHide = new Set();
+  S.searchDirty = false;
   show('studio');
   loadTask();
   writeHash(`studio/${slug}`);
@@ -141,16 +143,18 @@ async function loadFleet() {
   let d;
   try { d = await api('/api/ar/overview'); }
   catch (err) { toast(err.message, true); return; }
-  if (S.view !== 'fleet') return;
 
   const t = d.totals || {};
-  el('stat-studios').innerHTML = `<b>${t.studios || 0}</b> studios`;
-  el('stat-papers').innerHTML = `<b>${t.papers || 0}</b> papers`;
+  const studios = Number(t.studios || 0);
+  const papers = Number(t.papers || 0);
+  el('stat-studios').innerHTML = `<b>${studios}</b> ${studios === 1 ? 'studio' : 'studios'}`;
+  el('stat-papers').innerHTML = `<b>${papers}</b> ${papers === 1 ? 'paper' : 'papers'}`;
   el('stat-cost').innerHTML = `<b>$${(t.cost_usd || 0).toFixed(2)}</b> spent`;
   const waiting = el('stat-waiting');
   waiting.hidden = !t.awaiting_you;
   waiting.innerHTML = `<b>${t.awaiting_you}</b> waiting on you`;
   el('fleet-root').textContent = d.root || '';
+  if (S.view !== 'fleet') return;
 
   const groups = [...(d.studios || [])];
   if ((d.orphans || []).length) {
@@ -224,6 +228,89 @@ function renderLog(id, lines, running) {
 
 // ===== studio =====
 
+function searchTermsFromForm() {
+  return el('studio-search-terms').value
+    .split(/[\n,;]+/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function searchCategoriesFromForm() {
+  return [...document.querySelectorAll('#studio-search-categories input:checked')]
+    .map((input) => input.value);
+}
+
+function shortTimestamp(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString([], {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function renderSearchSettings(d, state) {
+  const settings = d.search_settings || {};
+  const categories = (S.catalog && S.catalog.arxiv_categories) || [];
+  const categoryHost = el('studio-search-categories');
+  const categoryIds = categories.map((item) => item.id).join('|');
+  if (categoryHost.dataset.ids !== categoryIds) {
+    categoryHost.dataset.ids = categoryIds;
+    categoryHost.innerHTML = categories.map((item) => `
+      <label class="rf-check">
+        <input type="checkbox" value="${esc(item.id)}" />
+        <span>${esc(item.id)} · ${esc(item.label)}</span>
+      </label>`).join('');
+    categoryHost.querySelectorAll('input').forEach((input) => {
+      input.addEventListener('change', () => {
+        S.searchDirty = true;
+        const current = (S.data && S.data.state) || {};
+        renderSteps(current, current.papers || [], current.ideas || []);
+      });
+    });
+  }
+
+  if (!S.searchDirty) {
+    el('studio-search-terms').value = (settings.terms || []).join('\n');
+    const selected = new Set(settings.categories || []);
+    categoryHost.querySelectorAll('input').forEach((input) => {
+      input.checked = selected.has(input.value);
+    });
+  }
+
+  const suggestStatus = String(state.search_suggest_status || 'idle');
+  const suggestBits = [];
+  if (suggestStatus === 'running') suggestBits.push('suggesting with the Studio model…');
+  else if (suggestStatus === 'error') {
+    suggestBits.push(`suggestion failed: ${state.search_suggest_error || 'unknown error'}`);
+  } else if (settings.source) {
+    suggestBits.push(`source: ${settings.source}`);
+  }
+  if (settings.updated_at) suggestBits.push(`updated ${shortTimestamp(settings.updated_at)}`);
+  el('search-suggest-state').textContent = suggestBits.join(' · ');
+
+  const rationale = String(state.search_suggest_rationale || '');
+  el('studio-search-rationale').textContent = rationale;
+  renderLog('search-log', (d.logs || {}).search, suggestStatus === 'running');
+
+  const query = String(state.papers_query || '');
+  const queryNode = el('studio-search-query');
+  queryNode.hidden = !query;
+  queryNode.querySelector('code').textContent = query;
+
+  const locked = suggestStatus === 'running' || state.papers_status === 'running';
+  el('studio-search-terms').disabled = locked;
+  categoryHost.querySelectorAll('input').forEach((input) => { input.disabled = locked; });
+}
+
+function paperMiningState(state, papers) {
+  const status = String(state.papers_status || '');
+  if (status === 'running') return 'mining…';
+  if (status === 'error') return `failed: ${state.papers_error || 'unknown error'}`;
+  if (status === 'done') return `done · ${papers.length} paper(s)`;
+  return 'not run yet';
+}
+
 function renderStudio(d, state) {
   el('studio-title').textContent = d.title || S.slug;
   el('studio-eyebrow').textContent =
@@ -234,12 +321,11 @@ function renderStudio(d, state) {
   const logs = d.logs || {};
   renderLog('papers-log', logs.papers, state.papers_status === 'running');
   renderLog('ideas-log', logs.ideas, state.ideas_status === 'running');
+  renderSearchSettings(d, state);
 
   const papers = state.papers || [];
   const ideas = state.ideas || [];
-  el('papers-status').textContent = state.papers_status === 'running'
-    ? 'mining…'
-    : (state.papers_error || `${papers.length} paper(s)`);
+  el('papers-status').textContent = paperMiningState(state, papers);
   el('ideas-status').textContent = state.ideas_status === 'running'
     ? 'generating — a few minutes…'
     : (state.ideas_error || `${ideas.length} idea(s)`);
@@ -301,9 +387,7 @@ function renderSteps(state, papers, ideas) {
     {
       id: 'mine',
       done: papers.length > 0,
-      state: running('papers') ? 'mining…'
-        : papers.length ? `${papers.length} papers mined`
-        : (state.papers_error || 'not run yet'),
+      state: paperMiningState(state, papers),
     },
     {
       id: 'ideas',
@@ -337,8 +421,20 @@ function renderSteps(state, papers, ideas) {
 
   // A step whose input does not exist yet cannot run, so say so on the button
   // rather than letting it be pressed and answer with an error.
-  const busy = running('papers') || running('ideas') || running('link');
-  setAction('btn-mine', { ok: !running('papers'), why: 'already mining' });
+  const suggesting = state.search_suggest_status === 'running';
+  const busy = suggesting || running('papers') || running('ideas') || running('link');
+  const terms = searchTermsFromForm();
+  const categories = searchCategoriesFromForm();
+  setAction('btn-search-suggest', {
+    ok: !busy,
+    why: busy ? 'a Studio job is already running' : '',
+    label: suggesting ? 'Suggesting…' : 'Suggest from brief',
+  });
+  setAction('btn-mine', {
+    ok: !busy && terms.length > 0 && categories.length > 0,
+    why: busy ? 'a Studio job is already running'
+      : (!terms.length ? 'add or suggest search terms first' : 'select at least one arXiv category'),
+  });
   setAction('btn-ideas', {
     ok: !busy && (papers.length > 0 || state.mode === 'seed'),
     why: busy ? 'a job is already running' : 'mine the field first, or start the studio from your own idea',
@@ -1070,8 +1166,8 @@ function startPolling() {
   if (S.timer) clearInterval(S.timer);
   S.timer = setInterval(() => {
     if (document.hidden) return;
-    if (S.view === 'fleet') loadFleet();
-    else loadTask();
+    loadFleet();
+    if (S.view !== 'fleet') loadTask();
   }, 6000);
 }
 
@@ -1083,10 +1179,28 @@ document.querySelectorAll('[data-back]').forEach((btn) => {
     else openFleet();
   });
 });
-el('btn-refresh').addEventListener('click', () => (S.view === 'fleet' ? loadFleet() : loadTask()));
+el('btn-refresh').addEventListener('click', () => {
+  loadFleet();
+  if (S.view !== 'fleet') loadTask();
+});
 
+el('studio-search-terms').addEventListener('input', () => {
+  S.searchDirty = true;
+  const state = (S.data && S.data.state) || {};
+  renderSteps(state, state.papers || [], state.ideas || []);
+});
+el('btn-search-suggest').addEventListener('click', async () => {
+  S.searchDirty = false;
+  await act(S.slug, 'search/suggest', {}, 'Search suggestion');
+  loadTask();
+});
 el('btn-mine').addEventListener('click', async () => {
-  await act(S.slug, 'mine', { venue_only: el('studio-venue-only').checked }, 'Mining');
+  const result = await act(S.slug, 'mine', {
+    venue_only: el('studio-venue-only').checked,
+    search_terms: searchTermsFromForm(),
+    search_categories: searchCategoriesFromForm(),
+  }, 'Mining');
+  if (result) S.searchDirty = false;
   loadTask();
 });
 el('btn-ideas').addEventListener('click', async () => {
@@ -1201,6 +1315,7 @@ el('btn-studio-create').addEventListener('click', async () => {
   const title = el('new-title').value.trim();
   const mode = document.querySelector('input[name="new-mode"]:checked').value;
   const seed = el('new-seed').value.trim();
+  const direction = el('new-direction').value;
   const status = el('studio-modal-status');
   if (!title) { status.textContent = 'A name is required.'; return; }
   if (mode === 'seed' && !seed) { status.textContent = 'Describe the idea, or switch to auto.'; return; }
@@ -1210,7 +1325,7 @@ el('btn-studio-create').addEventListener('click', async () => {
       method: 'POST',
       body: JSON.stringify({
         title, kind: 'ar', agent: 'cursor',
-        ar_direction: el('new-direction').value,
+        ar_direction: direction,
         ar_custom_direction: el('new-custom-direction').value.trim(),
         ar_venue: el('new-venue').value,
         ar_mode: mode,
@@ -1221,6 +1336,11 @@ el('btn-studio-create').addEventListener('click', async () => {
     el('studio-modal').hidden = true;
     el('new-title').value = ''; el('new-seed').value = '';
     openStudio(meta.slug);
+    if (direction === 'custom') {
+      const started = await act(meta.slug, 'search/suggest', {}, 'Search suggestion');
+      if (started) toast('Generating editable arXiv search settings from the brief.');
+      loadTask();
+    }
   } catch (err) {
     status.textContent = err.message;
   }
@@ -1239,6 +1359,7 @@ el('btn-studio-create').addEventListener('click', async () => {
     toast('No AR project registered yet — restart Loom to create one.', true);
   }
   readHash();
+  loadFleet();
   startPolling();
   pollPane();
   window.addEventListener('hashchange', readHash);
