@@ -31,3 +31,9 @@
 [查看 Skill 文档](./teaser-figure-3/SKILL.md)
 
 ![Teaser Figure 3 example](./teaser-figure-3/example.png)
+
+## Teaser Figure 4 — Happy Figure Workflow
+
+[查看 Skill 文档](./teaser-figure-4/SKILL.md)
+
+![Teaser Figure 4 example](./teaser-figure-4/example.png)
