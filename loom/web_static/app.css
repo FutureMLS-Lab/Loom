@@ -190,31 +190,45 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
 }
 .task-list li:hover { background: #fff; transform: translateX(1px); }
 
-/* An agent that stopped while you were looking elsewhere.
-   A rotating ring rather than a blink: it reads as "this one wants you" from
-   the corner of the eye without the flicker of something switching on and off,
-   and it survives on screens where a static dot would be missed. The ring is
-   a conic gradient masked down to its own border, so it costs one element and
-   animates on the compositor. */
+/* Agent activity, two states on the same masked ring (one element, animates
+   on the compositor):
+   - .is-working  — the agent is running right now: the rotating conic ring,
+     a steady "something is happening here" light.
+   - .is-finished — the agent stopped while you were looking elsewhere: the
+     ring blinks, the flicker that says "this one wants you now".
+   Neither class means a plain, quiet row. */
 @property --loom-ring-angle {
   syntax: '<angle>';
   initial-value: 0deg;
   inherits: false;
 }
 @keyframes loom-ring-spin { to { --loom-ring-angle: 360deg; } }
+@keyframes loom-ring-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.12; } }
 
 /* The chip is not positioned by default, and an absolutely positioned ring
    inside it would resolve against whatever ancestor is, painting an arc across
    the page. */
-.project-toggle.is-finished { position: relative; }
+.project-toggle.is-finished,
+.project-toggle.is-working { position: relative; }
 
 .task-list li.is-finished::before,
-.project-toggle.is-finished::before {
+.task-list li.is-working::before,
+.project-toggle.is-finished::before,
+.project-toggle.is-working::before {
   content: '';
   position: absolute;
   inset: -2px;
   border-radius: inherit;
   padding: 2px;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 1;
+}
+.task-list li.is-working::before,
+.project-toggle.is-working::before {
   background: conic-gradient(
     from var(--loom-ring-angle),
     transparent 0deg 140deg,
@@ -223,20 +237,27 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
     #22c55e 348deg,
     transparent 360deg
   );
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
   animation: loom-ring-spin 1.8s linear infinite;
-  pointer-events: none;
-  z-index: 1;
+}
+.task-list li.is-finished::before,
+.project-toggle.is-finished::before {
+  background: linear-gradient(135deg, var(--accent), #22c55e);
+  animation: loom-ring-blink 1.1s ease-in-out infinite;
 }
 .task-list li.is-finished > *,
-.project-toggle.is-finished > * { position: relative; z-index: 2; }
+.task-list li.is-working > *,
+.project-toggle.is-finished > *,
+.project-toggle.is-working > * { position: relative; z-index: 2; }
 
 @media (prefers-reduced-motion: reduce) {
   .task-list li.is-finished::before,
-  .project-toggle.is-finished::before { animation: none; background: var(--accent); opacity: 0.55; }
+  .task-list li.is-working::before,
+  .project-toggle.is-finished::before,
+  .project-toggle.is-working::before { animation: none; }
+  .task-list li.is-working::before,
+  .project-toggle.is-working::before { background: var(--accent); opacity: 0.35; }
+  .task-list li.is-finished::before,
+  .project-toggle.is-finished::before { opacity: 0.85; }
 }
 .task-list li.active { border-color: rgba(79, 70, 229, 0.28); background: var(--accent-soft); }
 .task-list li:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12); }

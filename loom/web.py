@@ -3602,18 +3602,23 @@ class AgentActivityWatcher:
     def snapshot(self) -> dict[str, Any]:
         """Which tasks are working, and which finished without being seen."""
         tasks: dict[str, Any] = {}
-        projects: dict[str, int] = {}
+        projects: dict[str, dict[str, int]] = {}
         with self._lock:
             for (pid, slug), entry in self._state.items():
                 finished = float(entry.get("finished_at") or 0)
+                working = bool(entry.get("working"))
                 tasks[f"{pid}/{slug}"] = {
                     "project": pid,
                     "slug": slug,
-                    "working": bool(entry.get("working")),
+                    "working": working,
                     "finished_at": finished,
                 }
-                if finished:
-                    projects[pid] = projects.get(pid, 0) + 1
+                if working or finished:
+                    agg = projects.setdefault(pid, {"working": 0, "finished": 0})
+                    if working:
+                        agg["working"] += 1
+                    if finished:
+                        agg["finished"] += 1
         return {"ok": True, "tasks": tasks, "projects": projects}
 
     def ack(self, project_id: str, slug: str) -> None:
