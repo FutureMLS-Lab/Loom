@@ -706,9 +706,9 @@ Reviewer 是 Headless Cursor 子进程，不在 Author 的 tmux pane 中。
 固定模型：
 
 ```text
-gpt-5.6-sol-max
+gpt-5.6-sol-max-fast
 claude-fable-5-thinking-max
-cursor-grok-4.5-high
+cursor-grok-4.5-high-fast
 ```
 
 三个 Reviewer：
@@ -1697,9 +1697,9 @@ rounds/round-NN/readiness.md
 三个固定 Reviewer：
 
 ```text
-gpt-5.6-sol-max
+gpt-5.6-sol-max-fast
 claude-fable-5-thinking-max
-cursor-grok-4.5-high
+cursor-grok-4.5-high-fast
 ```
 
 运行方式：
@@ -1718,9 +1718,9 @@ Controller
 
 ```text
 rounds/round-NN/review.md
-rounds/round-NN/review-gpt-5.6-sol-max.md
+rounds/round-NN/review-gpt-5.6-sol-max-fast.md
 rounds/round-NN/review-claude-fable-5-thinking-max.md
-rounds/round-NN/review-cursor-grok-4.5-high.md
+rounds/round-NN/review-cursor-grok-4.5-high-fast.md
 ```
 
 最终评分策略：
@@ -1945,18 +1945,26 @@ Auto Rebuttal Factory 是与 Research Factory 并列的独立工作流：
             → concern matrix
             → reviewer-specific responses
             → inherited policy validation
-            → human approval
+            → response-content approval
+            → isolated Delivery Agent
+            → deterministic artifact preflight
+            → final artifact approval
+            → manual-upload bundle
 ```
 
 关键文件：
 
 - [`loom/rebuttal_task.py`](loom/rebuttal_task.py)：项目注册、材料 Manifest、
   Concern Matrix、Response 文件、Policy Validation 和持久状态；
-- [`loom/web.py`](loom/web.py)：`/api/rebuttal/*` 路由及 Headless 后台 Job；
+- [`loom/rebuttal_delivery.py`](loom/rebuttal_delivery.py)：Delivery attempt、
+  严格 LaTeX 构建、PDF preflight、SHA-bound final approval 和 bundle；
+- [`loom/web.py`](loom/web.py)：`/api/rebuttal/*` 路由、专用 tmux Agent 和
+  Completion Marker watcher；
 - [`loom/web_static/rebuttal_factory.html`](loom/web_static/rebuttal_factory.html)；
 - [`loom/web_static/rebuttal_factory.js`](loom/web_static/rebuttal_factory.js)；
 - [`loom/web_static/rebuttal_factory.css`](loom/web_static/rebuttal_factory.css)；
-- [`loom/skills/ar/paper-rebuttal/SKILL.md`](loom/skills/ar/paper-rebuttal/SKILL.md)。
+- [`loom/skills/ar/paper-rebuttal/SKILL.md`](loom/skills/ar/paper-rebuttal/SKILL.md)；
+- [`loom/skills/ar/paper-rebuttal-delivery/SKILL.md`](loom/skills/ar/paper-rebuttal-delivery/SKILL.md)。
 
 ### 20.1 Conference Studio
 
@@ -2040,8 +2048,14 @@ stateDiagram-v2
     PaperIntake --> ConcernsReady: analyze review PDFs
     ConcernsReady --> ResponsesReady: draft per-reviewer responses
     ResponsesReady --> Validated: inherited policy checks pass
-    Validated --> Approved: human approves response package
+    Validated --> Approved: human approves response content
+    Approved --> DeliveryAgent: generate synchronized sources
+    DeliveryAgent --> DeliveryBlocked: deterministic preflight fails
+    DeliveryBlocked --> DeliveryAgent: rerun with failure report
+    DeliveryAgent --> AwaitArtifactApproval: deterministic preflight passes
+    AwaitArtifactApproval --> BundleReady: human approves exact PDF hashes
     Approved --> ResponsesReady: response or policy edit
+    AwaitArtifactApproval --> ResponsesReady: response, policy, or source edit
 ```
 
 Conference 阶段：
@@ -2062,6 +2076,11 @@ concerns_ready
 responses_ready
 validated
 approved
+delivery_agent_running
+delivery_validating
+delivery_blocked
+await_delivery_approval
+bundle_ready
 ```
 
 ### 20.4 模型与确定性边界
@@ -2070,14 +2089,23 @@ approved
 
 - 将官方页面整理成带 Quote/URL 的 Policy 草案；
 - 根据 Policy 生成独立的接收导向 Strategy；
-- 从原始 Review PDF 拆出 Weakness/Question；
-- 根据 Paper、Evidence 和 `paper-rebuttal` Skill 起草逐 Reviewer 回复。
+- 专用 Cursor Agent 在 tmux 中读取原始 Review/Paper/Evidence；
+- 从 Review PDF 拆出 Weakness/Question；
+- 根据 Paper、Evidence 和 `paper-rebuttal` Skill 起草逐 Reviewer Markdown；
+- Delivery Agent 在隔离 attempt 中同步 revised paper，并将批准的回复压缩为
+  venue-compliant rebuttal source。
 
 Python 负责：
 
 - 公共 URL 与 SSRF 检查；
 - 页面抓取、Snapshot 和来源保留；
 - 文件分类和 SHA256 Manifest；
+- 生成 `AGENT_INSTRUCTIONS.md`；
+- 监控 `agent-complete.json` 并从磁盘接收 Concern/Response；
+- 冻结 Response/Policy/Source SHA，创建隔离 Delivery attempt；
+- 独立重编译 revised paper 和 rebuttal，检查页数、Track、Paper ID、匿名性、
+  链接、文件大小和 source freshness；
+- 将最终人工批准绑定到精确 PDF SHA，再生成可复现的手工上传 bundle；
 - 字符限制；
 - Concern ID 覆盖；
 - Placeholder、URL、Email 和冻结稿件表述；

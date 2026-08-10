@@ -239,8 +239,8 @@ Each of those is a **paper** task, and it walks a fixed pipeline:
    sections, build errors or visible `??` may remain. A blocked paper goes back
    to the author in the same round with the exact failed checks. Only a complete
    submission runs three independent Cursor reviewers headlessly:
-   `gpt-5.6-sol-max`, `claude-fable-5-thinking-max`, and
-   `cursor-grok-4.5-high`. Each reviewer sees an isolated workspace containing
+   `gpt-5.6-sol-max-fast`, `claude-fable-5-thinking-max`, and
+   `cursor-grok-4.5-high-fast`. Each reviewer sees an isolated workspace containing
    only the compiled PDF (never the LaTeX source). All reports are preserved;
    the lowest-Rating reviewer's complete score block is the final verdict. If
    that lowest score plateaus for three rounds, the fixed panel stays in place
@@ -288,7 +288,20 @@ proof, experiment, result or notes files needed as evidence. It then drives:
 2. Reviewer-specific Concern Matrix;
 3. one point-by-point response per Reviewer;
 4. inherited Conference Policy validation;
-5. Human Approval. Loom never posts externally.
+5. human approval of response content;
+6. for revision venues such as WACV, an isolated Delivery Agent that prepares
+   the revised paper and one-page rebuttal;
+7. deterministic clean builds, artifact preflight, and a second human approval
+   bound to exact PDF hashes. Loom never posts externally.
+
+Importing a valid Paper package starts a dedicated Cursor Agent in its own tmux
+session. The Paper page exposes a two-second read-only live pane, while the
+controller waits for `rebuttal-output/agent-complete.json` and ingests the
+Agent's Concern Matrix and reviewer-specific Markdown responses from disk.
+All Cursor-backed Loom agents prefer an available `-fast` model sibling; the
+default launch explicitly requests the GPT-5.6 Sol Max Fast model.
+Delivery attempts live under `rebuttal-output/delivery/attempts/`; only a passed
+preflight plus final human approval creates the manual-upload submission bundle.
 
 Studios are stored under `~/.loom/rebuttal-studios/`; project registration is in
 `~/.loom/rebuttal-projects.json`; generated Paper artifacts remain under

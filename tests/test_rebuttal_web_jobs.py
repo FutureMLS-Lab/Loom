@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -190,3 +191,109 @@ def test_policy_job_updates_studio_stage_and_sources(
     assert state["policy"]["character_limit"] == 5_000
     assert state["sources"][0]["ok"]
     assert state["cost_usd"] == 0.15
+
+
+def test_live_agent_watcher_ingests_completion_marker(
+    project: str,
+) -> None:
+    state = rebuttal.read_state(project)
+    source = Path(state["source_path"])
+    out = source / rebuttal.OUTPUT_SUBDIR
+    reviewer = {
+        "id": "R1",
+        "label": "R1",
+        "concerns": [
+            {
+                "id": "R1-W1",
+                "type": "weakness",
+                "summary": "Concern",
+                "severity": "high",
+                "response_mode": "clarify",
+                "evidence_needed": "result",
+            }
+        ],
+    }
+    (out / rebuttal.CONCERNS_FILE).write_text(
+        json.dumps({"reviewers": [reviewer]}),
+        encoding="utf-8",
+    )
+    response_dir = out / rebuttal.RESPONSES_SUBDIR
+    response_dir.mkdir(exist_ok=True)
+    response_dir.joinpath("response-R1.md").write_text(
+        "# Response to R1\n\n"
+        "Thank you for the careful review.\n\n"
+        "### R1-W1\n\n"
+        "The direct evidence resolves this concern under the submitted scope, "
+        "and the response states the exact boundary without overclaiming.",
+        encoding="utf-8",
+    )
+    (out / rebuttal.AGENT_COMPLETE_FILE).write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "reviewers": ["R1"],
+                "summary": "Done.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    rebuttal.update_state(
+        project,
+        execution_mode="tmux",
+        tmux_target="loom-rebuttal-test:0.0",
+        agent_status="running",
+    )
+
+    web._rebuttal_watch_agent(project)
+
+    state = rebuttal.read_state(project)
+    assert state["agent_status"] == "complete"
+    assert state["stage"] == rebuttal.STAGE_RESPONSES
+    assert state["responses"]["R1"]["characters"] > 100
+    assert state["agent_summary"] == "Done."
+
+
+def test_delivery_watcher_hands_marker_to_strict_preflight(
+    project: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = rebuttal.read_state(project)
+    source = Path(state["source_path"])
+    attempt = source / rebuttal.OUTPUT_SUBDIR / "delivery" / "attempts" / "run-1"
+    attempt.mkdir(parents=True)
+    marker = attempt / web.delivery.DELIVERY_COMPLETE_FILE
+    marker.write_text('{"status":"complete"}', encoding="utf-8")
+    rebuttal.update_state(
+        project,
+        stage=rebuttal.STAGE_DELIVERY_AGENT,
+        delivery={
+            "run_id": "run-1",
+            "phase": "agent_running",
+            "agent_status": "running",
+            "marker_path": str(marker),
+            "tmux_target": "loom-rebuttal-delivery-test:0.0",
+        },
+    )
+    observed: dict[str, str] = {}
+
+    def fake_ingest(project_id: str) -> dict:
+        current = rebuttal.read_state(project_id)
+        observed["stage"] = str(current["stage"])
+        observed["phase"] = str(current["delivery"]["phase"])
+        current["stage"] = rebuttal.STAGE_AWAIT_DELIVERY_APPROVAL
+        current["delivery"]["phase"] = "awaiting_final_approval"
+        current["delivery"]["agent_status"] = "complete"
+        rebuttal.write_state(project_id, current)
+        return {"ok": True}
+
+    monkeypatch.setattr(web.delivery, "ingest_delivery_completion", fake_ingest)
+
+    web._rebuttal_watch_delivery_agent(project)
+
+    assert observed == {
+        "stage": rebuttal.STAGE_DELIVERY_VALIDATING,
+        "phase": "validating",
+    }
+    final = rebuttal.read_state(project)
+    assert final["stage"] == rebuttal.STAGE_AWAIT_DELIVERY_APPROVAL
+    assert final["delivery"]["agent_status"] == "complete"

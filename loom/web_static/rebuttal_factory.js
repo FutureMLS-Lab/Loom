@@ -14,6 +14,8 @@ const R = {
   dirtyResponses: new Set(),
   paperPolicyDirty: false,
   studioPolicyDirty: false,
+  agentLive: false,
+  agentLiveTouched: false,
 };
 
 const el = (id) => document.getElementById(id);
@@ -62,6 +64,23 @@ function markdownInline(value) {
   return text;
 }
 
+function displayMathBlock(lines, start) {
+  const first = String(lines[start] || '').trim();
+  const opening = first.startsWith('$$') ? '$$' : (first.startsWith('\\[') ? '\\[' : '');
+  if (!opening) return null;
+  const closing = opening === '$$' ? '$$' : '\\]';
+  let end = start;
+  let closed = first.slice(opening.length).includes(closing);
+  while (!closed && end + 1 < lines.length) {
+    end += 1;
+    closed = String(lines[end]).includes(closing);
+  }
+  return {
+    end,
+    html: `<div class="rb-math-block">${esc(lines.slice(start, end + 1).join('\n'))}</div>`,
+  };
+}
+
 function renderMarkdown(source) {
   const lines = String(source || '').replace(/\r\n?/g, '\n').split('\n');
   const out = [];
@@ -85,6 +104,13 @@ function renderMarkdown(source) {
     }
     if (code) {
       codeLines.push(raw);
+      continue;
+    }
+    const math = displayMathBlock(lines, index);
+    if (math) {
+      closeList();
+      out.push(math.html);
+      index = math.end;
       continue;
     }
     const next = lines[index + 1] || '';
@@ -185,6 +211,8 @@ function openPaper(id, studioId = '') {
   R.paper = null;
   R.dirtyResponses.clear();
   R.paperPolicyDirty = false;
+  R.agentLive = false;
+  R.agentLiveTouched = false;
   writeHash(`paper/${encodeURIComponent(id)}`);
   show('paper');
   loadPaper();
@@ -198,6 +226,18 @@ function readHash() {
 }
 
 function projectBadge(project) {
+  if (project.bundle_ready) {
+    return '<span class="rb-pill rb-pill--ready">bundle ready</span>';
+  }
+  if (project.delivery_phase === 'agent_running' || project.delivery_phase === 'validating') {
+    return `<span class="rb-pill rb-pill--live">delivery ${esc(project.delivery_phase)}</span>`;
+  }
+  if (project.delivery_phase === 'blocked') {
+    return '<span class="rb-pill rb-pill--bad">delivery blocked</span>';
+  }
+  if (project.agent_status === 'running') {
+    return '<span class="rb-pill rb-pill--live">agent live</span>';
+  }
   if (project.active_job) {
     return `<span class="rb-pill rb-pill--live">${esc(project.active_job)} running</span>`;
   }
@@ -401,8 +441,16 @@ function studioPolicyFromForm() {
 }
 
 function renderStudioStrategy(studio) {
-  el('studio-policy-markdown').innerHTML = renderMarkdown(studio.policy_markdown || '');
-  el('studio-strategy-markdown').innerHTML = renderMarkdown(studio.strategy_markdown || '');
+  const policy = el('studio-policy-markdown');
+  const strategy = el('studio-strategy-markdown');
+  clearMathTypeset(policy);
+  clearMathTypeset(strategy);
+  policy.innerHTML = renderMarkdown(studio.policy_markdown || '');
+  strategy.innerHTML = renderMarkdown(studio.strategy_markdown || '');
+  for (const node of [policy, strategy]) {
+    node.mathRevision = Number(node.mathRevision || 0) + 1;
+    queueMathTypeset(node);
+  }
 }
 
 function renderPaperRows(hostId, papers, studioId) {
@@ -523,7 +571,7 @@ async function addPaper() {
     el('paper-import-path').value = '';
     el('paper-import-title').value = '';
     loadFleet();
-    toast('Paper imported. Review analysis and rebuttal drafting started automatically.');
+    toast('Paper imported. A dedicated live Rebuttal Agent is starting in tmux.');
     openPaper(payload.project.id, R.studioId);
   } else {
     el('paper-import-status').textContent = 'Paper import failed; see the error notification.';
@@ -548,12 +596,23 @@ const PAPER_STAGES = [
   ['intake', 'Package intake'],
   ['concerns_ready', 'Concern matrix'],
   ['responses_ready', 'Draft responses'],
-  ['validated', 'Policy validated'],
-  ['approved', 'Human approved'],
+  ['validated', 'Content validated'],
+  ['approved', 'Responses approved'],
+  ['delivery_agent_running', 'Delivery Agent'],
+  ['await_delivery_approval', 'Artifact preflight'],
+  ['bundle_ready', 'Bundle ready'],
 ];
 
+function paperStageIndex(stage) {
+  const aliases = {
+    delivery_validating: 'await_delivery_approval',
+    delivery_blocked: 'delivery_agent_running',
+  };
+  return PAPER_STAGES.findIndex(([id]) => id === (aliases[stage] || stage));
+}
+
 function renderPaperPipeline(project) {
-  const index = PAPER_STAGES.findIndex(([id]) => id === project.stage);
+  const index = paperStageIndex(project.stage);
   el('pipeline').innerHTML = PAPER_STAGES.map(([id, label], position) => {
     const cls = position < index ? 'is-done' : (position === index ? 'is-current' : '');
     return `<li class="${cls}"><b>${position + 1}. ${esc(label)}</b></li>`;
@@ -637,6 +696,113 @@ function responseCountClass(count, policy) {
   return '';
 }
 
+let mathTypesetQueue = Promise.resolve();
+
+function syncResponseScroll(section, source, target) {
+  if (!source || !target) return;
+  if (section.scrollSyncSource && section.scrollSyncSource !== source) return;
+  const sourceRange = Math.max(0, source.scrollHeight - source.clientHeight);
+  const targetRange = Math.max(0, target.scrollHeight - target.clientHeight);
+  const ratio = sourceRange ? source.scrollTop / sourceRange : 0;
+  const targetTop = Math.max(0, Math.min(targetRange, ratio * targetRange));
+  if (Math.abs(target.scrollTop - targetTop) < 0.5) return;
+  section.scrollSyncSource = source;
+  target.scrollTop = targetTop;
+  window.cancelAnimationFrame(section.scrollSyncFrame);
+  section.scrollSyncFrame = window.requestAnimationFrame(() => {
+    section.scrollSyncSource = null;
+  });
+}
+
+function bindResponseScrollSync(section) {
+  const textarea = section.querySelector('textarea');
+  const preview = section.querySelector('[data-preview]');
+  textarea.addEventListener(
+    'scroll',
+    () => syncResponseScroll(section, textarea, preview),
+    { passive: true },
+  );
+  preview.addEventListener(
+    'scroll',
+    () => syncResponseScroll(section, preview, textarea),
+    { passive: true },
+  );
+}
+
+function clearMathTypeset(node) {
+  const mathjax = window.MathJax;
+  if (!window.__loomMathJaxReady || typeof mathjax?.typesetClear !== 'function') return;
+  try {
+    mathjax.typesetClear([node]);
+  } catch {
+    // A previous asynchronous render may already have released this node.
+  }
+}
+
+function queueMathTypeset(node, status = null) {
+  if (!node) return;
+  if (window.__loomMathJaxFailed) {
+    if (status) status.textContent = 'TeX source shown · scroll linked';
+    return;
+  }
+  const mathjax = window.MathJax;
+  if (!window.__loomMathJaxReady || typeof mathjax?.typesetPromise !== 'function') {
+    if (status) status.textContent = 'Loading LaTeX… · scroll linked';
+    return;
+  }
+  const revision = node.mathRevision || 0;
+  if (status) status.textContent = 'Rendering LaTeX… · scroll linked';
+  mathTypesetQueue = mathTypesetQueue
+    .catch(() => {})
+    .then(async () => {
+      if (!node.isConnected || revision !== (node.mathRevision || 0)) return;
+      await mathjax.typesetPromise([node]);
+      if (status && node.isConnected && revision === (node.mathRevision || 0)) {
+        status.textContent = 'Markdown + LaTeX · scroll linked';
+      }
+      const section = node.closest('.rb-response');
+      if (section && revision === (node.mathRevision || 0)) {
+        syncResponseScroll(section, section.querySelector('textarea'), node);
+      }
+    })
+    .catch((error) => {
+      if (status) status.textContent = 'Math error · scroll linked';
+      console.warn('MathJax preview failed', error);
+    });
+}
+
+function renderResponsePreview(section, force = false) {
+  const textarea = section.querySelector('textarea');
+  const preview = section.querySelector('[data-preview]');
+  const status = section.querySelector('[data-preview-status]');
+  if (!textarea || !preview) return;
+  const source = textarea.value;
+  if (!force && preview.previewSource === source) return;
+  preview.previewSource = source;
+  preview.mathRevision = Number(preview.mathRevision || 0) + 1;
+  clearMathTypeset(preview);
+  preview.innerHTML = source.trim()
+    ? renderMarkdown(source)
+    : '<p class="rb-preview-empty">Nothing to preview yet.</p>';
+  syncResponseScroll(section, textarea, preview);
+  queueMathTypeset(preview, status);
+}
+
+function scheduleResponsePreview(section, delay = 140) {
+  window.clearTimeout(section.previewTimer);
+  section.previewTimer = window.setTimeout(() => renderResponsePreview(section), delay);
+}
+
+function refreshRenderedMath() {
+  document.querySelectorAll('.rb-response').forEach((section) => {
+    renderResponsePreview(section, true);
+  });
+  document.querySelectorAll('.rb-markdown:not([data-preview])').forEach((node) => {
+    node.mathRevision = Number(node.mathRevision || 0) + 1;
+    queueMathTypeset(node);
+  });
+}
+
 function updateResponseCounter(section, project) {
   const count = section.querySelector('textarea').value.length;
   const counter = section.querySelector('.rb-char');
@@ -649,15 +815,29 @@ function createResponseSection(reviewerId, project) {
   section.className = 'rb-response';
   section.dataset.reviewer = reviewerId;
   section.innerHTML = `<header><h3>${esc(reviewerId)}</h3><span class="rb-char"></span></header>
-    <textarea spellcheck="true" aria-label="Response to ${esc(reviewerId)}"></textarea>
+    <div class="rb-response-compose">
+      <label class="rb-response-source">
+        <span class="rb-response-pane-label">Markdown source</span>
+        <textarea spellcheck="true" aria-label="Response to ${esc(reviewerId)}"></textarea>
+      </label>
+      <section class="rb-response-preview" aria-label="Rendered response to ${esc(reviewerId)}">
+        <div class="rb-response-pane-label">
+          <span>Rendered preview</span>
+          <small data-preview-status>Loading LaTeX… · scroll linked</small>
+        </div>
+        <div class="rb-markdown rb-response-preview__body" data-preview></div>
+      </section>
+    </div>
     <footer><span class="rb-status">Markdown source · saved on disk</span>
       <button type="button" class="rb-btn" data-save>Save response</button></footer>`;
   const textarea = section.querySelector('textarea');
+  bindResponseScrollSync(section);
   textarea.addEventListener('input', () => {
     R.dirtyResponses.add(reviewerId);
     section.classList.add('is-dirty');
     updateResponseCounter(section, R.paper || project);
     section.querySelector('[data-save]').disabled = false;
+    scheduleResponsePreview(section);
   });
   section.querySelector('[data-save]').addEventListener('click', () => saveResponse(reviewerId));
   return section;
@@ -681,11 +861,14 @@ function renderResponses(project) {
       host.appendChild(section);
     }
     if (!R.dirtyResponses.has(reviewerId)) {
-      section.querySelector('textarea').value = responses[reviewerId].body || '';
+      const textarea = section.querySelector('textarea');
+      const body = responses[reviewerId].body || '';
+      if (textarea.value !== body) textarea.value = body;
       section.classList.remove('is-dirty');
       section.querySelector('[data-save]').disabled = true;
     }
     updateResponseCounter(section, project);
+    renderResponsePreview(section);
   });
   host.querySelectorAll('.rb-response').forEach((node) => {
     if (!reviewerIds.includes(node.dataset.reviewer)) node.remove();
@@ -706,24 +889,141 @@ function renderValidation(project) {
     ${(report.errors || []).length ? `<ul>${report.errors.map((error) => `<li>${esc(error)}</li>`).join('')}</ul>` : ''}`;
 }
 
+function deliveryArtifactLink(project, key, label) {
+  const delivery = project.delivery || {};
+  const item = key === 'bundle'
+    ? delivery.bundle
+    : ((delivery.artifacts || {})[key] || null);
+  if (!item || !item.name) return '';
+  const route = key === 'revised_paper' ? 'revised-paper' : key;
+  const url = `/api/rebuttal/projects/${encodeURIComponent(project.id)}/delivery/${route}`;
+  const meta = [
+    item.pages ? `${Number(item.pages)} page(s)` : '',
+    item.size ? `${(Number(item.size) / 1024 / 1024).toFixed(2)} MB` : '',
+    item.sha256 ? `SHA ${String(item.sha256).slice(0, 12)}…` : '',
+  ].filter(Boolean).join(' · ');
+  return `<a class="rb-delivery-artifact" href="${url}" target="_blank" rel="noreferrer">
+    <b>${esc(label)}</b><span>${esc(item.name)}</span><small>${esc(meta)}</small>
+  </a>`;
+}
+
+function renderDelivery(project) {
+  const delivery = project.delivery || {};
+  const phase = delivery.phase || '';
+  const host = el('delivery');
+  el('delivery-phase').textContent = phase || 'not started';
+  if (!phase) {
+    host.className = 'rb-delivery';
+    host.innerHTML = `<p>No delivery attempt yet. ${
+      project.stage === 'approved'
+        ? 'Build the submission package to start the isolated Delivery Agent.'
+        : 'Approve the response content first.'
+    }</p>`;
+    return;
+  }
+  const validation = delivery.validation || {};
+  const errors = validation.errors || [];
+  const ready = Boolean(validation.ready);
+  const blocked = phase === 'blocked' || errors.length > 0;
+  const artifacts = [
+    deliveryArtifactLink(project, 'revised_paper', 'Revised paper'),
+    deliveryArtifactLink(project, 'rebuttal', 'One-page rebuttal'),
+    deliveryArtifactLink(project, 'supplement', 'Supplement'),
+    deliveryArtifactLink(project, 'bundle', 'Submission bundle'),
+  ].filter(Boolean).join('');
+  const preflightUrl = `/api/rebuttal/projects/${encodeURIComponent(project.id)}/delivery/preflight`;
+  const handoffUrl = `/api/rebuttal/projects/${encodeURIComponent(project.id)}/delivery/handoff`;
+  host.className = `rb-delivery ${ready ? 'is-ready' : ''} ${blocked ? 'is-blocked' : ''}`;
+  host.innerHTML = `<div class="rb-delivery-summary">
+      <p><b>${esc(phase.replaceAll('_', ' '))}</b>${delivery.run_id ? ` · run ${esc(delivery.run_id)}` : ''}</p>
+      <p>${esc(delivery.summary || project.error || 'The delivery controller is waiting for the next handoff.')}</p>
+    </div>
+    ${errors.length ? `<div class="rb-delivery-errors"><b>Deterministic preflight blocked this attempt</b>
+      <ul>${errors.map((error) => `<li>${esc(error)}</li>`).join('')}</ul></div>` : ''}
+    ${artifacts ? `<div class="rb-delivery-artifacts">${artifacts}</div>` : ''}
+    ${validation.checked_at ? `<div class="rb-delivery-links">
+      <a href="${preflightUrl}" target="_blank" rel="noreferrer">Open full preflight</a>
+      <a href="${handoffUrl}" target="_blank" rel="noreferrer">Open OpenReview handoff</a>
+    </div>` : ''}
+    ${delivery.final_approval && delivery.final_approval.approved_at
+      ? `<p class="rb-delivery-approved">Final artifact hashes approved ${esc(shortTime(delivery.final_approval.approved_at))}.</p>`
+      : ''}`;
+}
+
 function renderPaperActions(project) {
   const active = String(project.active_job || '');
   const manifestReady = Boolean((project.manifest || {}).ready);
   const reviewers = project.reviewers || [];
   const responseCount = Object.keys(project.responses || {}).length;
-  setButton('btn-rescan', !active, active ? `${active} is running` : '');
-  setButton('btn-analyze', !active && manifestReady, active ? `${active} is running` : 'package needs paper and review PDFs');
-  setButton('btn-draft', !active && reviewers.length > 0, active ? `${active} is running` : 'analyze reviews first');
-  setButton('btn-validate', !active && responseCount === reviewers.length && responseCount > 0, active ? `${active} is running` : 'draft every reviewer response first');
+  const agentRunning = project.agent_status === 'running';
+  const delivery = project.delivery || {};
+  const deliveryRunning = delivery.agent_status === 'running' || delivery.agent_status === 'validating';
+  const contentMutable = [
+    'intake', 'concerns_ready', 'responses_ready', 'validated',
+  ].includes(project.stage);
+  setButton('btn-rescan', !active && !agentRunning && !deliveryRunning, deliveryRunning ? 'stop the delivery agent before rescanning' : (agentRunning ? 'stop the agent before rescanning' : (active ? `${active} is running` : '')));
+  setButton('btn-agent-start', !active && manifestReady && !agentRunning && !deliveryRunning && contentMutable, deliveryRunning ? 'delivery is already running' : (agentRunning ? 'agent is already running' : (contentMutable ? 'package needs paper and review PDFs' : 'response content is already approved')));
+  setButton('btn-agent-stop', agentRunning, 'agent is not running');
+  setButton('btn-validate', !active && !agentRunning && !deliveryRunning && responseCount === reviewers.length && responseCount > 0 && contentMutable, deliveryRunning ? 'delivery is running' : (agentRunning ? 'wait for the agent completion marker' : 'draft every reviewer response first'));
   setButton(
     'btn-approve',
-    !active && Boolean((project.validation || {}).ready) && project.stage !== 'approved',
-    active ? `${active} is running` : (project.stage === 'approved' ? 'already human-approved' : 'validation must pass first'),
+    !active && !agentRunning && !deliveryRunning && Boolean((project.validation || {}).ready) && project.stage === 'validated',
+    deliveryRunning ? 'delivery is running' : (agentRunning ? 'wait for the agent to finish' : (active ? `${active} is running` : (project.stage !== 'validated' ? 'responses are already approved or validation must pass' : 'validation must pass first'))),
   );
-  setButton('btn-policy-save', !active, active ? `${active} is running` : '');
-  el('action-status').textContent = active
-    ? `${active} running — this page polls automatically`
-    : (project.error || '');
+  const canStartDelivery = ['approved', 'delivery_blocked'].includes(project.stage);
+  el('btn-delivery-start').textContent = project.stage === 'delivery_blocked'
+    ? 'Re-run Delivery Agent'
+    : 'Build submission package';
+  setButton(
+    'btn-delivery-start',
+    !active && !agentRunning && !deliveryRunning && canStartDelivery,
+    deliveryRunning ? 'delivery agent is running' : (canStartDelivery ? '' : 'approve response content first'),
+  );
+  setButton('btn-delivery-stop', delivery.agent_status === 'running', 'delivery agent is not running');
+  setButton(
+    'btn-delivery-approve',
+    project.stage === 'await_delivery_approval' && Boolean((delivery.validation || {}).ready),
+    project.stage === 'bundle_ready' ? 'final artifacts are already approved' : 'strict artifact preflight must pass first',
+  );
+  setButton('btn-policy-save', !active && !agentRunning && !deliveryRunning, deliveryRunning ? 'stop the delivery agent before changing policy' : (agentRunning ? 'stop the agent before changing policy' : (active ? `${active} is running` : '')));
+  el('action-status').textContent = agentRunning
+    ? `live Agent running in ${project.tmux_target || 'tmux'}`
+    : (deliveryRunning
+      ? `Delivery Agent ${delivery.agent_status} in ${delivery.tmux_target || 'tmux'}`
+      : (active ? `${active} running — this page polls automatically` : (project.error || delivery.summary || project.agent_summary || '')));
+}
+
+function renderAgentPanel(project) {
+  const delivery = project.delivery || {};
+  const showDelivery = Boolean(
+    delivery.tmux_target
+    && delivery.phase
+    && delivery.phase !== 'invalidated',
+  );
+  const target = String(showDelivery ? delivery.tmux_target : (project.tmux_target || ''));
+  const status = String(showDelivery ? (delivery.agent_status || delivery.phase) : (project.agent_status || 'not started'));
+  if (status === 'running' && !R.agentLiveTouched) {
+    R.agentLive = true;
+  }
+  el('agent-pane-title').textContent = showDelivery
+    ? 'The Delivery Agent at work'
+    : 'The rebuttal agent at work';
+  el('agent-pane-description').textContent = showDelivery
+    ? 'Read-only live tail of the isolated revised-paper and one-page rebuttal attempt.'
+    : 'Read-only live tail of the dedicated Cursor Agent tmux pane.';
+  el('agent-live').checked = R.agentLive;
+  el('agent-pane-target').textContent = target || 'no pane';
+  el('agent-pane-status').textContent = [
+    `status: ${status}`,
+    showDelivery
+      ? (delivery.agent_model ? `model: ${delivery.agent_model}` : '')
+      : (project.agent_model ? `model: ${project.agent_model}` : ''),
+    showDelivery
+      ? (delivery.agent_started_at ? `started: ${shortTime(delivery.agent_started_at)}` : '')
+      : (project.agent_started_at ? `started: ${shortTime(project.agent_started_at)}` : ''),
+    showDelivery ? (delivery.summary || '') : (project.agent_summary || ''),
+  ].filter(Boolean).join(' · ');
+  el('agent-pane').hidden = !(R.agentLive && target);
 }
 
 function renderPaper(project) {
@@ -740,13 +1040,16 @@ function renderPaper(project) {
     project.updated_at ? `updated ${shortTime(project.updated_at)}` : '',
   ].filter(Boolean).join(' · ');
   el('output-path').textContent = `Output: ${project.output_path || ''}`;
+  el('paper-setup-details').hidden = Boolean((project.studio || {}).id);
   renderPaperPipeline(project);
   renderManifest(project);
   renderPaperPolicy(project);
   renderConcerns(project);
   renderResponses(project);
   renderValidation(project);
+  renderDelivery(project);
   renderPaperActions(project);
+  renderAgentPanel(project);
   const log = el('activity-log');
   const lines = project.logs || [];
   const pinned = log.scrollTop + log.clientHeight >= log.scrollHeight - 24;
@@ -806,6 +1109,7 @@ async function runPaperAction(action) {
   const payload = await paperAct(action);
   if (payload && payload.project) renderPaper(payload.project);
   else loadPaper();
+  return payload;
 }
 
 async function forgetPaper() {
@@ -830,6 +1134,36 @@ function startPolling() {
   }, 4000);
 }
 
+async function pollAgentPane() {
+  try {
+    const delivery = (R.paper && R.paper.delivery) || {};
+    const target = String(
+      (delivery.phase !== 'invalidated' && delivery.tmux_target)
+      || (R.paper && R.paper.tmux_target)
+      || '',
+    );
+    if (
+      R.view === 'paper'
+      && R.agentLive
+      && target
+      && !document.hidden
+    ) {
+      const payload = await api(
+        `/api/tmux/capture?target=${encodeURIComponent(target)}&lines=100`,
+      );
+      const pane = el('agent-pane');
+      const pinned = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 36;
+      pane.textContent = payload.text || '(the pane is empty)';
+      pane.hidden = false;
+      if (pinned) pane.scrollTop = pane.scrollHeight;
+    }
+  } catch {
+    // The pane may be between launch/exit states; the project poll reports it.
+  } finally {
+    setTimeout(pollAgentPane, 2000);
+  }
+}
+
 el('btn-create-studio').addEventListener('click', createStudio);
 el('btn-refresh').addEventListener('click', () => {
   loadFleet();
@@ -848,15 +1182,40 @@ el('btn-add-paper').addEventListener('click', addPaper);
 el('btn-forget-studio').addEventListener('click', forgetStudio);
 
 el('btn-rescan').addEventListener('click', () => runPaperAction('rescan'));
-el('btn-analyze').addEventListener('click', () => runPaperAction('analyze'));
-el('btn-draft').addEventListener('click', () => runPaperAction('draft'));
+el('btn-agent-start').addEventListener('click', async () => {
+  R.agentLive = true;
+  R.agentLiveTouched = false;
+  await runPaperAction('start-agent');
+});
+el('btn-agent-stop').addEventListener('click', () => runPaperAction('stop-agent'));
 el('btn-validate').addEventListener('click', () => runPaperAction('validate'));
 el('btn-approve').addEventListener('click', async () => {
-  if (!window.confirm('Mark this validated response package as human-approved?')) return;
-  await runPaperAction('approve');
+  if (!window.confirm('Approve these response drafts and start the isolated Delivery Agent?')) return;
+  const payload = await runPaperAction('approve');
+  if (!payload) return;
+  const started = payload.delivery_start || {};
+  if (started.ok) toast('Response content approved. Delivery Agent started.');
+  else if (started.error) toast(`Responses approved, but delivery could not start: ${started.error}`, true);
+  else toast('Response content approved.');
+});
+el('btn-delivery-start').addEventListener('click', async () => {
+  const rerun = R.paper && R.paper.stage === 'delivery_blocked';
+  const payload = await runPaperAction(rerun ? 'rerun-delivery' : 'start-delivery');
+  if (payload) toast(rerun ? 'Delivery Agent restarted with preflight feedback.' : 'Delivery Agent started.');
+});
+el('btn-delivery-stop').addEventListener('click', () => runPaperAction('stop-delivery'));
+el('btn-delivery-approve').addEventListener('click', async () => {
+  if (!window.confirm('Approve the exact validated PDF hashes and build the manual-upload bundle?')) return;
+  const payload = await runPaperAction('approve-delivery');
+  if (payload) toast('Final artifact hashes approved. Submission bundle is ready.');
 });
 el('btn-policy-save').addEventListener('click', savePaperPolicy);
 el('btn-forget').addEventListener('click', forgetPaper);
+el('agent-live').addEventListener('change', (event) => {
+  R.agentLive = event.target.checked;
+  R.agentLiveTouched = true;
+  renderAgentPanel(R.paper || {});
+});
 
 Object.keys(STUDIO_POLICY_FIELDS).forEach((id) => {
   el(id).addEventListener('input', () => { R.studioPolicyDirty = true; });
@@ -872,6 +1231,12 @@ Object.keys(STUDIO_POLICY_FIELDS).forEach((id) => {
 });
 
 window.addEventListener('hashchange', readHash);
+window.addEventListener('loom:mathjax-ready', refreshRenderedMath);
+window.addEventListener('loom:mathjax-error', () => {
+  document.querySelectorAll('[data-preview-status]').forEach((node) => {
+    node.textContent = 'TeX source shown · scroll linked';
+  });
+});
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
   loadFleet();
@@ -879,6 +1244,8 @@ document.addEventListener('visibilitychange', () => {
   if (R.view === 'paper') loadPaper();
 });
 
+if (window.__loomMathJaxReady) refreshRenderedMath();
 readHash();
 loadFleet();
 startPolling();
+pollAgentPane();

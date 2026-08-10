@@ -1,0 +1,78 @@
+% =============================================================================
+% §1 Introduction (~1.0 page) — rewritten as progressive narrative
+% =============================================================================
+\section{Introduction}
+\label{sec:intro}
+
+Large language models increasingly act as autonomous agents that
+orchestrate long-horizon executable tasks rather than answer
+isolated queries \citep{Yao2023ReAct,Shinn2023Reflexion,Park2023Generative}.
+Yet on composite real-world workloads, even the strongest
+frontier systems remain measurably bounded
+\citep{Merrill2026TerminalBench,OpenAIGDPVal2025}.  This
+gap is difficult to close by raw model scaling alone.  A growing
+consensus instead treats agent capability as a layered system, in
+which a frozen foundation model is paired with externalised
+skills and an agent harness that loads and executes them
+\citep{AnthropicSkillCreator2025}.  A skill
+packages reusable procedural knowledge invoked at inference time.
+Unlike opaque, slow-to-update model weights or transient
+in-context examples, it is interpretable and modular.  
+The same externalise-and-retrieve pattern is already well-established for tool use,
+where agents retrieve and invoke calls over large API inventories
+\citep{Qin2024ToolLLM,Patil2023Gorilla} and the recent Model Context Protocol (MCP) further standardises access to external tools and resources \citep{Hou2025MCP,MCPCorpus2025}.
+Skills extend this pattern from external tool calls to
+procedural knowledge itself.
+
+Industry-grade harnesses now ingest skill files routinely
+\citep{AnthropicClaudeCode2025,OpenAIClaudeCode2025}, and a
+community ecosystem has formed around the \texttt{SKILL.md}
+specification \citep{AnthropicSkillCreator2025}, now spanning
+thousands of public repositories.  Whether this abundance actually improves agent performance on real tasks, and what it takes to make it do so, remains
+unsettled.  Curated skills paired one-to-one with tasks raise pass
+rates on average but with sharply heterogeneous per-domain effects
+\citep{SkillsBench2026}, while uncurated community libraries can
+fail to improve over a no-skill baseline
+\citep{SkillFlow2026,UCSBSkillsWild2026}.  Two gaps stand in the
+way.  \textbf{First}, we know of no released corpus that is at once broadly
+aggregated, strictly quality-gated, and cleared for open
+redistribution.  Existing
+artifacts draw from only one or two source channels~\citep{SkillFlow2026,UCSBSkillsWild2026}, and those that filter for quality show no evidence of broad coverage at
+scale~\citep{SkillNet2026}.  
+\textbf{Second}, the downstream value of a community corpus on real agent tasks is largely uncharacterised. Prior evaluations pair tasks with hand-picked oracle skills rather than a deployed corpus~\citep{SkillsBench2026}, run in simulated environments~\citep{SkillNet2026}, or measure in-the-wild usage through a single harness over limited sources~\citep{UCSBSkillsWild2026}.
+
+% Closing both gaps calls for four capabilities at once.  Broad
+% aggregation and strict curation address the resource side.
+% Precise matching and end-to-end evaluation address the
+% measurement side, since a fair test must retrieve skills from the
+% corpus rather than hand-pick an oracle.  We present
+% \textbf{SkillCorpus}, which delivers all four and closes both gaps.
+To close both gaps, we present \textbf{SkillCorpus}, a single end-to-end framework that consolidates the open \texttt{SKILL.md} ecosystem into a curated, deployable corpus and evaluates it on real-world agent tasks — making it possible to measure when community skills help real agents, and where they do not.
+
+Our contributions are threefold:
+\begin{itemize}
+\item \textbf{Framework.} We unify aggregation, curation, matching, and real-world evaluation of the open \texttt{SKILL.md} ecosystem, turning a fragmented, redundant, and uneven pool of community skills into a curated foundation for reuse at scale.
+
+\item \textbf{Open resource.} We release the resulting $96{,}401$-skill corpus (curated from $\sim$$821{,}000$ raw files), its fine-tuned retrieval-and-selection stack, and the full curation, training, and evaluation code, all licence-audited and $100\%$ OSI-permissive — a fully open, ecosystem-scale resource for skill-augmented agent research.
+
+\item \textbf{Findings.} Evaluating across three real-world agent benchmarks, independent harnesses, and open-to-frontier backbones (\S\ref{sec:experiments}), we find that integrating SkillCorpus consistently improves agent performance, with gains modulated by corpus coverage and the harness, characterising the real utility and limits of community skills.
+
+%\item We propose SkillCorpus, a single end-to-end framework that
+%      unifies all four capabilities over the open \texttt{SKILL.md}
+%      ecosystem, turning a scattered, uneven pool of community skills
+%      into a curated foundation for reuse at scale.
+
+% \item We release the resulting $96{,}401$-skill corpus curated from
+%       $\sim$$821{,}000$ raw files, its fine-tuned
+%       retrieval-and-selection stack, and the full curation, training,
+%       and evaluation code, all $100\%$ OSI-permissive,
+%       an end-to-end open, ecosystem-scale resource for skill-augmented
+%       agent research.
+
+% \item Evaluating across multiple real-world agent benchmarks,
+%       independent harnesses, and open-to-frontier backbones
+%       (\S\ref{sec:experiments}), we find that integrating SkillCorpus
+%       consistently improves agent performance, with gains modulated by
+%       corpus coverage and the harness, characterising the real utility
+%       and limits of community skills.
+\end{itemize}

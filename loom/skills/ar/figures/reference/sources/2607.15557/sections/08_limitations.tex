@@ -1,0 +1,80 @@
+% =============================================================================
+% Limitations (mandatory unnumbered for *ACL since 2022; not counted in main pages)
+% =============================================================================
+
+\paragraph{Breadth-over-depth evaluation design.}
+The main grid prioritises breadth across twelve
+$(\text{harness}, \text{backbone}, \text{benchmark})$
+combinations plus a frontier robustness check.  Depth is
+uneven by design.  All three benchmarks are run with three
+repeated evaluations per cell, and we report task-clustered
+standard errors over the per-task paired deltas
+(\S\ref{sec:main-results}).  On the high-baseline LLM-judged
+benchmarks (GDPVal, QwenClawBench) per-task judge noise exceeds
+the effect size, so the positive effect is established at the
+pooled benchmark level rather than cell by cell.  SkillsBench
+additionally admits paired per-task statistics (exact McNemar on
+a representative run) and the logistic safety-facet regression
+(Appendix~\ref{app:quality-detail}).  A larger
+number of repetitions and seeds per cell would tighten the
+per-cell estimates that the pooled analysis currently leans on.
+
+\paragraph{Text-based skill scoring.}
+The 3-facet quality framework and 19-flag taxonomy are evaluated
+by an LLM judge against the \texttt{SKILL.md} text content rather
+than by sandboxed execution.  This is a deliberate scale
+trade-off.  Judge-time text scoring is feasible at the
+$\sim$$821{,}000$-file crawl scale, whereas runtime sandboxing
+would require per-skill compatible
+execution environments not generally available for
+community-contributed code.  Safety hard-gates and licence
+filtering at Stage~5 catch the most severe content-level risks
+at ingest time.  Complementary runtime verification at
+retrieval-time or agent-execution-time is a principled extension
+for future work.  A second consequence of the scale trade-off is
+that the quality, safety, and classification labels driving the
+release decision come from a single LLM judge and are not
+validated against human gold annotations or cross-checked against
+an alternative judge model.  Judge bias therefore propagates into
+the released active set.  The facet-separation analysis is an internal-consistency
+check, not a
+construct-validity study, and human-annotation and
+judge-robustness studies are left to future work.
+
+\paragraph{Benchmark and harness coverage.}
+The evaluation spans three publicly available benchmarks
+(SkillsBench, GDPVal, QwenClawBench) chosen for
+non-saturation on frontier LLMs and for complementary task-type
+coverage (deterministic-verifier software tasks, real-world
+knowledge work, and a
+real-user-distribution agent benchmark), and two
+\texttt{SKILL.md}-conformant agent harnesses (OpenClaw, Raven)
+covering the most widely adopted skill-loading convention in
+the public ecosystem.  Per-benchmark and per-harness
+heterogeneity within this coverage is reported transparently
+in the main results (\S\ref{sec:negative}) rather than
+relegated to this section.
+Extending the evaluation to additional task types
+(e.g., long-horizon embodied tasks, non-English workflows) and
+to harnesses with substantially different tool-use interfaces
+or planning architectures would broaden external validity.  The
+corpus is also English-dominant, both in its source repositories
+and in our evaluation, which bounds claims about non-English
+skills.  The
+corpus-side findings (Stage~5 active--vs--filtered separation,
+class-adaptive retrieval, and the suggestive safety-facet signal)
+are expected to transfer modulo such adapter work, while per-cell
+$\Delta$ magnitudes would re-anchor against each new harness's
+own no-skill baseline.
+
+\paragraph{Snapshot semantics.}
+The released active set is a snapshot of the public
+\texttt{SKILL.md} ecosystem at crawl time, while the community itself
+continues to evolve (new repositories, licence updates, shifting
+class distributions).  We do not study temporal churn or
+re-curation cycles in this work, but the pipeline (per-stage
+reject logs, deterministic Stage~5 cut, deduplication keyed on
+content hash and embedding cosine) is constructed to support
+periodic re-runs against future ecosystem snapshots.  The active
+set released with this paper should be read as a 2026-Q2
+snapshot rather than a one-shot artifact.

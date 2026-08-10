@@ -1,0 +1,69 @@
+% =============================================================================
+% Ethics Statement (recommended unnumbered for *ACL; not counted in page limit)
+% =============================================================================
+
+\ifarxiv
+% ---- Full four-paragraph version (arXiv/preprint) ----
+\paragraph{Data provenance and licensing.}
+SkillCorpus aggregates publicly available \texttt{SKILL.md}
+files from GitHub and community marketplaces that link to
+GitHub-hosted sources.  Each released skill carries metadata
+including its source URL and content hash.  We do not modify
+body content or claim authorship.  Every released skill carries
+an OSI-approved permissive licence inferred from the source
+repository's GitHub \texttt{spdx\_id} and enforced as a Stage-5
+ingest filter (Table~\ref{tab:license}, per-reason exclusion
+counts in Table~\ref{tab:license-filter}).  Downstream consumers
+redistributing the corpus or its derivatives are advised to
+perform their own due-diligence audit of \texttt{scripts/}
+content and transitive dependencies.
+
+\paragraph{Safety filtering and dual-use.}
+The Stage-5 safety hard-gate (\S\ref{sec:classify}) excludes the
+most severe categories from the active release set, and the
+soft-flag categories are recorded in each skill's metadata for
+downstream per-deployment filtering.  We acknowledge the dual-use
+risk that a publicly searchable skill corpus could be queried for
+adversarial-style content patterns, a residual risk that the
+hard-gate and released soft-flag metadata reduce but do not
+eliminate.
+
+\paragraph{Benchmark contamination.}
+SkillCorpus is community-contributed and pre-dates our benchmark
+selection (\S\ref{sec:setup}).  By design the corpus aims for
+broad coverage of the skill ecosystem, so released skills overlap
+the domains of our evaluation tasks.  These are general procedural
+knowledge rather than task-specific solutions, and the per-task
+gate injects at most a few topically relevant skills.  We do not
+perform task-specific leakage audits beyond the corpus-level
+safety and licence filters described above, and consumers using
+verifier-backed benchmarks should re-audit for task-specific
+contamination when their evaluation regime is sensitive to it.
+
+\else
+% ---- Condensed two-paragraph version (AAAI submission, 7-page limit) ----
+\paragraph{Data, licensing, and safety.}
+SkillCorpus aggregates publicly available \texttt{SKILL.md} files
+from GitHub and community marketplaces, recording each skill's
+source URL and content hash without modifying its body or claiming
+authorship.  Every released skill carries an OSI-approved permissive
+licence inferred from the source repository's \texttt{spdx\_id} and
+enforced as a Stage-5 gate (Tables~\ref{tab:license}
+and~\ref{tab:license-filter}).  The same stage hard-gates the most
+severe safety categories and records soft-flags in metadata for
+per-deployment filtering.  We acknowledge the residual dual-use risk
+that a searchable skill corpus can be queried for adversarial
+content, which the gate and flags reduce but do not eliminate.
+Downstream consumers redistributing the corpus should audit
+\texttt{scripts/} content and transitive dependencies.
+
+\paragraph{Benchmark contamination.}
+The corpus is community-contributed and pre-dates our benchmark
+selection (\S\ref{sec:setup}).  Its broad coverage overlaps the
+domains of our tasks, but the released skills are general procedural
+knowledge rather than task-specific solutions, and the per-task gate
+injects at most a few topically relevant skills.  We do not perform
+task-specific leakage audits beyond the corpus-level filters above,
+and consumers using verifier-backed benchmarks should re-audit when
+their regime is sensitive to it.
+\fi

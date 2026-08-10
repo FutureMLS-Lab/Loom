@@ -658,9 +658,9 @@ def test_paper_state_defaults_to_cursor_reviewer_panel() -> None:
     state = ar.new_paper_state(parent_slug="p", idea={"title": "T"})
     assert state["reviewer_models"] == list(ar.CURSOR_REVIEWER_MODELS)
     assert ar.CURSOR_REVIEWER_MODELS == (
-        "gpt-5.6-sol-max",
+        "gpt-5.6-sol-max-fast",
         "claude-fable-5-thinking-max",
-        "cursor-grok-4.5-high",
+        "cursor-grok-4.5-high-fast",
     )
 
 
@@ -674,9 +674,9 @@ def test_cursor_reviewer_panel_reads_only_isolated_pdf(
     (paper / "main.tex").write_text("LATEX_SECRET_MUST_NOT_LEAK", encoding="utf-8")
 
     ratings = {
-        "gpt-5.6-sol-max": (4, "weak reject"),
+        "gpt-5.6-sol-max-fast": (4, "weak reject"),
         "claude-fable-5-thinking-max": (6, "borderline"),
-        "cursor-grok-4.5-high": (8, "weak accept"),
+        "cursor-grok-4.5-high-fast": (8, "weak accept"),
     }
     review_commands: list[list[str]] = []
 
@@ -738,7 +738,7 @@ def test_cursor_reviewer_panel_reads_only_isolated_pdf(
     assert result["models"] == list(ar.CURSOR_REVIEWER_MODELS)
     assert result["scores"]["rating"] == 4
     assert result["scores"]["recommendation"] == "weak reject"
-    assert result["deciding_model"] == "gpt-5.6-sol-max"
+    assert result["deciding_model"] == "gpt-5.6-sol-max-fast"
     assert result["cost"] == pytest.approx(0.18)
     assert result["headline"].startswith("3 reviewers")
     assert result["input_pdf"] == str(pdf)
@@ -998,9 +998,9 @@ def test_plateau_keeps_fixed_panel_then_pauses_for_human() -> None:
     state["round"] = 5
     assert ar.should_pause_for_plateau(state, 5) is True
     assert ar.CURSOR_REVIEWER_MODELS == (
-        "gpt-5.6-sol-max",
+        "gpt-5.6-sol-max-fast",
         "claude-fable-5-thinking-max",
-        "cursor-grok-4.5-high",
+        "cursor-grok-4.5-high-fast",
     )
 
     improved = _with_reviews(4, 4, 4, 5)

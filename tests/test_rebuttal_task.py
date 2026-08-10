@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -394,6 +395,66 @@ def test_draft_validate_edit_and_approve(
         / rebuttal.RESPONSES_SUBDIR
         / "response-R1.md"
     ).is_file()
+
+
+def test_prepare_and_ingest_live_agent_outputs(
+    package: tuple[Path, str],
+) -> None:
+    source, project_id = package
+    instructions = rebuttal.prepare_agent_instructions(project_id)
+    text = instructions.read_text(encoding="utf-8")
+    assert "Auto Rebuttal Agent Task" in text
+    assert str(source) in text
+    assert rebuttal.AGENT_COMPLETE_FILE in text
+
+    out = source / rebuttal.OUTPUT_SUBDIR
+    reviewer = {
+        "id": "R1",
+        "label": "Reviewer R1",
+        "summary": "One concern.",
+        "positive_points": [],
+        "concerns": [
+            {
+                "id": "R1-W1",
+                "type": "weakness",
+                "summary": "Missing baseline",
+                "verbatim": "Missing baseline.",
+                "severity": "high",
+                "response_mode": "correct",
+                "evidence_needed": "baseline result",
+            }
+        ],
+    }
+    (out / rebuttal.CONCERNS_FILE).write_text(
+        json.dumps({"reviewers": [reviewer]}),
+        encoding="utf-8",
+    )
+    response_dir = out / rebuttal.RESPONSES_SUBDIR
+    response_dir.mkdir(exist_ok=True)
+    response_dir.joinpath("response-R1.md").write_text(
+        "# Response to Reviewer R1\n\n"
+        "Thank you for the careful review.\n\n"
+        "### R1-W1: Missing baseline\n\n"
+        "We agree. The controlled baseline evidence directly resolves this "
+        "concern and will be explained with its exact protocol.",
+        encoding="utf-8",
+    )
+    (out / rebuttal.AGENT_COMPLETE_FILE).write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "reviewers": ["R1"],
+                "summary": "Drafted one response.",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = rebuttal.ingest_agent_outputs(project_id)
+    assert result["ok"]
+    assert result["reviewers"][0]["concerns"][0]["id"] == "R1-W1"
+    assert result["responses"]["R1"]["characters"] > 100
+    assert result["summary"] == "Drafted one response."
 
 
 def test_validation_blocks_policy_leaks(

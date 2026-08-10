@@ -1,0 +1,118 @@
+\documentclass[letterpaper]{article} % DO NOT CHANGE THIS
+
+% ===========================================================================
+% BUILD TOGGLE
+%   \submissionfalse -> arXiv preprint : real author names, no AAAI copyright
+%   \submissiontrue  -> AAAI-27 review : anonymous, review notice, pdfinfo cleared
+% For the AAAI camera-ready (only if accepted): set \submissionfalse AND change
+% the \usepackage line from [preprint] to no option, so the AAAI copyright slug
+% is inserted. See paper/aaai/ for the official kit templates.
+% ===========================================================================
+\newif\ifsubmission
+\submissionfalse
+\ifsubmission
+  \usepackage[submission]{aaai2027} % DO NOT CHANGE THIS
+\else
+  \usepackage[preprint]{aaai2027}   % arXiv: authors shown, copyright suppressed
+\fi
+
+\usepackage[hyphens]{url}  % DO NOT CHANGE THIS
+\usepackage{graphicx} % DO NOT CHANGE THIS
+\urlstyle{rm} % DO NOT CHANGE THIS
+\def\UrlFont{\rm}  % DO NOT CHANGE THIS
+\usepackage{natbib}  % DO NOT CHANGE THIS AND DO NOT ADD ANY OPTIONS TO IT
+\usepackage{caption} % DO NOT CHANGE THIS AND DO NOT ADD ANY OPTIONS TO IT
+\frenchspacing  % DO NOT CHANGE THIS
+
+% Math, tables, lists, algorithms (none on the AAAI forbidden-package list).
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{amsthm}
+\newtheorem{proposition}{Proposition}
+\newtheorem{lemma}{Lemma}
+\newtheorem{theorem}{Theorem}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{tabularx}
+\usepackage{array}
+% Python-style comments in pseudocode (# ... instead of the default triangle).
+\algrenewcommand\algorithmiccomment[1]{\hfill\texttt{\#}\,#1}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
+
+% These are recommended to typeset listings but not required. See the subsubsection on listing. Remove this block if you don't have listings in your paper.
+\usepackage{newfloat}
+\usepackage{listings}
+\DeclareCaptionStyle{ruled}{labelfont=normalfont,labelsep=colon,strut=off} % DO NOT CHANGE THIS
+\lstset{%
+	basicstyle={\footnotesize\ttfamily},% footnotesize acceptable for monospace
+	numbers=left,numberstyle=\footnotesize,xleftmargin=2em,% show line numbers, remove this entire line if you don't want the numbers.
+	aboveskip=0pt,belowskip=0pt,%
+	showstringspaces=false,tabsize=2,breaklines=true}
+\floatstyle{ruled}
+\newfloat{listing}{tb}{lst}{}
+\floatname{listing}{Listing}
+
+\pdfinfo{
+/TemplateVersion (2027.1)
+}
+
+\setcounter{secnumdepth}{2} % number sections and subsections (3.1, 4.1, ...)
+
+% Custom macros.
+\newcommand{\wxw}{(\textsc{where}\,$\times$\,\textsc{why})}
+\newcommand{\where}{\textsc{where}}
+\newcommand{\why}{\textsc{why}}
+
+%\title{Auditable Self-Evolution of Agent Harnesses via Gated Semantic Quality-Diversity}
+\title{HarnessBank: Semantic Gene-Bank Search with Gated Verification for Agent-Harness Self-Evolution}
+
+\ifsubmission
+  \author{Anonymous Submission}
+  \affiliations{}
+\else
+  \author{
+    Xiaotian Luo\textsuperscript{\rm 1,\rm 2},
+    Dizhan Xue\textsuperscript{\rm 1,\rm 2},
+    Fengxingyu Wang\textsuperscript{\rm 1,\rm 2},
+    Chuanrui Hu\textsuperscript{\rm 1,\rm 2},
+    Yafeng Deng\textsuperscript{\rm 1,\rm 2}\corresponding
+  }
+  \affiliations{
+    \textsuperscript{\rm 1}EverMind AI \quad
+    \textsuperscript{\rm 2}Shanda Group\\
+    \{xiaotian.luo, dizhan.xue, ethan.wang\}@evermind.ai,
+    \{chuanrui.hu, dengyafeng\}@shanda.com
+  }
+\fi
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Large Language Models (LLMs) have enabled capable agents across diverse applications. Beyond the foundation model, the performance of an agent is governed by the surrounding \emph{agent harness}, including prompts, tools, control loops, etc. Automatically evolving this harness offers a promising pathway to agent improvement, yet existing approaches typically rely on greedy candidate selection and noisy self-generated feedback, rendering their gains susceptible to search collapse, task-specific overfitting, and poor verifiability.
+%
+To tackle these challenges, we introduce \textbf{HarnessBank}, a trustworthy agent-harness self-evolution framework that pairs a task agent with a separate evolver agent for iterative failure diagnosis, harness generation, and evolution verification. 
+%
+HarnessBank maintains a Harness Gene Bank composed of high-performing harnesses of different semantic coordinates. Those harnesses are reinvented, recombined, screened, and selected during the self-evolution procedure.
+%
+Moreover, we propose a Gated Harness Screening mechanism to efficiently filter high-quality harnesses and reduce the cost of evaluating numerous offspring harnesses.
+%
+Across seven agent benchmarks, HarnessBank produces consistent performance improvements from $5.1\%$ to $15.4\%$. Cross-model experiments further verify that the improvements come from the model-specific self-evolving process, instead of a universally optimal harness. 
+%
+Our code will be publicly available upon acceptance.
+\end{abstract}
+
+\input{sections/01-introduction}
+\input{sections/02-related}
+\input{sections/03-method}
+\input{sections/04-experiments}
+\input{sections/07-conclusion}
+
+\bibliography{refs}
+
+
+\end{document}

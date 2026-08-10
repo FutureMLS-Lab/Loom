@@ -102,15 +102,16 @@ MAX_ROUNDS_LIMIT = 50
 MODE_AUTO = "auto"
 MODE_SEED = "seed"
 
-# Cursor's account-scoped model catalog exposes these as the strongest
-# non-fast variants currently available for the requested reviewer families.
+# Prefer Fast variants whenever Cursor exposes one for the requested reviewer
+# family. Fable Thinking Max currently has no Fast sibling in the account
+# catalogue, so it remains on the strongest available non-fast variant.
 # Fable has an explicit Thinking variant. GPT-5.6 Sol and Cursor Grok do not
 # expose a separate Thinking switch; max/high is their strongest reasoning
 # preset, and Cursor intentionally suppresses private reasoning in print mode.
 CURSOR_REVIEWER_MODELS: tuple[str, ...] = (
-    "gpt-5.6-sol-max",
+    "gpt-5.6-sol-max-fast",
     "claude-fable-5-thinking-max",
-    "cursor-grok-4.5-high",
+    "cursor-grok-4.5-high-fast",
 )
 CURSOR_REVIEWER_PANEL = "cursor-reviewer-panel"
 

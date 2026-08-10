@@ -24,7 +24,7 @@ from loom import ar_task as ar
 
 
 REGISTRY_VERSION = 2
-STATE_VERSION = 1
+STATE_VERSION = 2
 STUDIO_STATE_VERSION = 1
 OUTPUT_SUBDIR = "rebuttal-output"
 STATE_FILE = "state.json"
@@ -38,12 +38,19 @@ POLICY_SOURCES_FILE = "policy-sources.json"
 POLICY_FILE = "rebuttal-policy.json"
 POLICY_MARKDOWN_FILE = "rebuttal-policy.md"
 STRATEGY_FILE = "rebuttal-strategy.md"
+AGENT_INSTRUCTIONS_FILE = "AGENT_INSTRUCTIONS.md"
+AGENT_COMPLETE_FILE = "agent-complete.json"
 
 STAGE_INTAKE = "intake"
 STAGE_CONCERNS = "concerns_ready"
 STAGE_RESPONSES = "responses_ready"
 STAGE_VALIDATED = "validated"
 STAGE_APPROVED = "approved"
+STAGE_DELIVERY_AGENT = "delivery_agent_running"
+STAGE_DELIVERY_VALIDATING = "delivery_validating"
+STAGE_DELIVERY_BLOCKED = "delivery_blocked"
+STAGE_AWAIT_DELIVERY_APPROVAL = "await_delivery_approval"
+STAGE_BUNDLE_READY = "bundle_ready"
 
 STUDIO_STAGE_POLICY_INPUT = "policy_input"
 STUDIO_STAGE_POLICY_DRAFT = "policy_draft"
@@ -391,7 +398,13 @@ def read_state(project_id: str) -> dict[str, Any]:
     if source is None:
         return {}
     data = _read_json(state_path(source), {})
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    data.setdefault("content_approval", {})
+    data.setdefault("delivery_policy", {})
+    data.setdefault("delivery", {})
+    data["version"] = STATE_VERSION
+    return data
 
 
 def write_state(project_id: str, state: dict[str, Any]) -> bool:
@@ -411,6 +424,20 @@ def update_state(project_id: str, **changes: Any) -> dict[str, Any]:
         state.update(changes)
         write_state(project_id, state)
         return read_state(project_id)
+
+
+def invalidate_delivery(state: dict[str, Any], reason: str) -> None:
+    """Invalidate derived delivery artifacts while preserving attempt history."""
+    delivery = state.get("delivery")
+    if not isinstance(delivery, dict) or not delivery:
+        return
+    invalidated = dict(delivery)
+    invalidated["phase"] = "invalidated"
+    invalidated["invalidated_at"] = _now()
+    invalidated["invalidated_reason"] = str(reason or "delivery inputs changed")[:500]
+    invalidated["final_approval"] = {}
+    invalidated["bundle"] = {}
+    state["delivery"] = invalidated
 
 
 def _sha256(path: Path) -> str:
@@ -584,6 +611,9 @@ def register_project(
                 "responses": {},
                 "validation": {},
                 "approved_at": "",
+                "content_approval": {},
+                "delivery_policy": {},
+                "delivery": {},
                 "logs": [],
                 "created_at": _now(),
             }
@@ -708,6 +738,11 @@ def list_projects(studio_id: str = "") -> list[dict[str, Any]]:
             if isinstance(state.get("validation"), dict)
             else {}
         )
+        delivery = (
+            state.get("delivery")
+            if isinstance(state.get("delivery"), dict)
+            else {}
+        )
         projects.append(
             {
                 "id": project_id,
@@ -716,11 +751,15 @@ def list_projects(studio_id: str = "") -> list[dict[str, Any]]:
                 "source_path": state.get("source_path") or record.get("source_path"),
                 "stage": state.get("stage", STAGE_INTAKE),
                 "active_job": state.get("active_job", ""),
+                "agent_status": state.get("agent_status", ""),
+                "tmux_target": state.get("tmux_target", ""),
                 "error": state.get("error", ""),
                 "reviewers": len(state.get("reviewers") or []),
                 "review_files": len(manifest.get("review_pdfs") or []),
                 "responses": len(state.get("responses") or {}),
                 "ready": bool(validation.get("ready")),
+                "delivery_phase": delivery.get("phase", ""),
+                "bundle_ready": state.get("stage") == STAGE_BUNDLE_READY,
                 "cost_usd": float(state.get("cost_usd") or 0.0),
                 "updated_at": state.get("updated_at", ""),
             }
@@ -865,7 +904,17 @@ def approve_studio_policy(studio_id: str) -> dict[str, Any]:
         paper_state["policy"] = dict(state["policy"])
         paper_state["validation"] = {}
         paper_state["approved_at"] = ""
-        if paper_state.get("stage") in (STAGE_VALIDATED, STAGE_APPROVED):
+        paper_state["content_approval"] = {}
+        invalidate_delivery(paper_state, "conference policy changed")
+        if paper_state.get("stage") in (
+            STAGE_VALIDATED,
+            STAGE_APPROVED,
+            STAGE_DELIVERY_AGENT,
+            STAGE_DELIVERY_VALIDATING,
+            STAGE_DELIVERY_BLOCKED,
+            STAGE_AWAIT_DELIVERY_APPROVAL,
+            STAGE_BUNDLE_READY,
+        ):
             paper_state["stage"] = STAGE_RESPONSES
         append_log(
             paper_state,
@@ -1570,6 +1619,188 @@ def concern_matrix_markdown(reviewers: list[dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def prepare_agent_instructions(project_id: str) -> Path:
+    state = read_state(project_id)
+    if not state:
+        raise ValueError("rebuttal project not found")
+    source = _source_for(project_id)
+    if source is None:
+        raise ValueError("paper source directory is missing")
+    out = output_root(source)
+    out.mkdir(parents=True, exist_ok=True)
+    marker = out / AGENT_COMPLETE_FILE
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        pass
+    policy = normalize_policy(
+        state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    )
+    studio = (
+        read_studio(str(state.get("studio_id") or ""))
+        if state.get("studio_id")
+        else {}
+    )
+    policy_markdown = (
+        _read_text(
+            studio_artifact_path(str(state.get("studio_id")), POLICY_MARKDOWN_FILE),
+            100_000,
+        )
+        if studio
+        else ""
+    )
+    strategy_markdown = (
+        _read_text(
+            studio_artifact_path(str(state.get("studio_id")), STRATEGY_FILE),
+            100_000,
+        )
+        if studio
+        else ""
+    )
+    skill_path = ar.ar_skills_dir() / ar.SKILL_REBUTTAL
+    review_paths = list((state.get("manifest") or {}).get("review_pdfs") or [])
+    reviews_block = "\n".join(f"  - `{path}`" for path in review_paths)
+    instructions = f"""# Auto Rebuttal Agent Task
+
+You are the dedicated Rebuttal Agent for this paper. Work visibly in this tmux
+pane and use tools to inspect the package. Do not modify or delete the submitted
+paper, reviewer PDFs, or any source evidence. Write only under:
+
+`{out}`
+
+## Inputs
+
+- Paper package: `{source}`
+- Submitted PDF: `{(state.get('manifest') or {}).get('paper_pdf', '')}`
+- Review PDFs:
+{reviews_block}
+- Rebuttal Skill: `{skill_path}`
+
+Read the Rebuttal Skill completely before drafting.
+
+## Approved Conference Policy
+
+```json
+{json.dumps(policy, indent=2, ensure_ascii=False)}
+```
+
+{policy_markdown}
+
+## Acceptance Strategy
+
+{strategy_markdown}
+
+## Required workflow
+
+1. Read the submitted PDF and every Review/Meta-review PDF.
+2. Inspect relevant proof, experiment, result, and notes files in the package.
+3. Atomize every reviewer Weakness and Question. Do not omit or soften a point.
+4. Write `{out / CONCERNS_FILE}` exactly as:
+
+```json
+{{
+  "reviewers": [
+    {{
+      "id": "R1",
+      "label": "Reviewer R1",
+      "summary": "...",
+      "positive_points": ["..."],
+      "concerns": [
+        {{
+          "id": "R1-W1",
+          "type": "weakness",
+          "verbatim": "short exact quote",
+          "summary": "faithful one-line restatement",
+          "severity": "critical|high|medium|low",
+          "response_mode": "correct|clarify|scope|dispute|future",
+          "evidence_needed": "..."
+        }}
+      ]
+    }}
+  ]
+}}
+```
+
+5. Write `{out / CONCERN_MATRIX_FILE}` as a readable Markdown table.
+6. For every reviewer ID, write one self-contained response to
+   `{out / RESPONSES_SUBDIR}/response-<ID>.md`.
+7. Start each response with specific gratitude. Answer every concern ID under
+   its own heading, direct answer first, then evidence and action/scope.
+8. Maximize acceptance probability using the strongest accurate framing.
+9. Obey the Conference Policy exactly. Do not claim a frozen paper was changed;
+   conditional future edits must use `If accepted, we will ...`.
+10. Do not submit externally.
+
+## Completion protocol
+
+Only after all concern and response files are complete, write:
+
+`{marker}`
+
+with:
+
+```json
+{{"status": "complete", "reviewers": ["R1"], "summary": "..."}}
+```
+
+Make the completion marker the final file you write, then stop and wait.
+"""
+    path = out / AGENT_INSTRUCTIONS_FILE
+    path.write_text(instructions, encoding="utf-8")
+    return path
+
+
+def ingest_agent_outputs(project_id: str) -> dict[str, Any]:
+    state = read_state(project_id)
+    source = _source_for(project_id)
+    if not state or source is None:
+        return {"ok": False, "error": "rebuttal project not found"}
+    out = output_root(source)
+    marker = _read_json(out / AGENT_COMPLETE_FILE, {})
+    if not isinstance(marker, dict) or marker.get("status") != "complete":
+        return {"ok": False, "error": "agent completion marker is missing or invalid"}
+    raw = _read_json(out / CONCERNS_FILE, {})
+    if not isinstance(raw, dict):
+        return {"ok": False, "error": "agent concerns.json is missing or invalid"}
+    reviewers = _normalize_concerns(raw)
+    if not reviewers:
+        return {"ok": False, "error": "agent produced no usable reviewer concerns"}
+    (out / CONCERN_MATRIX_FILE).write_text(
+        concern_matrix_markdown(reviewers),
+        encoding="utf-8",
+    )
+    response_dir = out / RESPONSES_SUBDIR
+    responses: dict[str, dict[str, Any]] = {}
+    missing: list[str] = []
+    for reviewer in reviewers:
+        reviewer_id = str(reviewer.get("id") or "")
+        path = response_dir / f"response-{_safe_response_id(reviewer_id)}.md"
+        body = _read_text(path, 200_000)
+        if len(body.strip()) < 100:
+            missing.append(reviewer_id)
+            continue
+        responses[reviewer_id] = {
+            "reviewer_id": reviewer_id,
+            "path": str(path),
+            "filename": path.name,
+            "characters": len(body.rstrip()),
+            "updated_at": _now(),
+        }
+    if missing:
+        return {
+            "ok": False,
+            "error": f"agent responses missing or empty: {', '.join(missing)}",
+            "reviewers": reviewers,
+            "responses": responses,
+        }
+    return {
+        "ok": True,
+        "reviewers": reviewers,
+        "responses": responses,
+        "summary": str(marker.get("summary") or "").strip()[:2000],
+    }
+
+
 ModelRunner = Callable[..., dict[str, Any]]
 
 
@@ -1826,7 +2057,17 @@ def save_response(project_id: str, reviewer_id: str, body: str) -> dict[str, Any
     responses[reviewer_id] = item
     state["responses"] = responses
     state["validation"] = {}
-    if state.get("stage") in (STAGE_VALIDATED, STAGE_APPROVED):
+    invalidate_delivery(state, f"{reviewer_id} response changed")
+    state["content_approval"] = {}
+    if state.get("stage") in (
+        STAGE_VALIDATED,
+        STAGE_APPROVED,
+        STAGE_DELIVERY_AGENT,
+        STAGE_DELIVERY_VALIDATING,
+        STAGE_DELIVERY_BLOCKED,
+        STAGE_AWAIT_DELIVERY_APPROVAL,
+        STAGE_BUNDLE_READY,
+    ):
         state["stage"] = STAGE_RESPONSES
         state["approved_at"] = ""
     append_log(state, f"{reviewer_id}: saved edited response")
@@ -1925,7 +2166,44 @@ def validate_project(project_id: str) -> dict[str, Any]:
     return report
 
 
+def content_approval_snapshot(
+    project_id: str,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Bind a human response approval to exact policy and response bytes."""
+    current = state or read_state(project_id)
+    response_hashes: dict[str, str] = {}
+    for reviewer_id in sorted((current.get("responses") or {}).keys()):
+        body = response_body(project_id, reviewer_id)
+        response_hashes[str(reviewer_id)] = hashlib.sha256(
+            body.encode("utf-8")
+        ).hexdigest()
+    policy = normalize_policy(
+        current.get("policy") if isinstance(current.get("policy"), dict) else {}
+    )
+    policy_hash = hashlib.sha256(
+        json.dumps(policy, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    digest_payload = {
+        "policy_sha256": policy_hash,
+        "responses": response_hashes,
+    }
+    return {
+        **digest_payload,
+        "digest": hashlib.sha256(
+            json.dumps(
+                digest_payload,
+                sort_keys=True,
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
 def approve_project(project_id: str) -> dict[str, Any]:
+    current = read_state(project_id)
+    if current.get("stage") != STAGE_VALIDATED:
+        raise ValueError("validate the response content before human approval")
     report = validate_project(project_id)
     if not report.get("ready"):
         raise ValueError("rebuttal package is not validation-ready")
@@ -1933,7 +2211,12 @@ def approve_project(project_id: str) -> dict[str, Any]:
     state["validation"] = report
     state["stage"] = STAGE_APPROVED
     state["approved_at"] = _now()
-    append_log(state, "human approved the paste-ready rebuttal package")
+    state["content_approval"] = {
+        **content_approval_snapshot(project_id, state),
+        "approved_at": state["approved_at"],
+    }
+    invalidate_delivery(state, "responses were approved again")
+    append_log(state, "human approved the rebuttal response content")
     write_state(project_id, state)
     return project_payload(project_id)
 
