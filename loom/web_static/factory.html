@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Research Factory</title>
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
-  <link rel="stylesheet" href="/static/factory.css?v=20260808-2" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260809-2" />
 </head>
 <body>
 
@@ -70,6 +70,27 @@
       <div class="rf-step__body">
         <h3>Mine recent work</h3>
         <p>Pull the newest arXiv papers in this direction so the ideas are proposed against what the field actually published, not against memory.</p>
+        <div class="rf-search-settings">
+          <div class="rf-search-settings__head">
+            <div>
+              <strong>arXiv search settings</strong>
+              <span class="rf-hint" id="search-suggest-state"></span>
+            </div>
+            <button type="button" class="rf-btn rf-btn--sm" id="btn-search-suggest">Suggest from brief</button>
+          </div>
+          <label for="studio-search-terms">Keywords <span class="rf-hint">one short phrase per line</span></label>
+          <textarea id="studio-search-terms" rows="5" placeholder="No keywords yet — click Suggest from brief or enter one short phrase per line."></textarea>
+          <fieldset class="rf-search-categories">
+            <legend>arXiv categories</legend>
+            <div id="studio-search-categories"></div>
+          </fieldset>
+          <p class="rf-hint" id="studio-search-rationale"></p>
+          <pre class="rf-log" id="search-log" hidden></pre>
+          <div class="rf-search-query" id="studio-search-query" hidden>
+            <span>Last query</span>
+            <code></code>
+          </div>
+        </div>
         <div class="rf-step__actions">
           <label class="rf-check"><input type="checkbox" id="studio-venue-only" /> venue-tagged only</label>
           <button type="button" class="rf-btn" id="btn-mine">Mine arXiv</button>
@@ -299,6 +320,6 @@
 
 <div class="rf-toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/factory.js?v=20260808-2"></script>
+<script src="/static/factory.js?v=20260809-2"></script>
 </body>
 </html>

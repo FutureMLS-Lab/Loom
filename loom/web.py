@@ -3936,14 +3936,18 @@ def _ar_review_payload(root: Path, slug: str, n: int) -> dict[str, Any] | None:
 
 def _ar_mine_job(root: Path, slug: str, limit: int, venue_only: bool) -> None:
     state = ar.read_ar_state(root, slug)
+    settings = ar.search_settings(state)
     log = _ar_logger(root, slug, ar.JOB_PAPERS)
     log(
-        f"querying arXiv for {ar.direction_label(state)} "
+        f"querying arXiv with {len(settings['terms'])} term(s) in "
+        f"{', '.join(settings['categories'])} "
         f"(limit {limit}{', venue-tagged only' if venue_only else ''})"
     )
     res = ar.mine_papers(
         str(state.get("direction") or ""),
         str(state.get("custom_direction") or ""),
+        search_terms=settings["terms"],
+        categories=settings["categories"],
         limit=limit,
         venue_only=venue_only,
     )
@@ -3971,6 +3975,42 @@ def _ar_mine_job(root: Path, slug: str, limit: int, venue_only: bool) -> None:
             root, slug, papers_status="error", papers_error=str(res.get("error") or "")
         )
         print(f"[ar] {slug}: mining failed - {res.get('error')}", flush=True)
+
+
+def _ar_search_suggest_job(root: Path, slug: str, model: str) -> None:
+    state = ar.read_ar_state(root, slug)
+    log = _ar_logger(root, slug, ar.JOB_SEARCH)
+    result = ar.suggest_search_settings(state, model=model, on_line=log)
+    latest = ar.read_ar_state(root, slug)
+    cost = float(latest.get("cost_usd") or 0.0) + float(result.get("cost") or 0.0)
+    if not result.get("ok"):
+        error = str(result.get("error") or "search suggestion failed")
+        log(f"failed: {error}")
+        ar.update_ar_state(
+            root,
+            slug,
+            search_suggest_status="error",
+            search_suggest_error=error,
+            cost_usd=round(cost, 4),
+        )
+        return
+    terms = list(result.get("terms") or [])
+    categories = list(result.get("categories") or [])
+    log(f"terms: {', '.join(terms)}")
+    log(f"categories: {', '.join(categories)}")
+    ar.update_ar_state(
+        root,
+        slug,
+        search_terms=terms,
+        search_categories=categories,
+        search_terms_source="model",
+        search_terms_updated_at=_iso_now(),
+        search_suggest_status="done",
+        search_suggest_error="",
+        search_suggest_rationale=str(result.get("rationale") or ""),
+        cost_usd=round(cost, 4),
+    )
+    print(f"[ar] {slug}: suggested {len(terms)} arXiv search term(s)", flush=True)
 
 
 def _ar_ideas_job(root: Path, slug: str, count: int, model: str) -> None:
@@ -4805,10 +4845,10 @@ class ARLoopManager:
     def sweep_stale_jobs(projects: list[tuple[str, Path]]) -> int:
         """Clear AR jobs left ``running`` by a server that went away.
 
-        Mining, idea generation and out-of-band reviews run in threads that do
-        not survive a restart, and each endpoint refuses to start a second job
-        while its status says running - so without this sweep a restart in the
-        middle of one would wedge that task's button forever.
+        Search suggestion, mining, idea generation and out-of-band reviews run
+        in threads that do not survive a restart, and each endpoint refuses to
+        start a second job while its status says running - so without this sweep
+        a restart in the middle of one would wedge that task's button forever.
         """
         cleared = 0
         for _project_id, root in projects:
@@ -4824,7 +4864,7 @@ class ARLoopManager:
                 except Exception:  # noqa: BLE001
                     continue
                 changes: dict[str, Any] = {}
-                for job in ("papers", "ideas", "review"):
+                for job in ("search_suggest", "papers", "ideas", "review"):
                     if str(state.get(f"{job}_status") or "") == "running":
                         changes[f"{job}_status"] = "error"
                         changes[f"{job}_error"] = (
@@ -5003,9 +5043,16 @@ def make_handler(
                 "loop": ar_manager.status(project_id, slug),
                 "logs": {
                     job: ar.read_job_log(ar.job_log_path(root, slug, job))
-                    for job in (ar.JOB_PAPERS, ar.JOB_IDEAS, ar.JOB_REVIEW)
+                    for job in (
+                        ar.JOB_SEARCH,
+                        ar.JOB_PAPERS,
+                        ar.JOB_IDEAS,
+                        ar.JOB_REVIEW,
+                    )
                 },
             }
+            if ar.is_studio(state):
+                payload["search_settings"] = ar.search_settings(state)
             if ar.is_paper(state):
                 payload["actions"] = ar.available_actions(
                     state,
@@ -5149,19 +5196,68 @@ def make_handler(
         ) -> tuple[dict[str, Any], int]:
             """Dispatch one POST /api/tasks/<slug>/ar/<action>.
 
-            Mining and idea generation call a model and can run for minutes, so
-            they hand off to a thread and report progress through ar.json; the
-            panel polls GET /ar the same way it polls everything else.
+            Search suggestion, mining and idea generation can run for minutes,
+            so they hand off to a thread and report progress through ar.json;
+            the panel polls GET /ar the same way it polls everything else.
             """
+            if action == "search/suggest":
+                state, err = self._ar_require_state(root, slug, ar.ROLE_STUDIO)
+                if state is None:
+                    return {"ok": False, "error": err}, 400
+                if str(state.get("search_suggest_status")) == "running":
+                    return {"ok": True, "status": "running"}, 202
+                busy = [
+                    name
+                    for name in ("papers", "ideas", "link")
+                    if str(state.get(f"{name}_status")) == "running"
+                ]
+                if busy:
+                    return {
+                        "ok": False,
+                        "error": f"another Studio job is running: {busy[0]}",
+                    }, 409
+                meta = read_meta(root, slug)
+                model = str(body.get("model", "")).strip() or _ar_headless_model(meta)
+                ar.update_ar_state(
+                    root,
+                    slug,
+                    search_suggest_status="running",
+                    search_suggest_error="",
+                )
+                _ar_run_async(_ar_search_suggest_job, root, slug, model)
+                return {"ok": True, "status": "running"}, 202
+
             if action == "mine":
                 state, err = self._ar_require_state(root, slug, ar.ROLE_STUDIO)
                 if state is None:
                     return {"ok": False, "error": err}, 400
                 if str(state.get("papers_status")) == "running":
                     return {"ok": True, "status": "running"}, 202
+                if str(state.get("search_suggest_status")) == "running":
+                    return {"ok": False, "error": "search suggestion is still running"}, 409
+                current = ar.search_settings(state)
+                supplied = "search_terms" in body or "search_categories" in body
+                raw_terms = body.get("search_terms", current["terms"])
+                raw_categories = body.get("search_categories", current["categories"])
+                terms, categories, settings_error = ar.validate_search_settings(
+                    raw_terms, raw_categories
+                )
+                if settings_error:
+                    return {"ok": False, "error": settings_error}, 400
                 limit = max(5, min(100, int(body.get("limit", 40) or 40)))
                 venue_only = bool(body.get("venue_only"))
-                ar.update_ar_state(root, slug, papers_status="running", papers_error="")
+                changes: dict[str, Any] = {
+                    "search_terms": terms,
+                    "search_categories": categories,
+                    "papers_status": "running",
+                    "papers_error": "",
+                }
+                if supplied:
+                    changes.update(
+                        search_terms_source="user",
+                        search_terms_updated_at=_iso_now(),
+                    )
+                ar.update_ar_state(root, slug, **changes)
                 _ar_run_async(_ar_mine_job, root, slug, limit, venue_only)
                 return {"ok": True, "status": "running"}, 202
 
@@ -8159,7 +8255,11 @@ def serve(
     ar_manager = ARLoopManager(openclaw_client, claude_registry, sk)
     _ar_swept = ar_manager.sweep_stale_jobs(_monitor_projects)
     if _ar_swept:
-        print(f"  Cleared {_ar_swept} interrupted AR job(s) (mine/ideas/review)", flush=True)
+        print(
+            f"  Cleared {_ar_swept} interrupted AR job(s) "
+            "(search/mine/ideas/review)",
+            flush=True,
+        )
     _ar_resumed = ar_manager.resume_running(_monitor_projects)
     if _ar_resumed:
         print(f"  Resumed {_ar_resumed} running AR paper loop(s)", flush=True)

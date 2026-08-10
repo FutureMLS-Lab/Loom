@@ -177,6 +177,8 @@ def test_state_round_trip(tmp_path: Path) -> None:
     assert back["venue"] == "icml"
     assert back["mode"] == "seed"
     assert back["seed_idea"] == "hi"
+    assert back["search_terms"] == ar.direction_entry("quantization")["terms"]
+    assert "cs.CV" in back["search_categories"]
     assert back["updated_at"]
 
     ar.update_ar_state(root, meta.slug, seed_idea="changed")
@@ -192,6 +194,28 @@ def test_state_factories_reject_unknown_values() -> None:
 
     assert ar.new_studio_state(max_rounds="not a number")["max_rounds"] == ar.DEFAULT_MAX_ROUNDS
     assert ar.new_studio_state(max_rounds=0)["max_rounds"] == 1
+
+
+def test_long_custom_brief_waits_for_search_suggestion() -> None:
+    state = ar.new_studio_state(
+        direction="custom",
+        custom_direction=(
+            "Image or Video generation. I need a topic for a conference. "
+            "Search on the web if needed."
+        ),
+    )
+    assert state["search_terms"] == []
+    assert ar.search_settings(state)["terms"] == []
+    assert "cs.CV" in ar.search_settings(state)["categories"]
+
+
+def test_concise_custom_direction_remains_a_legacy_search_fallback() -> None:
+    state = {
+        "role": ar.ROLE_STUDIO,
+        "direction": "custom",
+        "custom_direction": "video generation",
+    }
+    assert ar.search_settings(state)["terms"] == ["video generation"]
 
 
 def test_read_state_tolerates_corrupt_json(tmp_path: Path) -> None:
@@ -288,8 +312,74 @@ def test_arxiv_query_is_bounded() -> None:
     q = ar._arxiv_query(["a", "b", "c", "d", "e"])
     # arXiv slows to a crawl on long boolean queries, so terms are capped.
     assert q.count('abs:"') == ar._ARXIV_MAX_TERMS
+    assert q.count('ti:"') == ar._ARXIV_MAX_TERMS
+    assert "cat:cs.CV" in q
     assert "cat:cs.LG" in q
-    assert ar._arxiv_query([]) == "(cat:cs.LG OR cat:cs.CL OR cat:cs.AI)"
+    assert ar._arxiv_query([]) == "(" + " OR ".join(
+        f"cat:{category}" for category in ar.DEFAULT_ARXIV_CATEGORIES
+    ) + ")"
+
+
+def test_search_settings_validation_rejects_injection_and_unknown_categories() -> None:
+    terms, categories, error = ar.validate_search_settings(
+        ['image" OR cat:all', "video generation"],
+        ["cs.CV", "not.real"],
+    )
+    assert terms == []
+    assert categories == []
+    assert "unknown arXiv categories" in error
+
+    terms, categories, error = ar.validate_search_settings(
+        ['image" OR cat:all', "video generation"],
+        ["cs.CV"],
+    )
+    assert error == ""
+    assert terms == ["image OR cat:all", "video generation"]
+    query = ar._arxiv_query(terms, categories)
+    assert query.startswith("(cat:cs.CV) AND")
+    assert query.count('"') == 8
+
+
+def test_model_suggests_editable_search_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ar,
+        "_run_headless",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "text": (
+                '```json\n{"terms":["image generation","video generation",'
+                '"diffusion model"],"categories":["cs.CV","cs.LG"],'
+                '"rationale":"Focus on visual generation."}\n```'
+            ),
+            "cost": 0.02,
+        },
+    )
+    state = ar.new_studio_state(
+        direction="custom",
+        custom_direction="Find a WACV topic in image or video generation.",
+    )
+    result = ar.suggest_search_settings(state, model="claude-test")
+    assert result["ok"]
+    assert result["terms"] == [
+        "image generation",
+        "video generation",
+        "diffusion model",
+    ]
+    assert result["categories"] == ["cs.CV", "cs.LG"]
+    assert result["cost"] == 0.02
+
+
+def test_model_search_suggestion_requires_usable_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ar,
+        "_run_headless",
+        lambda *args, **kwargs: {"ok": True, "text": "not json", "cost": 0.01},
+    )
+    result = ar.suggest_search_settings(ar.new_studio_state())
+    assert result["ok"] is False
+    assert "JSON object" in result["error"]
 
 
 def test_mine_papers_reports_network_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -306,6 +396,29 @@ def test_mine_papers_filters_to_venue(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(both["papers"]) == 2
     only = ar.mine_papers("quantization", venue_only=True)
     assert [p["venue"] for p in only["papers"]] == ["ICLR 2025"]
+
+
+def test_mine_papers_uses_explicit_search_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+
+    def fake_fetch(url, timeout, attempts=3):
+        seen.append(url)
+        return CANNED_FEED, ""
+
+    monkeypatch.setattr(ar, "_arxiv_fetch", fake_fetch)
+    result = ar.mine_papers(
+        "custom",
+        "this long brief must not become the query",
+        search_terms=["image generation", "video generation"],
+        categories=["cs.CV", "eess.IV"],
+    )
+    assert result["ok"]
+    assert result["search_terms"] == ["image generation", "video generation"]
+    assert result["search_categories"] == ["cs.CV", "eess.IV"]
+    assert "this+long+brief" not in seen[0]
+    assert "cat%3Acs.CV" in seen[0]
 
 
 # --- job progress logs ------------------------------------------------------
@@ -1544,6 +1657,8 @@ def test_catalog_shape() -> None:
     cat = ar.catalog()
     assert {d["id"] for d in cat["directions"]} == ar.DIRECTION_IDS
     assert {v["id"] for v in cat["venues"]} == ar.VENUE_IDS
+    assert {c["id"] for c in cat["arxiv_categories"]} == ar.ARXIV_CATEGORY_IDS
+    assert "cs.CV" in cat["default_arxiv_categories"]
     assert cat["default_venue"] in ar.VENUE_IDS
     assert cat["default_max_rounds"] == ar.DEFAULT_MAX_ROUNDS
     assert [m["id"] for m in cat["modes"]] == [ar.MODE_AUTO, ar.MODE_SEED]
@@ -1591,6 +1706,7 @@ def test_sweep_stale_jobs_unwedges_interrupted_work(tmp_path: Path) -> None:
 
     state = ar.new_studio_state()
     state["ideas_status"] = "running"
+    state["search_suggest_status"] = "running"
     state["papers_status"] = "done"
     ar.write_ar_state(root, stuck.slug, state)
     ar.write_ar_state(root, fine.slug, ar.new_studio_state())
@@ -1601,6 +1717,8 @@ def test_sweep_stale_jobs_unwedges_interrupted_work(tmp_path: Path) -> None:
     after = ar.read_ar_state(root, stuck.slug)
     assert after["ideas_status"] == "error"
     assert "restart" in after["ideas_error"]
+    assert after["search_suggest_status"] == "error"
+    assert "restart" in after["search_suggest_error"]
     # Statuses that were not mid-flight are left exactly as they were.
     assert after["papers_status"] == "done"
     assert "ideas_status" not in ar.read_ar_state(root, fine.slug)

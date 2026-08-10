@@ -370,6 +370,47 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
 .rf-step.is-current .rf-step__n {
   background: var(--rf-accent); border-color: var(--rf-accent); color: #fff;
 }
+.rf-search-settings {
+  margin-top: 14px; padding: 14px;
+  border: 1px solid var(--rf-line); border-radius: 12px;
+  background: var(--rf-bg-2);
+}
+.rf-search-settings__head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+}
+.rf-search-settings__head > div {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+}
+.rf-search-settings label { margin-top: 10px; }
+.rf-search-settings textarea {
+  resize: vertical; min-height: 112px; font-family: var(--rf-mono);
+  font-size: 12px; line-height: 1.45;
+}
+.rf-search-categories {
+  margin: 12px 0 0; padding: 0; border: 0;
+}
+.rf-search-categories legend {
+  margin-bottom: 6px; color: var(--rf-dim); font-size: 12px;
+}
+.rf-search-categories > div {
+  display: flex; align-items: center; gap: 7px 14px; flex-wrap: wrap;
+}
+.rf-search-categories .rf-check { white-space: normal; }
+.rf-search-query {
+  display: grid; gap: 4px; margin-top: 10px; min-width: 0;
+}
+.rf-search-query span {
+  color: var(--rf-faint); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+.rf-search-query code {
+  display: block; overflow-wrap: anywhere; padding: 8px 10px;
+  border: 1px solid var(--rf-line); border-radius: 8px;
+  background: var(--rf-bg-1); color: var(--rf-dim);
+  font: 10.5px/1.45 var(--rf-mono);
+}
+.rf-search-settings .rf-log { margin-top: 10px; }
 
 /* ---------- ideas ---------- */
 
@@ -585,6 +626,8 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
   .rf-row, .rf-modes { grid-template-columns: 1fr; }
   .rf-paper-row { grid-template-columns: 1fr auto; }
   .rf-main { padding: 24px 18px 72px; }
+  .rf-search-settings { padding: 12px; }
+  .rf-search-settings__head { align-items: flex-start; }
   .rf-reviewer-report > header { display: block; }
   .rf-reviewer-report__scores { justify-content: flex-start; margin-top: 8px; }
 }
