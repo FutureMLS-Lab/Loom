@@ -57,7 +57,8 @@ rather than reaching for default matplotlib — each one carries a house style,
 procedural checks and a worked example; deterministic skills also carry a
 drawing kit in `scripts/`.
 
-- **teaser-figure-1**, **teaser-figure-2** and **teaser-figure-3** — page-one
+- **teaser-figure-1**, **teaser-figure-2**, **teaser-figure-3** and
+  **teaser-figure-4** — page-one
   overviews. **Auto Research must proactively use teaser-figure-3 whenever it
   creates or refreshes a teaser, Figure 1, overview, architecture or pipeline;
   do not wait for the user to request a figure or name the skill.** It uses
@@ -65,7 +66,11 @@ drawing kit in `scripts/`.
   figures. An explicit user style override wins. Use teaser-figure-2 when
   deterministic vector output must show concrete objects plus a real
   measurement; teaser-figure-1 for a deterministic tinted-panel mechanism
-  diagram, complex formulas, or when image generation is unavailable.
+  diagram, complex formulas, or when image generation is unavailable. Use
+  teaser-figure-4 when the paper itself must be systematically converted into
+  a reviewed Happy Figure Prompt, with content community, visual treatment,
+  figure type, exact visible-text whitelist and multiple candidate directions
+  kept separate.
 - **results-figure-1** and **results-figure-2** — the evidence plots. Use
   results-figure-2 whenever you have more than one seed, which for this
   pipeline is most of the time: showing the spread is what makes a small-scale

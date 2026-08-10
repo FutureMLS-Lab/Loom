@@ -110,9 +110,17 @@ class TestSkillCatalog:
     def test_lists_the_roles_and_the_figure_skills(self):
         skills = ar.skill_catalog()
         roles = {s["role"] for s in skills}
-        assert {"Studio", "Author", "Reviewer"} <= roles
+        assert {"Studio", "Author", "Reviewer", "Rebuttal"} <= roles
         assert "Figures" in roles
         assert all(s["id"] and s["description"] for s in skills)
+
+    def test_lists_the_paper_rebuttal_skill(self):
+        rebuttal = next(
+            skill for skill in ar.skill_catalog() if skill["id"] == ar.SKILL_REBUTTAL
+        )
+        assert rebuttal["name"] == "paper-rebuttal"
+        assert rebuttal["role"] == "Rebuttal"
+        assert "Acceptance-first" in ar.skill_body(ar.SKILL_REBUTTAL)
 
     def test_body_reads_a_catalogued_skill(self):
         first = ar.skill_catalog()[0]
@@ -1553,6 +1561,7 @@ def test_figure_skills_are_bundled() -> None:
         "teaser-figure-1",
         "teaser-figure-2",
         "teaser-figure-3",
+        "teaser-figure-4",
         "checkbib",
     } <= skills
     for skill in ar.figure_skills():
@@ -1570,10 +1579,11 @@ def test_figure_skills_block_stays_compact() -> None:
     assert "teaser-figure-3 [DEFAULT TEASER]" in block
     assert "teaser-figure-1" in block
     assert "teaser-figure-3" in block
+    assert "teaser-figure-4" in block
     assert "results-figure-2" in block
     assert "checkbib" in block
-    # Six SKILL.md files are much larger than the compact prompt menu.
-    assert len(block) < 3000
+    # Seven SKILL.md files are much larger than the compact prompt menu.
+    assert len(block) < 3500
 
 
 def test_author_prompts_point_at_the_figure_skills(tmp_path: Path) -> None:
@@ -1584,6 +1594,7 @@ def test_author_prompts_point_at_the_figure_skills(tmp_path: Path) -> None:
         assert "AUTO-RESEARCH DEFAULT TEASER: teaser-figure-3" in prompt
         assert "teaser-figure-1" in prompt
         assert "teaser-figure-3" in prompt
+        assert "teaser-figure-4" in prompt
         assert "results-figure-2" in prompt
         assert "SKILL.md" in prompt
 

@@ -3284,6 +3284,7 @@ client.post_note_edit(
 SKILL_STUDIO = "AR-STUDIO.md"
 SKILL_AUTHOR = "AR-AUTHOR.md"
 SKILL_REVIEWER = "AR-REVIEWER.md"
+SKILL_REBUTTAL = "paper-rebuttal/SKILL.md"
 
 
 def ar_skills_dir() -> Path:
@@ -3342,6 +3343,9 @@ def figure_skills_block() -> str:
         "for a figure or name the skill. An explicit user style override wins.",
         "Use teaser-figure-1/2 only when the user requests deterministic vector",
         "output, the figure is equation-heavy, or image generation is unavailable.",
+        "Use teaser-figure-4 for a document-first Happy Figure workflow that",
+        "separates content community, visual treatment and figure type, especially",
+        "when several scientifically identical teaser directions must be compared.",
         "For quantitative evidence plots, use results-figure-1/2 instead.",
         "Read the selected SKILL.md before drawing:",
     ]
@@ -3415,6 +3419,11 @@ ROLE_SKILLS = (
     (SKILL_STUDIO, "Studio", "Surveys the field and proposes grounded ideas."),
     (SKILL_AUTHOR, "Author", "Writes the paper and runs the experiments behind it."),
     (SKILL_REVIEWER, "Reviewer", "Reviews each round the way a venue would."),
+    (
+        SKILL_REBUTTAL,
+        "Rebuttal",
+        "Drafts acceptance-oriented, evidence-bounded responses to reviewers.",
+    ),
 )
 
 
@@ -3429,8 +3438,11 @@ def skill_catalog() -> list[dict[str, str]]:
         path = ar_skills_dir() / filename
         if not path.is_file():
             continue
+        display_name = (
+            path.parent.name if path.name == "SKILL.md" else path.name.removesuffix(".md")
+        )
         out.append({
-            "id": filename, "name": filename.removesuffix(".md"), "role": role,
+            "id": filename, "name": display_name, "role": role,
             "description": summary, "path": str(path),
         })
     for skill in figure_skills():
