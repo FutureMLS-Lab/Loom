@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Auto Rebuttal Factory</title>
+  <link rel="stylesheet" href="/static/rebuttal_factory.css?v=20260810-2" />
+</head>
+<body>
+
+<header class="rb-top">
+  <a class="rb-brand" href="/rebuttal-factory">
+    <span class="rb-brand__mark" aria-hidden="true">R</span>
+    <span>
+      <b>Auto Rebuttal Factory</b>
+      <small>Acceptance-first · evidence-bounded</small>
+    </span>
+  </a>
+  <nav class="rb-nav">
+    <span id="stat-projects"><b>—</b> projects</span>
+    <span id="stat-ready"><b>—</b> ready</span>
+    <span id="stat-cost"><b>—</b> spent</span>
+    <button type="button" class="rb-btn rb-btn--ghost" id="btn-refresh">Refresh</button>
+    <a class="rb-btn rb-btn--ghost" href="/factory">Research Factory</a>
+    <a class="rb-btn rb-btn--ghost" href="/">Loom</a>
+  </nav>
+</header>
+
+<main class="rb-main" id="view-fleet">
+  <section class="rb-hero">
+    <p class="rb-eyebrow">Reviewer response control plane</p>
+    <h1>Turn a review package into<br />a verified rebuttal.</h1>
+    <p>
+      Import one server directory containing the submitted paper, reviewer PDF,
+      and supporting evidence. Loom freezes a manifest, atomizes every concern,
+      drafts one self-contained response per reviewer, validates venue policy,
+      and stops for human approval.
+    </p>
+  </section>
+
+  <section class="rb-import">
+    <div class="rb-section-head">
+      <div>
+        <h2>Import a rebuttal package</h2>
+        <p>The source directory is never deleted. Generated files go into <code>rebuttal-output/</code>.</p>
+      </div>
+    </div>
+    <div class="rb-import-grid">
+      <label class="rb-field rb-field--wide">
+        <span>Server directory path</span>
+        <input type="text" id="import-path" placeholder="/absolute/path/to/paper-and-reviews" />
+      </label>
+      <label class="rb-field">
+        <span>Display title <em>optional</em></span>
+        <input type="text" id="import-title" placeholder="Paper rebuttal" />
+      </label>
+      <label class="rb-field">
+        <span>Character limit</span>
+        <input type="number" id="import-limit" min="500" max="100000" value="10000" />
+      </label>
+    </div>
+    <div class="rb-import-options">
+      <label><input type="checkbox" id="import-frozen" checked /> submitted manuscript is frozen</label>
+      <label><input type="checkbox" id="import-links" /> venue permits links</label>
+      <label><input type="checkbox" id="import-global" /> venue permits a global response</label>
+      <button type="button" class="rb-btn rb-btn--primary" id="btn-import">Import and scan</button>
+    </div>
+    <p class="rb-status" id="import-status"></p>
+  </section>
+
+  <section class="rb-section">
+    <div class="rb-section-head">
+      <div>
+        <h2>Rebuttal projects</h2>
+        <p>Generated response packages remain on disk after a project is forgotten.</p>
+      </div>
+    </div>
+    <div class="rb-projects" id="project-list"></div>
+  </section>
+</main>
+
+<main class="rb-main" id="view-project" hidden>
+  <button type="button" class="rb-back" id="btn-back">← All rebuttal projects</button>
+
+  <section class="rb-project-head">
+    <div>
+      <p class="rb-eyebrow" id="project-stage">Rebuttal</p>
+      <h1 id="project-title">…</h1>
+      <p class="rb-path" id="project-path"></p>
+      <p class="rb-status" id="project-meta"></p>
+    </div>
+    <div class="rb-project-actions">
+      <button type="button" class="rb-btn" id="btn-rescan">Rescan package</button>
+      <button type="button" class="rb-btn rb-btn--danger" id="btn-forget">Forget project</button>
+    </div>
+  </section>
+
+  <ol class="rb-pipeline" id="pipeline"></ol>
+
+  <section class="rb-action-bar">
+    <button type="button" class="rb-btn rb-btn--primary" id="btn-analyze">1. Analyze reviews</button>
+    <button type="button" class="rb-btn rb-btn--primary" id="btn-draft">2. Draft responses</button>
+    <button type="button" class="rb-btn" id="btn-validate">3. Validate package</button>
+    <button type="button" class="rb-btn rb-btn--approve" id="btn-approve">4. Human approve</button>
+    <span class="rb-status" id="action-status"></span>
+  </section>
+
+  <section class="rb-columns">
+    <article class="rb-card">
+      <div class="rb-section-head">
+        <div>
+          <h2>Source package</h2>
+          <p>The submitted PDF and reviews are hash-recorded, not modified.</p>
+        </div>
+      </div>
+      <div id="manifest"></div>
+    </article>
+
+    <article class="rb-card">
+      <div class="rb-section-head">
+        <div>
+          <h2>Venue policy</h2>
+          <p>Policy changes invalidate an earlier validation.</p>
+        </div>
+      </div>
+      <div class="rb-policy">
+        <label class="rb-field">
+          <span>Platform</span>
+          <input type="text" id="policy-platform" />
+        </label>
+        <label class="rb-field">
+          <span>Hard character limit</span>
+          <input type="number" id="policy-limit" min="500" max="100000" />
+        </label>
+        <label class="rb-field">
+          <span>Internal target</span>
+          <input type="number" id="policy-target" min="100" max="99999" />
+        </label>
+        <label class="rb-field">
+          <span>Response language</span>
+          <input type="text" id="policy-language" />
+        </label>
+      </div>
+      <div class="rb-checks">
+        <label><input type="checkbox" id="policy-frozen" /> manuscript frozen</label>
+        <label><input type="checkbox" id="policy-links" /> links allowed</label>
+        <label><input type="checkbox" id="policy-attachments" /> attachments allowed</label>
+        <label><input type="checkbox" id="policy-global" /> global response allowed</label>
+        <label><input type="checkbox" id="policy-anonymous" /> anonymous</label>
+      </div>
+      <button type="button" class="rb-btn" id="btn-policy-save">Save policy</button>
+    </article>
+  </section>
+
+  <section class="rb-section">
+    <div class="rb-section-head">
+      <div>
+        <h2>Activity</h2>
+        <p>Long model calls stream progress here and survive page reloads.</p>
+      </div>
+    </div>
+    <pre class="rb-log" id="activity-log">(no activity yet)</pre>
+  </section>
+
+  <section class="rb-section">
+    <div class="rb-section-head">
+      <div>
+        <h2>Concern matrix</h2>
+        <p>Every reviewer weakness and question remains a separate response obligation.</p>
+      </div>
+      <span class="rb-count" id="concern-count"></span>
+    </div>
+    <div class="rb-concerns" id="concerns"></div>
+  </section>
+
+  <section class="rb-section">
+    <div class="rb-section-head">
+      <div>
+        <h2>Reviewer responses</h2>
+        <p>Edit freely. The six-second poll will not overwrite unsaved text.</p>
+      </div>
+      <span class="rb-count" id="response-count"></span>
+    </div>
+    <div class="rb-responses" id="responses"></div>
+  </section>
+
+  <section class="rb-section">
+    <div class="rb-section-head">
+      <div>
+        <h2>Validation and handoff</h2>
+        <p>Loom never posts externally. Approval marks the on-disk package paste-ready.</p>
+      </div>
+    </div>
+    <div class="rb-validation" id="validation"></div>
+    <p class="rb-output" id="output-path"></p>
+  </section>
+</main>
+
+<div class="rb-toasts" id="toasts" aria-live="polite"></div>
+
+<script src="/static/rebuttal_factory.js?v=20260810-2"></script>
+</body>
+</html>

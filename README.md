@@ -266,6 +266,30 @@ Building a PDF needs `latexmk` and a TeX Live install; on Debian the COLM
 template additionally needs `texlive-fonts-extra`. Loom reports a missing style
 file by name rather than dumping the LaTeX log.
 
+#### Auto Rebuttal Factory
+
+Open `/rebuttal-factory` to import an existing paper/review package by absolute
+server path. The source directory should contain one submitted paper PDF,
+reviewer or meta-review PDFs whose filenames contain `review`, and any proof,
+experiment, result, or notes files needed as evidence.
+
+Loom creates `<input>/rebuttal-output/` and drives:
+
+1. **Package intake** — records a hash manifest without modifying the submitted
+   paper or review files.
+2. **Concern matrix** — a Headless Studio model atomizes every reviewer weakness
+   and question.
+3. **Draft responses** — one self-contained, point-by-point response per
+   reviewer using `loom/skills/ar/paper-rebuttal/SKILL.md`.
+4. **Policy validation** — checks concern coverage, character limits,
+   placeholders, links, anonymity, frozen-manuscript claims, and conditional
+   camera-ready language.
+5. **Human approval** — marks the on-disk package paste-ready. Loom never posts
+   to OpenReview or another venue.
+
+Projects are registered in `~/.loom/rebuttal-projects.json`; forgetting one only
+removes that registry entry and preserves its source and generated output.
+
 **Kernel Lab needs a separate bundle.** The Kernel Hub stack (Dockerfiles,
 compose files, the `kernel_evaluator` service and its CUDA reference docs) is
 ~800 files, so it ships in the source tree but *not* in the installed package.

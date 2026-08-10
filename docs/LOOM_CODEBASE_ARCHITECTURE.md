@@ -1929,3 +1929,101 @@ UI 只读取和触发，不是状态真相
 
 7. [`loom/skills/ar/`](loom/skills/ar/)
    看 Studio、Author、Reviewer 的方法论来源。
+
+## 20. Auto Rebuttal Factory
+
+Auto Rebuttal Factory 是与 Research Factory 并列的独立工作流：
+
+```text
+/rebuttal-factory
+    → import absolute server path
+    → scan submitted paper + review PDFs + evidence
+    → concern matrix
+    → reviewer-specific responses
+    → deterministic policy validation
+    → human approval
+```
+
+关键文件：
+
+- [`loom/rebuttal_task.py`](loom/rebuttal_task.py)：项目注册、材料 Manifest、
+  Concern Matrix、Response 文件、Policy Validation 和持久状态；
+- [`loom/web.py`](loom/web.py)：`/api/rebuttal/*` 路由及 Headless 后台 Job；
+- [`loom/web_static/rebuttal_factory.html`](loom/web_static/rebuttal_factory.html)；
+- [`loom/web_static/rebuttal_factory.js`](loom/web_static/rebuttal_factory.js)；
+- [`loom/web_static/rebuttal_factory.css`](loom/web_static/rebuttal_factory.css)；
+- [`loom/skills/ar/paper-rebuttal/SKILL.md`](loom/skills/ar/paper-rebuttal/SKILL.md)。
+
+### 20.1 输入和输出
+
+用户输入一个服务器目录。该目录至少包含：
+
+```text
+main.pdf / paper.pdf / submission.pdf
+*review*.pdf
+proof / result / experiment / notes files
+```
+
+Loom 不修改输入 Paper 或 Review，而是在输入目录中创建：
+
+```text
+rebuttal-output/
+├── state.json
+├── source-manifest.json
+├── concerns.json
+├── concern-matrix.md
+├── responses/
+│   └── response-<reviewer>.md
+├── validation.json
+└── validation.md
+```
+
+项目注册表：
+
+```text
+~/.loom/rebuttal-projects.json
+```
+
+删除 Factory Project 只会删除注册项，不会删除输入和
+`rebuttal-output/`。
+
+### 20.2 状态机
+
+```mermaid
+stateDiagram-v2
+    [*] --> Intake
+    Intake --> ConcernsReady: analyze review PDFs
+    ConcernsReady --> ResponsesReady: draft per-reviewer responses
+    ResponsesReady --> Validated: policy checks pass
+    Validated --> Approved: human approval
+    Approved --> ResponsesReady: any response or policy edit
+```
+
+阶段：
+
+```text
+intake
+concerns_ready
+responses_ready
+validated
+approved
+```
+
+### 20.3 模型与确定性边界
+
+模型负责：
+
+- 从原始 Review PDF 拆出 Weakness/Question；
+- 根据 Paper、Evidence 和 `paper-rebuttal` Skill 起草逐 Reviewer 回复。
+
+Python 负责：
+
+- 文件分类和 SHA256 Manifest；
+- 字符限制；
+- Concern ID 覆盖；
+- Placeholder、URL、Email 和冻结稿件表述；
+- `If accepted, we will ...` 条件性修改规则；
+- 状态转换和 Hot Restart 后的中断恢复。
+
+Loom 不自动向 OpenReview 或其他外部平台提交。`approved` 只表示用户确认
+磁盘中的回复包可供复制。

@@ -42,6 +42,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from loom import agent_hooks
 from loom import ar_task as ar
+from loom import rebuttal_task as rebuttal
 from loom.openclaw import OpenClawClient, OpenClawConfig, openclaw_status
 from loom.paths import (
     AR_ROOT_ENV,
@@ -4038,6 +4039,76 @@ def _ar_search_suggest_job(root: Path, slug: str, model: str) -> None:
     print(f"[ar] {slug}: suggested {len(terms)} arXiv search term(s)", flush=True)
 
 
+def _rebuttal_logger(project_id: str):
+    def log(message: str) -> None:
+        state = rebuttal.read_state(project_id)
+        if not state:
+            return
+        rebuttal.append_log(state, str(message))
+        rebuttal.write_state(project_id, state)
+
+    return log
+
+
+def _rebuttal_analyze_job(project_id: str, model: str) -> None:
+    log = _rebuttal_logger(project_id)
+    result = rebuttal.analyze_project(project_id, model=model, on_line=log)
+    state = rebuttal.read_state(project_id)
+    if not state:
+        return
+    state["active_job"] = ""
+    state["cost_usd"] = round(
+        float(state.get("cost_usd") or 0.0) + float(result.get("cost") or 0.0),
+        4,
+    )
+    if result.get("ok"):
+        state["reviewers"] = result.get("reviewers") or []
+        state["responses"] = {}
+        state["validation"] = {}
+        state["stage"] = rebuttal.STAGE_CONCERNS
+        state["error"] = ""
+        rebuttal.append_log(
+            state,
+            f"extracted {sum(len(r.get('concerns') or []) for r in state['reviewers'])} "
+            f"concern(s) across {len(state['reviewers'])} reviewer(s)",
+        )
+    else:
+        state["error"] = str(result.get("error") or "review analysis failed")
+        rebuttal.append_log(state, f"analysis failed: {state['error']}")
+    rebuttal.write_state(project_id, state)
+
+
+def _rebuttal_draft_job(project_id: str, model: str) -> None:
+    log = _rebuttal_logger(project_id)
+    result = rebuttal.draft_project(project_id, model=model, on_line=log)
+    state = rebuttal.read_state(project_id)
+    if not state:
+        return
+    state["active_job"] = ""
+    state["cost_usd"] = round(
+        float(state.get("cost_usd") or 0.0) + float(result.get("cost") or 0.0),
+        4,
+    )
+    if result.get("ok"):
+        state["responses"] = result.get("responses") or {}
+        state["validation"] = {}
+        state["stage"] = rebuttal.STAGE_RESPONSES
+        state["error"] = ""
+        rebuttal.append_log(
+            state,
+            f"drafted {len(state['responses'])} reviewer response(s)",
+        )
+    else:
+        # Keep successfully written partial drafts inspectable, but do not mark
+        # the package ready until every reviewer response exists.
+        partial = result.get("responses")
+        if isinstance(partial, dict) and partial:
+            state["responses"] = partial
+        state["error"] = str(result.get("error") or "response drafting failed")
+        rebuttal.append_log(state, f"drafting failed: {state['error']}")
+    rebuttal.write_state(project_id, state)
+
+
 def _ar_ideas_job(root: Path, slug: str, count: int, model: str) -> None:
     state = ar.read_ar_state(root, slug)
     log = _ar_logger(root, slug, ar.JOB_IDEAS)
@@ -5663,11 +5734,22 @@ def make_handler(
             parsed = urlparse(self.path)
             path = parsed.path
 
-            # The Research Factory is a second entry document over the same
-            # API: a dedicated view of the AR fleet, rather than AR squeezed
-            # into a task panel beside everything else Loom does.
-            if path in ("/", "/index.html", "/factory", "/factory.html"):
-                name = "factory.html" if path.startswith("/factory") else "index.html"
+            # Dedicated entry documents share the same authenticated API and
+            # static assets while presenting one focused workflow.
+            if path in (
+                "/",
+                "/index.html",
+                "/factory",
+                "/factory.html",
+                "/rebuttal-factory",
+                "/rebuttal-factory.html",
+            ):
+                if path.startswith("/rebuttal-factory"):
+                    name = "rebuttal_factory.html"
+                elif path.startswith("/factory"):
+                    name = "factory.html"
+                else:
+                    name = "index.html"
                 idx = static_root / name
                 if not idx.is_file():
                     st, b, h = _text_bytes(f"missing {name}", 500)
@@ -5881,6 +5963,43 @@ def make_handler(
                 finally:
                     terminal_streams.unregister(stream_id, master)
                     self._kill_pty(proc, master)
+                return
+
+            if path == "/api/rebuttal/catalog":
+                st, b, h = _json_bytes(
+                    {
+                        "ok": True,
+                        "default_policy": rebuttal.DEFAULT_POLICY,
+                        "stages": [
+                            rebuttal.STAGE_INTAKE,
+                            rebuttal.STAGE_CONCERNS,
+                            rebuttal.STAGE_RESPONSES,
+                            rebuttal.STAGE_VALIDATED,
+                            rebuttal.STAGE_APPROVED,
+                        ],
+                    }
+                )
+                self._send(st, b, h)
+                return
+
+            if path == "/api/rebuttal/projects":
+                st, b, h = _json_bytes(
+                    {"ok": True, "projects": rebuttal.list_projects()}
+                )
+                self._send(st, b, h)
+                return
+
+            m_rebuttal_get = re.match(r"^/api/rebuttal/projects/([0-9a-f]{12})$", path)
+            if m_rebuttal_get:
+                payload = rebuttal.project_payload(m_rebuttal_get.group(1))
+                if not payload:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "rebuttal project not found"},
+                        404,
+                    )
+                else:
+                    st, b, h = _json_bytes(payload)
+                self._send(st, b, h)
                 return
 
             if path == "/api/tasks":
@@ -6682,6 +6801,229 @@ def make_handler(
                 return
             path = parsed.path
             body = _read_json(self)
+
+            if path == "/api/rebuttal/projects":
+                try:
+                    payload = rebuttal.register_project(
+                        str(body.get("path") or ""),
+                        title=str(body.get("title") or ""),
+                        policy=body.get("policy") if isinstance(body.get("policy"), dict) else None,
+                    )
+                except ValueError as exc:
+                    st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
+                except OSError as exc:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": f"could not import package: {exc}"},
+                        500,
+                    )
+                else:
+                    st, b, h = _json_bytes(payload, 201)
+                self._send(st, b, h)
+                return
+
+            m_rebuttal_action = re.match(
+                r"^/api/rebuttal/projects/([0-9a-f]{12})/([a-z-]+)$",
+                path,
+            )
+            if m_rebuttal_action:
+                project_id = m_rebuttal_action.group(1)
+                action = m_rebuttal_action.group(2)
+                state = rebuttal.read_state(project_id)
+                if not state:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "rebuttal project not found"},
+                        404,
+                    )
+                    self._send(st, b, h)
+                    return
+                active = str(state.get("active_job") or "")
+
+                if action == "rescan":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        try:
+                            payload = rebuttal.register_project(
+                                str(state.get("source_path") or ""),
+                                title=str(state.get("title") or ""),
+                                policy=state.get("policy")
+                                if isinstance(state.get("policy"), dict)
+                                else None,
+                            )
+                            fresh = payload["project"]
+                            fresh["reviewers"] = []
+                            fresh["responses"] = {}
+                            fresh["validation"] = {}
+                            fresh["stage"] = rebuttal.STAGE_INTAKE
+                            fresh["approved_at"] = ""
+                            rebuttal.append_log(
+                                fresh,
+                                "cleared derived rebuttal artifacts after rescan",
+                            )
+                            rebuttal.write_state(project_id, fresh)
+                            st, b, h = _json_bytes(
+                                rebuttal.project_payload(project_id)
+                            )
+                        except (ValueError, OSError) as exc:
+                            st, b, h = _json_bytes(
+                                {"ok": False, "error": str(exc)},
+                                400,
+                            )
+                    self._send(st, b, h)
+                    return
+
+                if action == "policy":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        policy = rebuttal.normalize_policy(
+                            body.get("policy")
+                            if isinstance(body.get("policy"), dict)
+                            else {}
+                        )
+                        state["policy"] = policy
+                        state["validation"] = {}
+                        if state.get("stage") in (
+                            rebuttal.STAGE_VALIDATED,
+                            rebuttal.STAGE_APPROVED,
+                        ):
+                            state["stage"] = rebuttal.STAGE_RESPONSES
+                            state["approved_at"] = ""
+                        rebuttal.append_log(state, "updated venue rebuttal policy")
+                        rebuttal.write_state(project_id, state)
+                        st, b, h = _json_bytes(
+                            rebuttal.project_payload(project_id)
+                        )
+                    self._send(st, b, h)
+                    return
+
+                if action in ("analyze", "draft"):
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": True, "status": "running", "job": active},
+                            202,
+                        )
+                    else:
+                        job = (
+                            rebuttal.JOB_ANALYZE
+                            if action == "analyze"
+                            else rebuttal.JOB_DRAFT
+                        )
+                        if action == "draft" and not state.get("reviewers"):
+                            st, b, h = _json_bytes(
+                                {"ok": False, "error": "analyze reviews first"},
+                                409,
+                            )
+                        else:
+                            state["active_job"] = job
+                            state["error"] = ""
+                            if action == "analyze":
+                                state["reviewers"] = []
+                                state["responses"] = {}
+                                state["validation"] = {}
+                                state["stage"] = rebuttal.STAGE_INTAKE
+                            rebuttal.append_log(state, f"started {job} job")
+                            rebuttal.write_state(project_id, state)
+                            model = (
+                                str(body.get("model") or "").strip()
+                                or _ar_headless_model(None)
+                            )
+                            target = (
+                                _rebuttal_analyze_job
+                                if action == "analyze"
+                                else _rebuttal_draft_job
+                            )
+                            _ar_run_async(target, project_id, model)
+                            st, b, h = _json_bytes(
+                                {"ok": True, "status": "running", "job": job},
+                                202,
+                            )
+                    self._send(st, b, h)
+                    return
+
+                if action == "save-response":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        try:
+                            payload = rebuttal.save_response(
+                                project_id,
+                                str(body.get("reviewer_id") or ""),
+                                str(body.get("body") or ""),
+                            )
+                        except (ValueError, OSError) as exc:
+                            st, b, h = _json_bytes(
+                                {"ok": False, "error": str(exc)},
+                                400,
+                            )
+                        else:
+                            st, b, h = _json_bytes(payload)
+                    self._send(st, b, h)
+                    return
+
+                if action == "validate":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        report = rebuttal.validate_project(project_id)
+                        state = rebuttal.read_state(project_id)
+                        state["validation"] = report
+                        state["stage"] = (
+                            rebuttal.STAGE_VALIDATED
+                            if report.get("ready")
+                            else rebuttal.STAGE_RESPONSES
+                        )
+                        state["approved_at"] = ""
+                        rebuttal.append_log(
+                            state,
+                            "validation passed"
+                            if report.get("ready")
+                            else f"validation blocked by {len(report.get('errors') or [])} issue(s)",
+                        )
+                        rebuttal.write_state(project_id, state)
+                        st, b, h = _json_bytes(
+                            rebuttal.project_payload(project_id)
+                        )
+                    self._send(st, b, h)
+                    return
+
+                if action == "approve":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        try:
+                            payload = rebuttal.approve_project(project_id)
+                        except ValueError as exc:
+                            st, b, h = _json_bytes(
+                                {"ok": False, "error": str(exc)},
+                                409,
+                            )
+                        else:
+                            st, b, h = _json_bytes(payload)
+                    self._send(st, b, h)
+                    return
+
+                st, b, h = _json_bytes(
+                    {"ok": False, "error": f"unknown rebuttal action: {action}"},
+                    404,
+                )
+                self._send(st, b, h)
+                return
 
             if path == "/api/kernel/runs":
                 root, _pid = self._resolve_scope(parsed)
@@ -8166,6 +8508,38 @@ def make_handler(
             parsed = urlparse(self.path)
             path = parsed.path
 
+            m_rebuttal_del = re.match(
+                r"^/api/rebuttal/projects/([0-9a-f]{12})$",
+                path,
+            )
+            if m_rebuttal_del:
+                project_id = m_rebuttal_del.group(1)
+                state = rebuttal.read_state(project_id)
+                if not state:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "rebuttal project not found"},
+                        404,
+                    )
+                elif state.get("active_job"):
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": False,
+                            "error": f"{state['active_job']} is still running",
+                        },
+                        409,
+                    )
+                else:
+                    rebuttal.delete_project(project_id)
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": True,
+                            "id": project_id,
+                            "note": "source materials and rebuttal-output were preserved",
+                        }
+                    )
+                self._send(st, b, h)
+                return
+
             m_krun_del = re.match(r"^/api/kernel/runs/([^/]+)$", path)
             if m_krun_del:
                 root, _pid = self._resolve_scope(parsed)
@@ -8396,6 +8770,12 @@ def serve(
     _ar_resumed = ar_manager.resume_running(_monitor_projects)
     if _ar_resumed:
         print(f"  Resumed {_ar_resumed} running AR paper loop(s)", flush=True)
+    _rebuttal_swept = rebuttal.sweep_interrupted_jobs()
+    if _rebuttal_swept:
+        print(
+            f"  Cleared {_rebuttal_swept} interrupted Rebuttal Factory job(s)",
+            flush=True,
+        )
     handler = make_handler(
         web_project_registry,
         project_root,
