@@ -77,6 +77,11 @@ them at your server's URL and auth token:
 Both need the server reachable from the device — [AGENT.md](AGENT.md) step 5
 covers the options, from an SSH tunnel to a public domain.
 
+Deeper reading lives in [`docs/`](docs/): the codebase
+[architecture](docs/LOOM_CODEBASE_ARCHITECTURE.md), the
+[figure-skill pipeline](docs/FIGURE_SKILL_FLOW.md), and working notes under
+`docs/notes/`.
+
 ## The basic flow
 
 1. **+ Add folder** (top bar) — pick the repo you want to work in.
