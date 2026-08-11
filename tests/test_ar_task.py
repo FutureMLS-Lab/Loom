@@ -1401,7 +1401,9 @@ def test_review_readiness_accepts_complete_rendered_paper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paper = _write_ready_paper(tmp_path)
-    monkeypatch.setattr(ar, "pdf_page_count", lambda pdf: 9)
+    # Total PDF length is not a readiness condition: references and appendices
+    # are venue-specific and may be unbounded.
+    monkeypatch.setattr(ar, "pdf_page_count", lambda pdf: 500)
     monkeypatch.setattr(
         ar,
         "_pdf_text",
@@ -1418,6 +1420,7 @@ def test_review_readiness_accepts_complete_rendered_paper(
     assert result["ready"] is True
     assert result["failed"] == []
     assert all(item["ok"] for item in result["checks"])
+    assert not any("page count" in item["label"].lower() for item in result["checks"])
     report = ar.review_readiness_markdown(result)
     assert "PASS — reviewer may run" in report
 

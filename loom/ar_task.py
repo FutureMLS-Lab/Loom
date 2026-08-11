@@ -3119,19 +3119,6 @@ def review_readiness(
         "none" if not warnings else ", ".join(dict.fromkeys(warnings)),
     )
 
-    pages = pdf_page_count(pdf) if pdf_exists else None
-    page_limit = int(entry.get("page_limit") or 0)
-    page_ok = pages is not None and (not page_limit or pages <= page_limit + 2)
-    check(
-        page_ok,
-        f"PDF page count is inspectable and within {entry['label']} allowance",
-        (
-            f"{pages} pages (main-text limit {page_limit}, +2 allowance for references)"
-            if pages is not None
-            else "pdfinfo could not read the PDF"
-        ),
-    )
-
     rendered = _pdf_text(pdf) if pdf_exists else {"ok": False, "error": "PDF missing"}
     if rendered.get("ok"):
         pdf_text = str(rendered.get("text") or "")
@@ -3218,13 +3205,6 @@ def build_submission(
         f"stage: {progress_summary(state)}",
     )
     check(pdf.is_file(), "PDF is compiled", str(pdf) if pdf.is_file() else "run Rebuild PDF")
-    limit = int(entry.get("page_limit") or 0)
-    if pages is not None and limit:
-        check(
-            pages <= limit + 2,
-            f"Page count within the {entry['label']} limit",
-            f"{pages} pages, main-text limit {limit} (references and appendix usually excluded)",
-        )
     check(
         markers == 0,
         "No unfilled placeholders left",
