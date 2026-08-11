@@ -310,7 +310,7 @@ def _available_skill_options(
     project_root: Path | None = None,  # kept for call-site compatibility; unused
     *,
     limit: int = 500,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """Return selectable skill markdown files for the web UI.
 
     Scope is intentionally limited to the bundled ``loom/skills``
@@ -320,7 +320,7 @@ def _available_skill_options(
     """
     del project_root  # skills come only from the skills directory
     seen: set[Path] = set()
-    options: list[dict[str, str]] = []
+    options: list[dict[str, Any]] = []
     skills_root = bundled_skills_path().parent
 
     def add(path: Path) -> None:
@@ -341,7 +341,12 @@ def _available_skill_options(
             label = str(p.relative_to(skills_root))
         except ValueError:
             pass
-        options.append({"label": label, "path": str(p)})
+        entry: dict[str, Any] = {"label": label, "path": str(p)}
+        # The AR pipeline injects everything under skills/ar/ into its own
+        # prompts; selecting one here too would send it twice.
+        if label.startswith("ar/") or label.startswith("ar\\"):
+            entry["auto"] = True
+        options.append(entry)
 
     add(default_skills)
     if skills_root.is_dir():

@@ -977,7 +977,8 @@ async function openSkills() {
       const head = s.role !== role ? `<li class="rf-skills__role">${esc(s.role)}</li>` : '';
       role = s.role;
       return `${head}<li><button type="button" data-skill="${esc(s.id)}">
-        <b>${esc(s.name)}</b><small>${esc(s.description)}</small></button></li>`;
+        <b>${esc(s.name)}</b><small>${esc(s.description)}</small>
+        ${s.injection ? `<small class="rf-skills__how">${esc(s.injection)}</small>` : ''}</button></li>`;
     }).join('') || '<li class="rf-empty">No skills installed.</li>';
     list.querySelectorAll('[data-skill]').forEach((b) => {
       b.onclick = async () => {

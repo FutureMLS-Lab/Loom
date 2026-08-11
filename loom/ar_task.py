@@ -3422,13 +3422,30 @@ def read_text_file(path: Path, limit: int = MAX_FILE_BYTES) -> str:
 
 
 ROLE_SKILLS = (
-    (SKILL_STUDIO, "Studio", "Surveys the field and proposes grounded ideas."),
-    (SKILL_AUTHOR, "Author", "Writes the paper and runs the experiments behind it."),
-    (SKILL_REVIEWER, "Reviewer", "Reviews each round the way a venue would."),
+    (
+        SKILL_STUDIO,
+        "Studio",
+        "Surveys the field and proposes grounded ideas.",
+        "Injected in full into every Studio job (mine, ideas, ground).",
+    ),
+    (
+        SKILL_AUTHOR,
+        "Author",
+        "Writes the paper and runs the experiments behind it.",
+        "Injected in full into every author round prompt.",
+    ),
+    (
+        SKILL_REVIEWER,
+        "Reviewer",
+        "Reviews each round the way a venue would.",
+        "Injected in full into every reviewer run.",
+    ),
     (
         SKILL_REBUTTAL,
         "Rebuttal",
         "Drafts acceptance-oriented, evidence-bounded responses to reviewers.",
+        "Named in every author round prompt; the author reads it before "
+        "answering the reviewers.",
     ),
 )
 
@@ -3438,9 +3455,11 @@ def skill_catalog() -> list[dict[str, str]]:
 
     An agent's behaviour is mostly these files, and they were invisible from
     the outside: you could see what an author did but not what it was told.
+    Each entry says how it reaches the agent, so nobody re-selects a skill
+    that the pipeline already delivers on its own.
     """
     out: list[dict[str, str]] = []
-    for filename, role, summary in ROLE_SKILLS:
+    for filename, role, summary, injection in ROLE_SKILLS:
         path = ar_skills_dir() / filename
         if not path.is_file():
             continue
@@ -3450,13 +3469,25 @@ def skill_catalog() -> list[dict[str, str]]:
         out.append({
             "id": filename, "name": display_name, "role": role,
             "description": summary, "path": str(path),
+            "injection": injection,
         })
     for skill in figure_skills():
         doc = Path(skill["path"])
+        name = skill["name"]
+        injection = (
+            "Listed as a menu in every author round; the author reads the "
+            "one it needs."
+        )
+        if name == DEFAULT_TEASER_SKILL:
+            injection = (
+                "The default teaser: every author round is told to use this "
+                "proactively for page-one figures."
+            )
         out.append({
             "id": f"{FIGURE_SKILLS_SUBDIR}/{doc.parent.name}/SKILL.md",
-            "name": skill["name"], "role": "Figures",
+            "name": name, "role": "Figures",
             "description": skill["description"], "path": skill["path"],
+            "injection": injection,
         })
     return out
 
