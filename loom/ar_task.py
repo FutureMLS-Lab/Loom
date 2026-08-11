@@ -3621,6 +3621,9 @@ The idea this paper must establish:
 Run the experiments first, then fold the real numbers into the paper, then
 rebuild the PDF. Never write a number an experiment did not produce.
 
+When you answer the reviewer point by point, read and follow the rebuttal
+methodology first: {ar_skills_dir() / SKILL_REBUTTAL}
+
 This is a hard review-readiness gate: do not write the completion note until
 the paper is a complete, ready-to-submit artifact. Every \\ARTODO, \\ARnum,
 \\ARfig, TODO/TBD/FIXME/XXX, unresolved ??, missing figure, undefined
@@ -3704,6 +3707,29 @@ failure above is fixed, write a NEW completion note to:
 Writing that file is the final action. Loom will rerun the deterministic gate;
 the reviewer panel runs only after it passes.
 """
+
+
+def author_continue_prompt(task_dir: Path, round_n: int) -> str:
+    """Wake an author that ended its turn without writing the round's note.
+
+    Short on purpose: the agent still has the full round prompt in its own
+    context, so this only has to say "you are not done" and repeat the one
+    fact it must not lose - where the completion note goes.
+    """
+    stage = "the initial DRAFT" if round_n == 0 else f"ROUND {round_n}"
+    note = author_note_path_for(task_dir, round_n)
+    return f"""You stopped without finishing {stage} of this Loom AR paper.
+
+Continue the same round. Check any experiments you left running - they may
+have finished while you were stopped - fold the real results into the
+manuscript, rebuild the PDF, and complete anything still open from the round
+instructions.
+
+When the round is genuinely done, write your summary to:
+{note}
+
+That file is how Loom knows the round is over; without it the loop waits
+forever. Make it the last thing you do, then stop."""
 
 
 def author_note_path_for(task_dir: Path, n: int) -> Path:
