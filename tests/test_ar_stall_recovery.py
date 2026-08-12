@@ -14,14 +14,10 @@ class FakeManager:
     def __init__(self, alive: bool) -> None:
         self.alive = alive
         self.events: list[str] = []
-        self.killed: list[str] = []
         self.openclaw = self
 
     def pane_alive(self, target: str) -> bool:
         return self.alive
-
-    def kill_pane(self, target: str) -> None:
-        self.killed.append(target)
 
     def emit(self, event: str, **kwargs) -> None:
         self.events.append(event)
@@ -112,21 +108,3 @@ def test_nudges_stop_at_the_cap_and_tell_the_human(tmp_path, monkeypatch):
     assert not sent
     assert manager.events == ["ar-author-stalled"]
     assert ar.read_ar_state(tmp_path, slug)["rounds"][0]["stall_reported"] is True
-
-
-def test_pane_refresh_pending_starts_the_next_round_fresh(tmp_path):
-    slug = "paper-x"
-    task = make_paper(tmp_path, slug)
-    state = json.loads((task / "ar.json").read_text())
-    state["pane_refresh_pending"] = True
-    (task / "ar.json").write_text(json.dumps(state))
-    manager = FakeManager(alive=True)
-    driver = _ARLoopDriver(manager, tmp_path, "pid1", slug)
-
-    driver._maybe_refresh_pane(json.loads((task / "ar.json").read_text()), 2)
-
-    assert manager.killed == ["loom-cursor-x:0.0"]
-    meta = json.loads((task / "task.json").read_text())
-    assert meta["tmux_interview_target"] == ""
-    saved = ar.read_ar_state(tmp_path, slug)
-    assert saved["pane_refresh_pending"] is False

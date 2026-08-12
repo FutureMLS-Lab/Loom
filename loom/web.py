@@ -107,7 +107,6 @@ from loom.rud_task import (
 )
 from loom.tmux_util import (
     capture_pane,
-    kill_tmux_session,
     list_tmux_panes,
     list_tmux_sessions,
     open_pane_attach,
@@ -4556,29 +4555,7 @@ class _ARLoopDriver:
         self._save(state)
         self._send_round_prompt(self._state(), n)
 
-    def _maybe_refresh_pane(self, state: dict[str, Any], n: int) -> None:
-        """Honour a one-shot request to start this round in a fresh pane.
-
-        Setting ``pane_refresh_pending`` in ar.json makes the next round open
-        on a brand-new agent session instead of a pane whose context predates
-        the current prompts and skills - the way to bring a long-running paper
-        in line with freshly spawned tasks.
-        """
-        if not state.get("pane_refresh_pending"):
-            return
-        meta = read_meta(self.project_root, self.slug)
-        target = ((getattr(meta, "tmux_interview_target", "") or "") if meta else "").strip()
-        if target:
-            self.manager.kill_pane(target)
-            update_meta(self.project_root, self.slug, tmux_interview_target="")
-        # Clear before the pane restarts, or the flag would kill the new pane
-        # on the next tick too.
-        state["pane_refresh_pending"] = False
-        self._save(state)
-        self._note(f"round {n}: hard refresh - starting a fresh agent pane")
-
     def _send_round_prompt(self, state: dict[str, Any], n: int) -> None:
-        self._maybe_refresh_pane(state, n)
         previous = ar.round_record(state, n - 1) or {}
         review = previous.get("review") if isinstance(previous.get("review"), dict) else {}
         review_text = ""
@@ -4922,11 +4899,6 @@ class ARLoopManager:
         if self.registry is None:
             return bool(target.strip())
         return self.registry.target_alive(target)
-
-    def kill_pane(self, target: str) -> None:
-        session = target.split(":", 1)[0].strip()
-        if session:
-            kill_tmux_session(session)
 
     def start(self, project_root: Path, project_id: str, slug: str) -> dict[str, Any]:
         state = ar.read_ar_state(project_root, slug)
