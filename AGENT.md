@@ -39,6 +39,20 @@ pipx ensurepath
 Verify: `python3 --version` (≥ 3.10), `git --version`, `tmux -V`.
 Open a fresh shell if `pipx ensurepath` changed `PATH`.
 
+**Planning to use the Research Factory (AR papers)?** The paper pipeline
+compiles LaTeX on every round; without it, papers fail at their first PDF
+build. Install it now (~1 GB) or skip until needed:
+
+```bash
+sudo apt-get install -y latexmk texlive-latex-extra   # Debian/Ubuntu
+brew install --cask mactex-no-gui                     # macOS
+```
+
+Also set expectations with the human — **ASK**: paper authors run their
+experiments on this machine unless they are given a cluster. On a laptop-class
+host the Factory still writes papers; the experiments behind them are only as
+big as the box.
+
 ## 2. Install Loom
 
 ```bash
