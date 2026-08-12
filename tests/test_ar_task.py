@@ -1348,7 +1348,9 @@ def _write_ready_paper(tmp_path: Path) -> Path:
         "01_introduction.tex": (
             "\\section{Introduction}\nThis paper studies an important efficiency "
             "problem, identifies a precise gap, and contributes a reproducible "
-            "method plus controlled empirical evidence."
+            "method plus controlled empirical evidence.\n"
+            "\\begin{figure}[t]\\includegraphics{figures/result}"
+            "\\caption{Overview of the method and its measured effect.}\\end{figure}"
         ),
         "02_related_work.tex": (
             "\\section{Related Work}\nPrior efficient inference and quantization "
@@ -1466,6 +1468,30 @@ def test_review_readiness_rejects_missing_figure_and_question_mark(
     assert result["ready"] is False
     assert labels["Every referenced figure file exists"] is False
     assert labels["Rendered PDF has no visible placeholders or question marks"] is False
+
+
+def test_review_readiness_rejects_a_paper_without_an_intro_figure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paper = _write_ready_paper(tmp_path)
+    intro = paper / "sections" / "01_introduction.tex"
+    intro.write_text(
+        "\\section{Introduction}\nA substantive introduction with a clear gap "
+        "and contributions, but every figure hides in the experiments.",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ar, "pdf_page_count", lambda pdf: 9)
+    monkeypatch.setattr(
+        ar, "_pdf_text", lambda pdf: {"ok": True, "text": "Complete prose."}
+    )
+    result = ar.review_readiness(
+        paper,
+        venue="iclr",
+        build={"ok": True, "clean": True, "pdf": str(paper / "main.pdf"), "log": ""},
+    )
+    labels = {item["label"]: item["ok"] for item in result["checks"]}
+    assert result["ready"] is False
+    assert labels["Introduction opens with an overview figure"] is False
 
 
 def test_build_submission_flags_an_unfinished_paper(tmp_path: Path) -> None:

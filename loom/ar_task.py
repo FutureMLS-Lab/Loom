@@ -2889,6 +2889,22 @@ def _has_real_results(paper_dir: Path) -> bool:
     return False
 
 
+def _intro_has_figure(paper_dir: Path) -> bool:
+    """The introduction carries a page-one overview figure.
+
+    Every figure skill exists so the paper opens with a real Figure 1; a
+    submission whose figures all hide in the experiments reads as unfinished
+    at a venue. Comments are stripped first, so a commented-out
+    ``\\includegraphics`` does not pass.
+    """
+    path = paper_dir / "sections" / "01_introduction.tex"
+    try:
+        active = _active_tex(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return False
+    return bool(_INCLUDEGRAPHICS_RE.search(active))
+
+
 def _bib_entry_count(paper_dir: Path) -> int:
     try:
         text = (paper_dir / "main.bib").read_text(encoding="utf-8", errors="replace")
@@ -3062,6 +3078,17 @@ def review_readiness(
         _has_real_results(paper_dir),
         "Experiments contain a real table or figure",
         "found" if _has_real_results(paper_dir) else "add measured results",
+    )
+    intro_figure = _intro_has_figure(paper_dir)
+    check(
+        intro_figure,
+        "Introduction opens with an overview figure",
+        "found"
+        if intro_figure
+        else (
+            "add a Figure 1 teaser to the introduction - the figure skills in "
+            "the round prompt (default: teaser-figure-3) are how to draw it"
+        ),
     )
     bib = _bib_entry_count(paper_dir)
     check(
