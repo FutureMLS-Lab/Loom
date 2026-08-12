@@ -95,6 +95,7 @@ function show(view) {
 
 function openFleet() {
   S.slug = ''; S.data = null;
+  document.title = 'Research Factory';
   show('fleet');
   loadFleet();
   writeHash('');
@@ -238,6 +239,8 @@ async function loadTask() {
   if (S.slug !== slug) return;
   S.data = d;
   const state = d.state || {};
+  // The tab is findable among many by what it shows, not just the app name.
+  document.title = `${d.title || slug} · Research Factory`;
   if (state.role === 'paper') { show('paper'); renderPaper(d, state); }
   else { show('studio'); renderStudio(d, state); }
 }
@@ -1264,9 +1267,17 @@ document.querySelectorAll('[data-back]').forEach((btn) => {
     else openFleet();
   });
 });
-el('btn-refresh').addEventListener('click', () => {
-  loadFleet();
-  if (S.view !== 'fleet') loadTask();
+el('btn-refresh').addEventListener('click', async () => {
+  // Acknowledge the click; a button that does invisible work reads as broken.
+  const btn = el('btn-refresh');
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  try {
+    await Promise.all([loadFleet(), S.view !== 'fleet' ? loadTask() : null]);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Refresh';
+  }
 });
 
 el('studio-search-terms').addEventListener('input', () => {
@@ -1389,6 +1400,10 @@ el('btn-new-studio').addEventListener('click', () => {
   el('new-title').focus();
 });
 el('btn-studio-cancel').addEventListener('click', () => { el('studio-modal').hidden = true; });
+// Enter in the name field is the "just make it" gesture.
+el('new-title').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') { ev.preventDefault(); el('btn-studio-create').click(); }
+});
 el('new-direction').addEventListener('change', () => {
   el('new-custom-direction').hidden = el('new-direction').value !== 'custom';
 });
