@@ -147,7 +147,16 @@ function stageBadge(paper) {
 async function loadFleet() {
   let d;
   try { d = await api('/api/ar/overview'); }
-  catch (err) { toast(err.message, true); return; }
+  catch (err) {
+    toast(err.message, true);
+    // Never rendered yet: swap the "loading" placeholder for the truth,
+    // instead of leaving it promising progress forever.
+    if (!S.fleetFp && S.view === 'fleet') {
+      el('fleet-list').innerHTML =
+        `<div class="rf-empty">Could not reach Loom: ${esc(err.message)}</div>`;
+    }
+    return;
+  }
 
   const t = d.totals || {};
   const studios = Number(t.studios || 0);
@@ -180,7 +189,8 @@ async function loadFleet() {
   }
   host.innerHTML = groups.map((s) => {
     const rows = (s.children || []).map((p) => `
-      <div class="rf-paper-row" data-paper="${esc(p.slug)}" data-parent="${esc(s.slug)}">
+      <div class="rf-paper-row" data-paper="${esc(p.slug)}" data-parent="${esc(s.slug)}"
+           tabindex="0" role="button" aria-label="Open paper: ${esc(p.title)}">
         <div>
           <div class="rf-paper-row__title">${esc(p.title)}</div>
           <div class="rf-paper-row__stage">${esc(p.stage_label)}${p.best_rating ? ` · best ${p.best_rating}/10` : ''}</div>
@@ -190,7 +200,8 @@ async function loadFleet() {
         ${stageBadge(p)}
       </div>`).join('');
     const head = s.slug
-      ? `<div class="rf-studio__head" data-studio="${esc(s.slug)}">
+      ? `<div class="rf-studio__head" data-studio="${esc(s.slug)}"
+              tabindex="0" role="button" aria-label="Open studio: ${esc(s.title)}">
            <div>
              <div class="rf-studio__name">${esc(s.title)}</div>
              <div class="rf-studio__meta">${esc(s.direction)} · ${esc(s.venue)} · ${s.ideas} idea(s) · ${s.papers_found} paper(s) mined</div>
@@ -203,11 +214,16 @@ async function loadFleet() {
     </article>`;
   }).join('');
 
-  host.querySelectorAll('[data-studio]').forEach((node) => {
-    node.addEventListener('click', () => openStudio(node.dataset.studio));
-  });
-  host.querySelectorAll('[data-paper]').forEach((node) => {
-    node.addEventListener('click', () => openPaper(node.dataset.paper, node.dataset.parent));
+  // The rows are buttons in every sense but the tag, so Enter and Space
+  // must open them too - a keyboard can reach the whole fleet.
+  const open = (node) => (node.dataset.studio
+    ? openStudio(node.dataset.studio)
+    : openPaper(node.dataset.paper, node.dataset.parent));
+  host.querySelectorAll('[data-studio], [data-paper]').forEach((node) => {
+    node.addEventListener('click', () => open(node));
+    node.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(node); }
+    });
   });
 }
 

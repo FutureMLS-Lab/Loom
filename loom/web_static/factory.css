@@ -171,6 +171,10 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
   transition: border-color 0.14s, transform 0.14s, background 0.14s;
 }
 .rf-paper-row:hover { border-color: var(--rf-line-2); background: var(--rf-bg-1); transform: translateX(2px); }
+.rf-paper-row:focus-visible, .rf-studio__head:focus-visible {
+  outline: none; border-radius: 10px;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.25);
+}
 .rf-paper-row__title { font-size: 13px; font-weight: 560; }
 .rf-paper-row__stage { font-size: 11px; color: var(--rf-faint); }
 .rf-empty {
