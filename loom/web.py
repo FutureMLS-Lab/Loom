@@ -27,6 +27,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -109,6 +110,7 @@ from loom.tmux_util import (
     list_tmux_panes,
     list_tmux_sessions,
     open_pane_attach,
+    reap_orphaned_attaches,
     scroll_pane,
     send_pane_key,
     send_pane_literal,
@@ -5807,6 +5809,20 @@ def make_handler(
                     return
                 stream_id = terminal_streams.register(master)
                 self.close_connection = True
+                # A dropped SSH tunnel or a lid-closed laptop never sends FIN:
+                # without keepalive the half-open socket keeps this attach (a
+                # real tmux client, pinning the window size) alive for the
+                # kernel's full retransmission timeout - tens of minutes.
+                # Aggressive keepalive turns that into ~a minute, and a send
+                # timeout stops a flooding pane from blocking on a dead peer.
+                try:
+                    self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                    self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+                    self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+                    self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+                    self.connection.settimeout(60)
+                except OSError:
+                    pass
                 try:
                     self.send_response(200)
                     self.send_header("Content-Type", "application/octet-stream")
@@ -8345,6 +8361,11 @@ def serve(
     _resumed = monitor_manager.resume_enabled(_monitor_projects)
     if _resumed:
         print(f"  Resumed {_resumed} enabled run-monitor(s)", flush=True)
+    # A previous server killed hard leaves its web-terminal attaches behind as
+    # init's children; they hold every session "attached" (and small) forever.
+    _reaped = reap_orphaned_attaches()
+    if _reaped:
+        print(f"  Reaped {_reaped} orphaned web-terminal attach(es)", flush=True)
     sk = default_skills if default_skills.is_file() else bundled_skills_path().resolve()
     activity_watcher = AgentActivityWatcher(web_project_registry)
     activity_watcher.start()
