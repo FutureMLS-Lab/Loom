@@ -349,7 +349,7 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
 .rf-detail-actions { display: flex; gap: 8px; margin-top: 10px; }
 .rf-pill--idea { background: #eef2ff; color: #3730a3; border-color: #c7d2fe; }
 /* Landing on a card from the graph, so the jump is visibly connected to the
-   click that caused it. */
+   click that caused it. The ring fades in rather than snapping on. */
 .rf-idea.is-flash { box-shadow: 0 0 0 2px var(--rf-accent); }
 
 /* ---------- studio steps ---------- */
@@ -428,7 +428,7 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
   border: 1px solid var(--rf-line); border-radius: 12px;
   background: var(--rf-bg-1); padding: 14px 16px;
   box-shadow: var(--rf-shadow);
-  transition: border-color 0.14s;
+  transition: border-color 0.14s, box-shadow 0.3s ease;
 }
 .rf-idea:hover { border-color: var(--rf-line-2); }
 .rf-idea.is-picked { border-color: var(--rf-accent); box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.12); }
@@ -558,12 +558,22 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
 .rf-modal {
   position: fixed; inset: 0; z-index: 60; display: grid; place-items: center;
   background: rgba(31, 35, 40, 0.32); backdrop-filter: blur(3px); padding: 24px;
+  animation: rf-modal-in 0.16s ease-out;
 }
 .rf-modal__card {
   width: min(560px, 100%); max-height: 88vh; overflow-y: auto;
   background: var(--rf-bg-1); border: 1px solid var(--rf-line-2);
   border-radius: 18px; padding: 26px 28px;
   box-shadow: 0 24px 64px rgba(31, 35, 40, 0.22);
+  animation: rf-modal-card-in 0.16s ease-out;
+}
+@keyframes rf-modal-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes rf-modal-card-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rf-modal, .rf-modal__card { animation: none; }
 }
 .rf-modal__card--wide { width: min(880px, 100%); }
 .rf-modal__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

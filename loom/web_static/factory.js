@@ -25,6 +25,7 @@ const S = {
   searchDirty: false,        // protect edits from the six-second state poll
   studioFp: '',              // last-rendered studio data, so unchanged polls
   paperFp: '',               // ...skip the DOM rebuild that eats hover/scroll
+  fleetFp: '',               // same, for the fleet cards
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -168,6 +169,11 @@ async function loadFleet() {
     groups.push({ slug: '', title: 'Unattached papers', direction: '', children: d.orphans });
   }
   const host = el('fleet-list');
+  // Same rule as the studio lists: identical data would rebuild identical
+  // pixels, at the cost of hover state and text selection every six seconds.
+  const fp = JSON.stringify(groups);
+  if (fp === S.fleetFp) return;
+  S.fleetFp = fp;
   if (!groups.length) {
     host.innerHTML = '<div class="rf-empty">No studios yet. Start one to mine a direction and turn it into papers.</div>';
     return;
@@ -278,7 +284,11 @@ function renderSearchSettings(d, state) {
   }
 
   if (!S.searchDirty) {
-    el('studio-search-terms').value = (settings.terms || []).join('\n');
+    const terms = (settings.terms || []).join('\n');
+    const box = el('studio-search-terms');
+    // Guard the assignment: rewriting an identical value still moves the
+    // cursor in a focused textarea.
+    if (box.value !== terms) box.value = terms;
     const selected = new Set(settings.categories || []);
     categoryHost.querySelectorAll('input').forEach((input) => {
       input.checked = selected.has(input.value);
@@ -1424,10 +1434,16 @@ el('btn-studio-create').addEventListener('click', async () => {
       drawGraph(st.papers || [], st.ideas || []);
     }
   });
+  let resizeTimer = null;
   window.addEventListener('resize', () => {
-    if (S.view === 'studio' && S.data) {
-      const st = S.data.state || {};
-      drawGraph(st.papers || [], st.ideas || []);
-    }
+    // Redrawing on every resize event repaints the SVG dozens of times per
+    // drag; once, shortly after the drag settles, looks identical.
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (S.view === 'studio' && S.data) {
+        const st = S.data.state || {};
+        drawGraph(st.papers || [], st.ideas || []);
+      }
+    }, 150);
   });
 })();
