@@ -3,11 +3,11 @@
 `teaser-figure-4` was designed from:
 
 - the Happy Figure workflow recorded in
-  `zhizhou-note/HAPPY_FIGURE_REPRODUCTION_WORKFLOW.md`;
+  `docs/notes/zhizhou/HAPPY_FIGURE_REPRODUCTION_WORKFLOW.md`;
 - the `happy-figure-skill` project at
   `/data/shared/zhizhousha/workspace/loom-project/happy-figure-skill`;
 - the MCD Figure 1 candidate set under
-  `zhizhou-note/wacv3-mcd-figure1-happy-figure/`.
+  `docs/notes/zhizhou/wacv3-mcd-figure1-happy-figure/`.
 
 The upstream Happy Figure project declares the
 Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International

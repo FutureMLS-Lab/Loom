@@ -12,6 +12,11 @@ goal into a `PLAN.md`, manages git worktrees, shows the diff, and pings you when
 the agent needs input. There's no autonomous loop — **you drive the agent**;
 Loom just keeps the bookkeeping tidy.
 
+> **Shortest path:** open a coding agent on the target machine and say
+> *"follow [AGENT.md](AGENT.md) and deploy Loom"*. It installs everything,
+> starts the server, and walks you through getting a reachable URL
+> (SSH tunnel / Tailscale / Cloudflare Tunnel / your own domain).
+
 ## Install
 
 Loom needs **Python 3.10+**, **git**, **tmux**, and at least one agent CLI
@@ -56,6 +61,26 @@ loom web --project /path/to/your/project    # start the console
 every external tool Loom depends on and tells you how to fix what is missing.
 `loom web` refuses to start if tmux or git is absent, rather than handing you a
 broken terminal.
+
+## Companion apps
+
+The web console is self-contained, but Loom also has native clients — point
+them at your server's URL and auth token:
+
+- **[loom-desktop](https://github.com/FutureMLS-Lab/loom-desktop)** — macOS
+  dock and console: live task pills, inline chat, terminal and diffs without
+  keeping a browser tab open.
+- **[loom-app](https://github.com/FutureMLS-Lab/loom-app)** — Happy-inspired
+  mobile and web client, for checking on the fleet and replying to agents
+  from a phone.
+
+Both need the server reachable from the device — [AGENT.md](AGENT.md) step 5
+covers the options, from an SSH tunnel to a public domain.
+
+Deeper reading lives in [`docs/`](docs/): the codebase
+[architecture](docs/LOOM_CODEBASE_ARCHITECTURE.md), the
+[figure-skill pipeline](docs/FIGURE_SKILL_FLOW.md), and working notes under
+`docs/notes/`.
 
 ## The basic flow
 

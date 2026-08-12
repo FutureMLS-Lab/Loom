@@ -25,6 +25,7 @@ const S = {
   searchDirty: false,        // protect edits from the six-second state poll
   studioFp: '',              // last-rendered studio data, so unchanged polls
   paperFp: '',               // ...skip the DOM rebuild that eats hover/scroll
+  fleetFp: '',               // same, for the fleet cards
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -94,6 +95,7 @@ function show(view) {
 
 function openFleet() {
   S.slug = ''; S.data = null;
+  document.title = 'Research Factory';
   show('fleet');
   loadFleet();
   writeHash('');
@@ -146,7 +148,16 @@ function stageBadge(paper) {
 async function loadFleet() {
   let d;
   try { d = await api('/api/ar/overview'); }
-  catch (err) { toast(err.message, true); return; }
+  catch (err) {
+    toast(err.message, true);
+    // Never rendered yet: swap the "loading" placeholder for the truth,
+    // instead of leaving it promising progress forever.
+    if (!S.fleetFp && S.view === 'fleet') {
+      el('fleet-list').innerHTML =
+        `<div class="rf-empty">Could not reach Loom: ${esc(err.message)}</div>`;
+    }
+    return;
+  }
 
   const t = d.totals || {};
   const studios = Number(t.studios || 0);
@@ -168,13 +179,19 @@ async function loadFleet() {
     groups.push({ slug: '', title: 'Unattached papers', direction: '', children: d.orphans });
   }
   const host = el('fleet-list');
+  // Same rule as the studio lists: identical data would rebuild identical
+  // pixels, at the cost of hover state and text selection every six seconds.
+  const fp = JSON.stringify(groups);
+  if (fp === S.fleetFp) return;
+  S.fleetFp = fp;
   if (!groups.length) {
     host.innerHTML = '<div class="rf-empty">No studios yet. Start one to mine a direction and turn it into papers.</div>';
     return;
   }
   host.innerHTML = groups.map((s) => {
     const rows = (s.children || []).map((p) => `
-      <div class="rf-paper-row" data-paper="${esc(p.slug)}" data-parent="${esc(s.slug)}">
+      <div class="rf-paper-row" data-paper="${esc(p.slug)}" data-parent="${esc(s.slug)}"
+           tabindex="0" role="button" aria-label="Open paper: ${esc(p.title)}">
         <div>
           <div class="rf-paper-row__title">${esc(p.title)}</div>
           <div class="rf-paper-row__stage">${esc(p.stage_label)}${p.best_rating ? ` · best ${p.best_rating}/10` : ''}</div>
@@ -184,7 +201,8 @@ async function loadFleet() {
         ${stageBadge(p)}
       </div>`).join('');
     const head = s.slug
-      ? `<div class="rf-studio__head" data-studio="${esc(s.slug)}">
+      ? `<div class="rf-studio__head" data-studio="${esc(s.slug)}"
+              tabindex="0" role="button" aria-label="Open studio: ${esc(s.title)}">
            <div>
              <div class="rf-studio__name">${esc(s.title)}</div>
              <div class="rf-studio__meta">${esc(s.direction)} · ${esc(s.venue)} · ${s.ideas} idea(s) · ${s.papers_found} paper(s) mined</div>
@@ -197,11 +215,16 @@ async function loadFleet() {
     </article>`;
   }).join('');
 
-  host.querySelectorAll('[data-studio]').forEach((node) => {
-    node.addEventListener('click', () => openStudio(node.dataset.studio));
-  });
-  host.querySelectorAll('[data-paper]').forEach((node) => {
-    node.addEventListener('click', () => openPaper(node.dataset.paper, node.dataset.parent));
+  // The rows are buttons in every sense but the tag, so Enter and Space
+  // must open them too - a keyboard can reach the whole fleet.
+  const open = (node) => (node.dataset.studio
+    ? openStudio(node.dataset.studio)
+    : openPaper(node.dataset.paper, node.dataset.parent));
+  host.querySelectorAll('[data-studio], [data-paper]').forEach((node) => {
+    node.addEventListener('click', () => open(node));
+    node.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(node); }
+    });
   });
 }
 
@@ -216,6 +239,8 @@ async function loadTask() {
   if (S.slug !== slug) return;
   S.data = d;
   const state = d.state || {};
+  // The tab is findable among many by what it shows, not just the app name.
+  document.title = `${d.title || slug} · Research Factory`;
   if (state.role === 'paper') { show('paper'); renderPaper(d, state); }
   else { show('studio'); renderStudio(d, state); }
 }
@@ -278,7 +303,11 @@ function renderSearchSettings(d, state) {
   }
 
   if (!S.searchDirty) {
-    el('studio-search-terms').value = (settings.terms || []).join('\n');
+    const terms = (settings.terms || []).join('\n');
+    const box = el('studio-search-terms');
+    // Guard the assignment: rewriting an identical value still moves the
+    // cursor in a focused textarea.
+    if (box.value !== terms) box.value = terms;
     const selected = new Set(settings.categories || []);
     categoryHost.querySelectorAll('input').forEach((input) => {
       input.checked = selected.has(input.value);
@@ -643,8 +672,11 @@ function drawGraph(papers, ideas) {
   // Label room decides the columns, rather than the columns being fixed and
   // the labels running off the edge: paper titles get a slice on the left,
   // ideas get more on the right because their titles are whole sentences.
+  // A phone gets a narrower gap: at 390px the desktop minimum would leave
+  // idea labels three characters wide.
+  const minGap = width < 640 ? 150 : 200;
   const leftX = Math.max(150, Math.min(230, Math.round(width * 0.22)));
-  const rightX = Math.max(leftX + 200, width - Math.max(230, Math.round(width * 0.3)));
+  const rightX = Math.max(leftX + minGap, width - Math.max(230, Math.round(width * 0.3)));
   const CHAR = 6.1; // average px per character of the 11px label face
   const leftChars = Math.max(12, Math.floor((leftX - 18) / CHAR));
   const rightChars = Math.max(14, Math.floor((width - rightX - 22) / CHAR));
@@ -977,7 +1009,8 @@ async function openSkills() {
       const head = s.role !== role ? `<li class="rf-skills__role">${esc(s.role)}</li>` : '';
       role = s.role;
       return `${head}<li><button type="button" data-skill="${esc(s.id)}">
-        <b>${esc(s.name)}</b><small>${esc(s.description)}</small></button></li>`;
+        <b>${esc(s.name)}</b><small>${esc(s.description)}</small>
+        ${s.injection ? `<small class="rf-skills__how">${esc(s.injection)}</small>` : ''}</button></li>`;
     }).join('') || '<li class="rf-empty">No skills installed.</li>';
     list.querySelectorAll('[data-skill]').forEach((b) => {
       b.onclick = async () => {
@@ -1087,12 +1120,18 @@ function renderPaper(d, state) {
   }).join('');
 
   const meta = [];
-  if (d.best_rating) meta.push(`best rating ${d.best_rating}/10`);
-  if (Number(state.cost_usd) > 0) meta.push(`$${Number(state.cost_usd).toFixed(2)} spent`);
-  if (state.stop_reason) meta.push(`stopped early: ${state.stop_reason}`);
-  if (state.pdf_error) meta.push(state.pdf_error);
-  if (d.paper_dir) meta.push(d.paper_dir);
-  el('paper-meta').textContent = meta.join(' · ');
+  if (d.best_rating) meta.push(esc(`best rating ${d.best_rating}/10`));
+  if (Number(state.cost_usd) > 0) meta.push(esc(`$${Number(state.cost_usd).toFixed(2)} spent`));
+  if (state.stop_reason) meta.push(esc(`stopped early: ${state.stop_reason}`));
+  if (state.pdf_error) meta.push(esc(state.pdf_error));
+  let metaHtml = meta.join(' · ');
+  // The path is a desktop affordance (one click selects it for a shell);
+  // on a phone it is three lines of grey noise, so CSS hides it - with its
+  // separator, which is why it lives inside the span.
+  if (d.paper_dir) {
+    metaHtml += `<span class="rf-paper-meta__path">${metaHtml ? ' · ' : ''}${esc(d.paper_dir)}</span>`;
+  }
+  el('paper-meta').innerHTML = metaHtml;
 
   // gate
   const atDraft = state.stage === 'await_draft_review';
@@ -1113,7 +1152,9 @@ function renderPaper(d, state) {
   if (loop.last_action) bits.push(loop.last_action);
   if (loop.last_error) bits.push(`error: ${loop.last_error}`);
   if (d.plateaued) bits.push('score has stalled — the author was told to change tack');
-  el('loop-status').textContent = bits.join(' · ');
+  const loopStatus = el('loop-status');
+  loopStatus.textContent = bits.join(' · ');
+  loopStatus.classList.toggle('is-live', !!loop.running);
   renderLog('review-log', (d.logs || {}).review, state.review_status === 'running' || loop.running);
 
   // Rebuilding the rounds resets their summaries' scroll on every poll, so
@@ -1226,9 +1267,17 @@ document.querySelectorAll('[data-back]').forEach((btn) => {
     else openFleet();
   });
 });
-el('btn-refresh').addEventListener('click', () => {
-  loadFleet();
-  if (S.view !== 'fleet') loadTask();
+el('btn-refresh').addEventListener('click', async () => {
+  // Acknowledge the click; a button that does invisible work reads as broken.
+  const btn = el('btn-refresh');
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  try {
+    await Promise.all([loadFleet(), S.view !== 'fleet' ? loadTask() : null]);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Refresh';
+  }
 });
 
 el('studio-search-terms').addEventListener('input', () => {
@@ -1351,6 +1400,10 @@ el('btn-new-studio').addEventListener('click', () => {
   el('new-title').focus();
 });
 el('btn-studio-cancel').addEventListener('click', () => { el('studio-modal').hidden = true; });
+// Enter in the name field is the "just make it" gesture.
+el('new-title').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') { ev.preventDefault(); el('btn-studio-create').click(); }
+});
 el('new-direction').addEventListener('change', () => {
   el('new-custom-direction').hidden = el('new-direction').value !== 'custom';
 });
@@ -1423,10 +1476,16 @@ el('btn-studio-create').addEventListener('click', async () => {
       drawGraph(st.papers || [], st.ideas || []);
     }
   });
+  let resizeTimer = null;
   window.addEventListener('resize', () => {
-    if (S.view === 'studio' && S.data) {
-      const st = S.data.state || {};
-      drawGraph(st.papers || [], st.ideas || []);
-    }
+    // Redrawing on every resize event repaints the SVG dozens of times per
+    // drag; once, shortly after the drag settles, looks identical.
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (S.view === 'studio' && S.data) {
+        const st = S.data.state || {};
+        drawGraph(st.papers || [], st.ideas || []);
+      }
+    }, 150);
   });
 })();

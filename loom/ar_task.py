@@ -2889,6 +2889,29 @@ def _has_real_results(paper_dir: Path) -> bool:
     return False
 
 
+def _intro_has_figure(paper_dir: Path) -> bool:
+    """A page-one overview figure exists.
+
+    Every figure skill exists so the paper opens with a real Figure 1; a
+    submission whose figures all hide in the experiments reads as unfinished
+    at a venue. Authors legitimately place the teaser either inside the
+    introduction or directly in ``main.tex`` under the title and abstract
+    (no venue template ships an ``\\includegraphics`` of its own, so a match
+    there is always the paper's). Comments are stripped first, so a
+    commented-out ``\\includegraphics`` does not pass.
+    """
+    for name in ("sections/01_introduction.tex", "main.tex"):
+        try:
+            active = _active_tex(
+                (paper_dir / name).read_text(encoding="utf-8", errors="replace")
+            )
+        except OSError:
+            continue
+        if _INCLUDEGRAPHICS_RE.search(active):
+            return True
+    return False
+
+
 def _bib_entry_count(paper_dir: Path) -> int:
     try:
         text = (paper_dir / "main.bib").read_text(encoding="utf-8", errors="replace")
@@ -3062,6 +3085,17 @@ def review_readiness(
         _has_real_results(paper_dir),
         "Experiments contain a real table or figure",
         "found" if _has_real_results(paper_dir) else "add measured results",
+    )
+    intro_figure = _intro_has_figure(paper_dir)
+    check(
+        intro_figure,
+        "Paper opens with an overview figure",
+        "found"
+        if intro_figure
+        else (
+            "add a Figure 1 teaser to the introduction - the figure skills in "
+            "the round prompt (default: teaser-figure-3) are how to draw it"
+        ),
     )
     bib = _bib_entry_count(paper_dir)
     check(
@@ -3422,13 +3456,30 @@ def read_text_file(path: Path, limit: int = MAX_FILE_BYTES) -> str:
 
 
 ROLE_SKILLS = (
-    (SKILL_STUDIO, "Studio", "Surveys the field and proposes grounded ideas."),
-    (SKILL_AUTHOR, "Author", "Writes the paper and runs the experiments behind it."),
-    (SKILL_REVIEWER, "Reviewer", "Reviews each round the way a venue would."),
+    (
+        SKILL_STUDIO,
+        "Studio",
+        "Surveys the field and proposes grounded ideas.",
+        "Injected in full into every Studio job (mine, ideas, ground).",
+    ),
+    (
+        SKILL_AUTHOR,
+        "Author",
+        "Writes the paper and runs the experiments behind it.",
+        "Injected in full into every author round prompt.",
+    ),
+    (
+        SKILL_REVIEWER,
+        "Reviewer",
+        "Reviews each round the way a venue would.",
+        "Injected in full into every reviewer run.",
+    ),
     (
         SKILL_REBUTTAL,
         "Rebuttal",
         "Drafts acceptance-oriented, evidence-bounded responses to reviewers.",
+        "Named in every author round prompt; the author reads it before "
+        "answering the reviewers.",
     ),
 )
 
@@ -3438,9 +3489,11 @@ def skill_catalog() -> list[dict[str, str]]:
 
     An agent's behaviour is mostly these files, and they were invisible from
     the outside: you could see what an author did but not what it was told.
+    Each entry says how it reaches the agent, so nobody re-selects a skill
+    that the pipeline already delivers on its own.
     """
     out: list[dict[str, str]] = []
-    for filename, role, summary in ROLE_SKILLS:
+    for filename, role, summary, injection in ROLE_SKILLS:
         path = ar_skills_dir() / filename
         if not path.is_file():
             continue
@@ -3450,13 +3503,25 @@ def skill_catalog() -> list[dict[str, str]]:
         out.append({
             "id": filename, "name": display_name, "role": role,
             "description": summary, "path": str(path),
+            "injection": injection,
         })
     for skill in figure_skills():
         doc = Path(skill["path"])
+        name = skill["name"]
+        injection = (
+            "Listed as a menu in every author round; the author reads the "
+            "one it needs."
+        )
+        if name == DEFAULT_TEASER_SKILL:
+            injection = (
+                "The default teaser: every author round is told to use this "
+                "proactively for page-one figures."
+            )
         out.append({
             "id": f"{FIGURE_SKILLS_SUBDIR}/{doc.parent.name}/SKILL.md",
-            "name": skill["name"], "role": "Figures",
+            "name": name, "role": "Figures",
             "description": skill["description"], "path": skill["path"],
+            "injection": injection,
         })
     return out
 
@@ -3621,6 +3686,9 @@ The idea this paper must establish:
 Run the experiments first, then fold the real numbers into the paper, then
 rebuild the PDF. Never write a number an experiment did not produce.
 
+When you answer the reviewer point by point, read and follow the rebuttal
+methodology first: {ar_skills_dir() / SKILL_REBUTTAL}
+
 This is a hard review-readiness gate: do not write the completion note until
 the paper is a complete, ready-to-submit artifact. Every \\ARTODO, \\ARnum,
 \\ARfig, TODO/TBD/FIXME/XXX, unresolved ??, missing figure, undefined
@@ -3704,6 +3772,29 @@ failure above is fixed, write a NEW completion note to:
 Writing that file is the final action. Loom will rerun the deterministic gate;
 the reviewer panel runs only after it passes.
 """
+
+
+def author_continue_prompt(task_dir: Path, round_n: int) -> str:
+    """Wake an author that ended its turn without writing the round's note.
+
+    Short on purpose: the agent still has the full round prompt in its own
+    context, so this only has to say "you are not done" and repeat the one
+    fact it must not lose - where the completion note goes.
+    """
+    stage = "the initial DRAFT" if round_n == 0 else f"ROUND {round_n}"
+    note = author_note_path_for(task_dir, round_n)
+    return f"""You stopped without finishing {stage} of this Loom AR paper.
+
+Continue the same round. Check any experiments you left running - they may
+have finished while you were stopped - fold the real results into the
+manuscript, rebuild the PDF, and complete anything still open from the round
+instructions.
+
+When the round is genuinely done, write your summary to:
+{note}
+
+That file is how Loom knows the round is over; without it the loop waits
+forever. Make it the last thing you do, then stop."""
 
 
 def author_note_path_for(task_dir: Path, n: int) -> Path:

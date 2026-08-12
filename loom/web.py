@@ -27,6 +27,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -109,6 +110,7 @@ from loom.tmux_util import (
     list_tmux_panes,
     list_tmux_sessions,
     open_pane_attach,
+    reap_orphaned_attaches,
     scroll_pane,
     send_pane_key,
     send_pane_literal,
@@ -310,7 +312,7 @@ def _available_skill_options(
     project_root: Path | None = None,  # kept for call-site compatibility; unused
     *,
     limit: int = 500,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """Return selectable skill markdown files for the web UI.
 
     Scope is intentionally limited to the bundled ``loom/skills``
@@ -320,7 +322,7 @@ def _available_skill_options(
     """
     del project_root  # skills come only from the skills directory
     seen: set[Path] = set()
-    options: list[dict[str, str]] = []
+    options: list[dict[str, Any]] = []
     skills_root = bundled_skills_path().parent
 
     def add(path: Path) -> None:
@@ -341,7 +343,12 @@ def _available_skill_options(
             label = str(p.relative_to(skills_root))
         except ValueError:
             pass
-        options.append({"label": label, "path": str(p)})
+        entry: dict[str, Any] = {"label": label, "path": str(p)}
+        # The AR pipeline injects everything under skills/ar/ into its own
+        # prompts; selecting one here too would send it twice.
+        if label.startswith("ar/") or label.startswith("ar\\"):
+            entry["auto"] = True
+        options.append(entry)
 
     add(default_skills)
     if skills_root.is_dir():
@@ -3774,6 +3781,19 @@ class TaskMonitorManager:
 # --- AR paper loop ----------------------------------------------------------
 
 _AR_POLL_SECONDS = 5.0
+# An author that ends its turn without writing the round note would park the
+# loop forever - the note is the only end-of-round signal. Watch the pane
+# while a round is open: idle this many consecutive polls (~3 min) means the
+# agent really stopped, not that its working indicator flickered.
+_AR_STALL_IDLE_POLLS = 36
+# Between continue-nudges. Long enough that an author babysitting a slow
+# experiment gets re-woken at a sane pace instead of being spammed.
+_AR_NUDGE_COOLDOWN = 600.0
+# Consecutive fruitless nudges before we stop burning turns and tell the
+# human instead. A nudge after which the author visibly worked resets the
+# count: an author babysitting a half-day experiment answers every nudge
+# without finishing the round, and must not exhaust its budget for it.
+_AR_MAX_NUDGES = 12
 
 
 def _ar_run_async(fn, *args: Any) -> None:
@@ -4252,6 +4272,9 @@ class _ARLoopDriver:
         self.slug = slug
         self.last_error = ""
         self.last_action = ""
+        self._author_idle_polls = 0
+        self._author_worked = False
+        self._last_nudge_ts = 0.0
         self._stop = threading.Event()
         self.thread = threading.Thread(
             target=self._loop, name=f"loom-ar-{slug}", daemon=True
@@ -4311,6 +4334,85 @@ class _ARLoopDriver:
             return False, "starting the agent pane…"
         self.manager.wait_until_ready(target)
         return send_pane_text(target, prompt, submit=True)
+
+    def _watch_author(self, state: dict[str, Any], n: int) -> None:
+        """Keep an open round moving when the author stops without its note.
+
+        Two failure shapes, two answers: a dead pane gets its prompt stamps
+        cleared so the normal tick starts a fresh pane and resends the full
+        round prompt (a new agent has none of the old context); a live pane
+        whose agent ended its turn gets a short continue-nudge, since its own
+        context still holds the round instructions.
+        """
+        meta = read_meta(self.project_root, self.slug)
+        target = ((getattr(meta, "tmux_interview_target", "") or "") if meta else "").strip()
+        if target and not self.manager.pane_alive(target):
+            update_meta(self.project_root, self.slug, tmux_interview_target="")
+            rec = ar.ensure_round(state, n)
+            if n == 0:
+                state["draft_prompt_sent_at"] = ""
+            readiness = rec.get("readiness")
+            if isinstance(readiness, dict):
+                readiness["repair_prompt_sent_at"] = ""
+            rec["prompt_sent_at"] = ""
+            self._save(state)
+            self._author_idle_polls = 0
+            self._note(f"round {n}: the agent pane died - restarting it with a fresh prompt")
+            return
+        if not target:
+            return  # no pane yet; the paste path owns starting one
+        ok, text = capture_pane(target, _MONITOR_CAPTURE_LINES)
+        if not ok:
+            return
+        if _AGENT_WORKING_RE.search(text or ""):
+            self._author_idle_polls = 0
+            self._author_worked = True
+            return
+        self._author_idle_polls += 1
+        if self._author_idle_polls < _AR_STALL_IDLE_POLLS:
+            return
+        if time.time() - self._last_nudge_ts < _AR_NUDGE_COOLDOWN:
+            return
+        rec = ar.ensure_round(state, n)
+        nudges = int(rec.get("nudges") or 0)
+        if self._author_worked and nudges:
+            # The last nudge produced real work; only consecutive fruitless
+            # nudges count toward the cap.
+            nudges = 0
+            rec.pop("stall_reported", None)
+        if nudges >= _AR_MAX_NUDGES:
+            if not rec.get("stall_reported"):
+                rec["stall_reported"] = True
+                self._save(state)
+                self._note(
+                    f"round {n}: still no completion note after "
+                    f"{nudges} nudges - a human needs to look"
+                )
+                self._emit(
+                    "ar-author-stalled",
+                    (
+                        f"Loom AR task {self.slug} has an author that keeps "
+                        f"stopping without finishing round {n}. It was nudged "
+                        f"{nudges} times; open its pane and see what it is stuck on."
+                    ),
+                    {"event": "ar-author-stalled", "round": n, "nudges": nudges},
+                )
+            return
+        prompt = ar.author_continue_prompt(
+            task_root(self.project_root, self.slug), n
+        )
+        sent, err = send_pane_text(target, prompt, submit=True)
+        if not sent:
+            self.last_error = err
+            return
+        self._last_nudge_ts = time.time()
+        self._author_worked = False
+        rec["nudges"] = nudges + 1
+        self._save(state)
+        self._note(
+            f"round {n}: the agent stopped without its note - "
+            f"nudged it to continue ({nudges + 1}/{_AR_MAX_NUDGES})"
+        )
 
     def _emit(self, event: str, instruction: str, data: dict[str, Any]) -> None:
         try:
@@ -4373,6 +4475,7 @@ class _ARLoopDriver:
             return
 
         if state.get("draft_prompt_sent_at"):
+            self._watch_author(state, 0)
             return
         paper_dir = self._paper_dir()
         if not (paper_dir / "main.tex").is_file():
@@ -4417,6 +4520,8 @@ class _ARLoopDriver:
                 self._close_round(state, n, note)
             elif not readiness.get("repair_prompt_sent_at"):
                 self._send_readiness_prompt(state, n)
+            else:
+                self._watch_author(state, n)
             return
 
         # The author's note is the authoritative end-of-round signal, so check
@@ -4429,6 +4534,8 @@ class _ARLoopDriver:
 
         if not rec.get("prompt_sent_at"):
             self._send_round_prompt(state, n)
+            return
+        self._watch_author(state, n)
 
     def _start_round(self, state: dict[str, Any], n: int) -> None:
         if n > ar.max_rounds(state):
@@ -4487,6 +4594,7 @@ class _ARLoopDriver:
             self.last_error = err
             return
         self.last_error = ""
+        self._author_idle_polls = 0
         state = self._state()
         rec = ar.ensure_round(state, n)
         rec["prompt_sent_at"] = _iso_now()
@@ -4515,6 +4623,7 @@ class _ARLoopDriver:
             self.last_error = err
             return
         self.last_error = ""
+        self._author_idle_polls = 0
         state = self._state()
         rec = ar.ensure_round(state, n)
         latest = dict(rec.get("readiness") or {})
@@ -5711,6 +5820,20 @@ def make_handler(
                     return
                 stream_id = terminal_streams.register(master)
                 self.close_connection = True
+                # A dropped SSH tunnel or a lid-closed laptop never sends FIN:
+                # without keepalive the half-open socket keeps this attach (a
+                # real tmux client, pinning the window size) alive for the
+                # kernel's full retransmission timeout - tens of minutes.
+                # Aggressive keepalive turns that into ~a minute, and a send
+                # timeout stops a flooding pane from blocking on a dead peer.
+                try:
+                    self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                    self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+                    self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+                    self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+                    self.connection.settimeout(60)
+                except OSError:
+                    pass
                 try:
                     self.send_response(200)
                     self.send_header("Content-Type", "application/octet-stream")
@@ -8249,6 +8372,11 @@ def serve(
     _resumed = monitor_manager.resume_enabled(_monitor_projects)
     if _resumed:
         print(f"  Resumed {_resumed} enabled run-monitor(s)", flush=True)
+    # A previous server killed hard leaves its web-terminal attaches behind as
+    # init's children; they hold every session "attached" (and small) forever.
+    _reaped = reap_orphaned_attaches()
+    if _reaped:
+        print(f"  Reaped {_reaped} orphaned web-terminal attach(es)", flush=True)
     sk = default_skills if default_skills.is_file() else bundled_skills_path().resolve()
     activity_watcher = AgentActivityWatcher(web_project_registry)
     activity_watcher.start()

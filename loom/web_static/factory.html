@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Research Factory</title>
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
-  <link rel="stylesheet" href="/static/factory.css?v=20260810-1" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260812-5" />
 </head>
 <body>
 
@@ -15,11 +15,11 @@
     <span class="rf-brand__name">Research Factory</span>
   </a>
   <nav class="rf-top__nav">
-    <span class="rf-stat" id="stat-studios"><b>—</b> studios</span>
-    <span class="rf-stat" id="stat-papers"><b>—</b> papers</span>
+    <span class="rf-stat rf-stat--info" id="stat-studios"><b>—</b> studios</span>
+    <span class="rf-stat rf-stat--info" id="stat-papers"><b>—</b> papers</span>
     <span class="rf-stat rf-stat--live" id="stat-running" hidden><b>—</b> running</span>
     <span class="rf-stat rf-stat--alert" id="stat-waiting" hidden><b>—</b> waiting on you</span>
-    <span class="rf-stat" id="stat-cost"><b>—</b> spent</span>
+    <span class="rf-stat rf-stat--info" id="stat-cost"><b>—</b> spent</span>
     <button type="button" class="rf-btn rf-btn--ghost" id="btn-skills">Skills</button>
     <button type="button" class="rf-btn rf-btn--ghost" id="btn-refresh">Refresh</button>
     <a class="rf-btn rf-btn--ghost" href="/">Loom</a>
@@ -48,7 +48,9 @@
       <h2>Studios</h2>
       <span class="rf-hint">A studio owns a direction and the papers spawned from it.</span>
     </div>
-    <div class="rf-fleet" id="fleet-list"></div>
+    <div class="rf-fleet" id="fleet-list">
+      <div class="rf-empty">Loading the fleet…</div>
+    </div>
   </section>
 </main>
 
@@ -309,8 +311,9 @@
       <button type="button" class="rf-x" id="btn-skills-close" aria-label="Close">×</button>
     </div>
     <p class="rf-hint">
-      An agent's behaviour is mostly these instructions. The author is handed the
-      figure skills by name and reads the one it needs.
+      An agent's behaviour is mostly these instructions, and every one of them
+      reaches its agent automatically — nothing here needs enabling. Each entry
+      says how it is delivered.
     </p>
     <div class="rf-skills">
       <ul class="rf-skills__list" id="skills-list"></ul>
@@ -321,6 +324,6 @@
 
 <div class="rf-toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/factory.js?v=20260810-1"></script>
+<script src="/static/factory.js?v=20260812-5"></script>
 </body>
 </html>

@@ -1804,8 +1804,12 @@ function renderTaskSkillsPicker(meta = STATE.currentMeta || {}) {
       if (!path) continue;
       const option = document.createElement('option');
       option.value = path;
-      option.textContent = opt.label || path;
-      option.title = path;
+      // The AR pipeline already injects these into its own prompts; say so
+      // here, where someone would otherwise select them a second time.
+      option.textContent = (opt.label || path) + (opt.auto ? '  ·  auto in AR rounds' : '');
+      option.title = opt.auto
+        ? `${path} — the AR loop injects this into its prompts by itself; selecting it here would send it twice`
+        : path;
       sel.appendChild(option);
     }
     sel.dataset.options = wanted;
@@ -4653,6 +4657,7 @@ const AR = {
   selected: new Set(),
   timer: null,
   busy: false,
+  studioFp: '',   // last-rendered lists, so unchanged polls skip the rebuild
 };
 
 const AR_STAGES = [
@@ -4689,6 +4694,7 @@ async function initArLab(meta) {
   const slug = STATE.slug;
   AR.slug = slug;
   AR.selected = new Set();
+  AR.studioFp = '';
   await loadArCatalog();
   await refreshAr();
   if (AR.timer) clearInterval(AR.timer);
@@ -4780,6 +4786,23 @@ function renderArStudio(d, state) {
     else if (papers.length) pStatus.textContent = `${papers.length} paper(s), newest first.`;
     else pStatus.textContent = 'Nothing mined yet.';
   }
+  const ideas = Array.isArray(state.ideas) ? state.ideas : [];
+  const iStatus = $('#ar-ideas-status');
+  if (iStatus) {
+    if (state.ideas_status === 'running') iStatus.textContent = 'Generating ideas — this takes a few minutes…';
+    else if (state.ideas_error) iStatus.textContent = state.ideas_error;
+    else if (ideas.length) iStatus.textContent = `${ideas.length} idea(s). Select the ones worth a paper, then create tasks.`;
+    else iStatus.textContent = 'No ideas yet. Generate them here, or paste a JSON array from the agent pane.';
+  }
+  // Statuses and logs update every poll; the lists rebuild only when their
+  // data changed, so reading or ticking boxes survives the five-second poll.
+  const fp = JSON.stringify([papers, ideas]);
+  if (fp === AR.studioFp) return;
+  AR.studioFp = fp;
+  renderArStudioLists(papers, ideas);
+}
+
+function renderArStudioLists(papers, ideas) {
   const list = $('#ar-paper-list');
   if (list) {
     list.innerHTML = papers.map((p) => {
@@ -4794,14 +4817,6 @@ function renderArStudio(d, state) {
     }).join('');
   }
 
-  const ideas = Array.isArray(state.ideas) ? state.ideas : [];
-  const iStatus = $('#ar-ideas-status');
-  if (iStatus) {
-    if (state.ideas_status === 'running') iStatus.textContent = 'Generating ideas — this takes a few minutes…';
-    else if (state.ideas_error) iStatus.textContent = state.ideas_error;
-    else if (ideas.length) iStatus.textContent = `${ideas.length} idea(s). Select the ones worth a paper, then create tasks.`;
-    else iStatus.textContent = 'No ideas yet. Generate them here, or paste a JSON array from the agent pane.';
-  }
   const host = $('#ar-idea-list');
   if (!host) return;
   host.innerHTML = ideas.map((idea) => {
@@ -4999,6 +5014,11 @@ function renderArRounds(d, state) {
   const host = $('#ar-round-list');
   if (!host) return;
   const rounds = Array.isArray(state.rounds) ? state.rounds : [];
+  // The round summaries scroll; rebuilding them on an unchanged poll resets
+  // that scroll (and any text selection) every five seconds.
+  const fp = JSON.stringify(rounds);
+  if (fp === host.dataset.fp) return;
+  host.dataset.fp = fp;
   if (!rounds.length) {
     host.innerHTML = '<li class="ar-round ar-round--empty">No rounds yet.</li>';
     return;
@@ -5246,8 +5266,18 @@ function renderClaudeInfo(meta, claude, statuses) {
     pillEl.dataset.state = alive ? 'alive' : 'down';
   }
   if (!sessHost) return;
-  sessHost.innerHTML = '';
   const sessions = Array.isArray(claude.sessions) ? claude.sessions : [];
+  const running = claude.agent_running === true;
+  // The 12s poll lands here: rebuilding an unchanged picker snaps the
+  // dropdown shut under the user's pointer and resets their selection.
+  const fp = JSON.stringify([
+    STATE.currentMeta?.agent, running, claude.pane_command || '',
+    sessions.map((s) => [s.id, s.mtime, s.size, s.path ? 1 : 0]),
+  ]);
+  if (sessHost.dataset.fp === fp) return;
+  sessHost.dataset.fp = fp;
+  const prevPick = sessHost.querySelector('select.session-select')?.value || '';
+  sessHost.innerHTML = '';
   if (!sessions.length) {
     const span = document.createElement('span');
     span.className = 'claude-info__hint';
@@ -5258,7 +5288,6 @@ function renderClaudeInfo(meta, claude, statuses) {
   }
   // Dropdown of sessions (newest first) + a single Resume button on the right,
   // mirroring the worktree picker. Resuming acts on the selected session.
-  const running = claude.agent_running === true;
   const row = document.createElement('div');
   row.className = 'session-picker';
 
@@ -5277,6 +5306,8 @@ function renderClaudeInfo(meta, claude, statuses) {
     if (!s.id) opt.disabled = true;
     sel.appendChild(opt);
   });
+  // A rebuild forced by a state change keeps the user's pick when possible.
+  if (prevPick && sessions.some((s) => s.id === prevPick)) sel.value = prevPick;
   row.appendChild(sel);
 
   const resume = document.createElement('button');

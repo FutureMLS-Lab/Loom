@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import os
+import signal
 import subprocess
 import tempfile
 import time
@@ -296,6 +297,10 @@ def open_pane_attach(target: str, cols: int = 80, rows: int = 24):
         cols, rows = 80, 24
     env = tmux_subprocess_env()
     env["TERM"] = "xterm-256color"
+    # Mark the attach as ours: if the web server dies without cleaning up,
+    # these processes reparent to init and would hold the session (and its
+    # window size) forever. The marker lets the next startup reap them.
+    env["LOOM_TMUX_ATTACH"] = "1"
     _ensure_tmux_sync_output(env)
     # If the session doesn't exist, don't spawn a doomed `tmux attach` - it would
     # just print "can't find session: ..." into the stream. Signal "not alive" so
@@ -498,3 +503,38 @@ def send_pane_text(target: str, text: str, submit: bool = False) -> tuple[bool, 
                 Path(tmp_path).unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def reap_orphaned_attaches() -> int:
+    """Kill web-terminal ``tmux attach`` processes orphaned by a dead server.
+
+    Every attach the web terminal spawns carries ``LOOM_TMUX_ATTACH=1`` in its
+    environment. While the server lives they are its children and are killed
+    when their stream closes; if the server is killed hard they reparent to
+    init and sit on the session forever - keeping it "attached" and, under
+    ``window-size smallest``, pinning every viewer to the dead client's size.
+    Called once at startup, before the new server has spawned any attaches of
+    its own, so anything marked AND reparented (ppid 1) is safely ours to kill.
+    """
+    reaped = 0
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():  # non-Linux: nothing we can safely do
+        return 0
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes().split(b"\0")
+            if not (cmdline and cmdline[0] == b"tmux" and b"attach-session" in cmdline):
+                continue
+            if b"LOOM_TMUX_ATTACH=1" not in (entry / "environ").read_bytes():
+                continue
+            stat_fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+            ppid = int(stat_fields[1])  # field 4 of /proc/pid/stat
+            if ppid != 1:
+                continue  # still owned by a living server
+            os.kill(int(entry.name), signal.SIGTERM)
+            reaped += 1
+        except (OSError, ValueError, IndexError):
+            continue
+    return reaped
