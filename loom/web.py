@@ -4480,6 +4480,7 @@ def _rebuttal_start_delivery_agent(
     registry: "ClaudeRegistry",
     *,
     rerun: bool = False,
+    feedback: str = "",
 ) -> dict[str, Any]:
     state = rebuttal.read_state(project_id)
     if not state:
@@ -4503,16 +4504,19 @@ def _rebuttal_start_delivery_agent(
         )
     ):
         return {"ok": True, "running": True, "target": current_target}
-    feedback = ""
+    feedback_parts = [feedback.strip()] if feedback.strip() else []
     if rerun:
         validation = (
             current.get("validation")
             if isinstance(current.get("validation"), dict)
             else {}
         )
-        feedback = "\n".join(
+        errors_block = "\n".join(
             f"- {error}" for error in (validation.get("errors") or [])
         )
+        if errors_block:
+            feedback_parts.append(errors_block)
+    feedback = "\n\n".join(feedback_parts)
     try:
         prepared = delivery.prepare_delivery_attempt(
             project_id,
@@ -7778,6 +7782,7 @@ def make_handler(
                             model,
                             claude_registry,
                             rerun=action == "rerun-delivery",
+                            feedback=str(body.get("feedback") or ""),
                         )
                         if started.get("ok"):
                             payload = rebuttal.project_payload(project_id)

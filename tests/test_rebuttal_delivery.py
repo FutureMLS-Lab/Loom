@@ -172,7 +172,22 @@ def _write_completion(prepared: dict, *, run_id: str = "") -> None:
     Path(prepared["marker"]).write_text(json.dumps(marker), encoding="utf-8")
 
 
-def _fake_builder(rebuttal_pages: int = 1, paper_pages: int = 2):
+def _stamp_figure_verification(project_id: str, *, sha256: str = "") -> None:
+    """Record a unanimous figure-verification pass for the current artifacts."""
+    state = rebuttal.read_state(project_id)
+    current = dict(state.get("delivery") or {})
+    revised = (current.get("artifacts") or {}).get("revised_paper") or {}
+    current["figure_verification"] = {
+        "all_pass": True,
+        "input_sha256": sha256 or str(revised.get("sha256") or ""),
+        "models": list(delivery.ar.CURSOR_REVIEWER_MODELS),
+        "reviewers": [],
+    }
+    state["delivery"] = current
+    rebuttal.write_state(project_id, state)
+
+
+def _fake_builder(rebuttal_pages: int = 1, paper_pages: int = 8):
     def build(
         tex_path: Path,
         build_root: Path,
@@ -256,6 +271,10 @@ def test_delivery_build_validates_and_approval_binds_hashes(
     assert Path(state["delivery"]["artifacts"]["rebuttal"]["path"]).is_file()
     assert Path(state["delivery"]["artifacts"]["revised_paper"]["path"]).is_file()
 
+    with pytest.raises(ValueError, match="figure reviewers"):
+        delivery.approve_delivery(project_id)
+    _stamp_figure_verification(project_id)
+
     approved = delivery.approve_delivery(project_id)["project"]
     assert approved["stage"] == rebuttal.STAGE_BUNDLE_READY
     assert approved["delivery"]["final_approval"]["artifact_sha256"]
@@ -294,6 +313,7 @@ def test_source_drift_invalidates_final_artifact_approval(
     _write_completion(prepared)
     monkeypatch.setattr(delivery, "strict_build_pdf", _fake_builder())
     assert delivery.ingest_delivery_completion(project_id)["ok"]
+    _stamp_figure_verification(project_id)
     (source / "latex" / "main.tex").write_text(
         "\\documentclass{article}\\begin{document}changed\\end{document}\n",
         encoding="utf-8",
@@ -312,12 +332,61 @@ def test_artifact_drift_invalidates_final_artifact_approval(
     _write_completion(prepared)
     monkeypatch.setattr(delivery, "strict_build_pdf", _fake_builder())
     assert delivery.ingest_delivery_completion(project_id)["ok"]
+    _stamp_figure_verification(project_id)
     state = rebuttal.read_state(project_id)
     artifact = Path(state["delivery"]["artifacts"]["rebuttal"]["path"])
     artifact.write_bytes(artifact.read_bytes() + b"changed")
 
     with pytest.raises(ValueError, match="artifact changed"):
         delivery.approve_delivery(project_id)
+
+
+def test_stale_figure_verification_blocks_final_approval(
+    approved_wacv: tuple[Path, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, project_id = approved_wacv
+    prepared = delivery.prepare_delivery_attempt(project_id)
+    _write_completion(prepared)
+    monkeypatch.setattr(delivery, "strict_build_pdf", _fake_builder())
+    assert delivery.ingest_delivery_completion(project_id)["ok"]
+    _stamp_figure_verification(project_id, sha256="0" * 64)
+
+    with pytest.raises(ValueError, match="stale"):
+        delivery.approve_delivery(project_id)
+
+
+def test_short_paper_body_blocks_delivery(
+    approved_wacv: tuple[Path, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, project_id = approved_wacv
+    prepared = delivery.prepare_delivery_attempt(project_id)
+    _write_completion(prepared)
+    monkeypatch.setattr(
+        delivery,
+        "strict_build_pdf",
+        _fake_builder(paper_pages=7),
+    )
+
+    result = delivery.ingest_delivery_completion(project_id)
+
+    assert not result["ok"]
+    assert "fill all 8 allowed pages" in result["error"]
+
+
+def test_references_start_page_ignores_prose_mentions() -> None:
+    assert (
+        delivery._references_start_page(
+            [
+                "intro text\nsee the references in Section 2\n",
+                "more body\n",
+                "042 References\n[1] Some Paper. 2026.\n",
+            ]
+        )
+        == 3
+    )
+    assert delivery._references_start_page(["no heading here\n"]) == 0
 
 
 def test_total_revised_paper_pages_do_not_block_delivery(

@@ -251,6 +251,12 @@ def normalize_delivery_policy(
         "rebuttal_letter_required": bool(
             saved.get("rebuttal_letter_required", wacv)
         ),
+        "paper_body_page_limit": integer(
+            "paper_body_page_limit",
+            8 if wacv else 0,
+            0,
+            30,
+        ),
         "revised_paper_required": bool(
             saved.get(
                 "revised_paper_required",
@@ -454,7 +460,23 @@ Read `{skill}` completely before working.
    split it into a separate source or remove it from the revised-paper build.
 6. You may compile locally to iterate, but Loom will discard that verdict and
    rebuild independently.
-7. Write `{revision_map}` as JSON:
+7. Meet the layout and visual quality bar (all mandatory):
+   - The paper body (all content before References) must fill every allowed
+     body page completely — no half-empty final body page. The References
+     heading must start on the page after the body limit. Expand with real,
+     already-measured content; never pad with filler.
+   - The one-page response must fill its entire page. A column that ends
+     halfway is a failure.
+   - Never print placeholder values such as "unmeasured", "TBD", "N/A (not
+     run)" inside a results table. Report a real number or remove the row.
+   - The revised paper keeps a page-one teaser/overview figure and a method
+     overview figure unless the venue forbids them.
+   - After the final compile, render every page and visually audit each
+     figure at its printed size: no text overflowing its box, no overlapping
+     labels, no clipped legends. Fix and re-render until clean. A separate
+     three-model reviewer panel will re-check the rendered figures and will
+     block delivery on any visual defect.
+8. Write `{revision_map}` as JSON:
 
 ```json
 {{
@@ -472,7 +494,7 @@ Read `{skill}` completely before working.
 }}
 ```
 
-8. As the final write, create `{marker}` exactly as:
+9. As the final write, create `{marker}` exactly as:
 
 ```json
 {{
@@ -843,6 +865,16 @@ def _pdf_info(path: Path) -> dict[str, Any]:
     }
 
 
+def _references_start_page(page_texts: list[str]) -> int:
+    """1-based page on which the References section heading appears, or 0."""
+    for index, text in enumerate(page_texts, 1):
+        for raw in text.splitlines():
+            line = raw.strip().lower().strip("0123456789 .")
+            if line == "references":
+                return index
+    return 0
+
+
 def _tex_preflight(
     path: Path,
     policy: dict[str, Any],
@@ -1148,6 +1180,23 @@ def ingest_delivery_completion(project_id: str) -> dict[str, Any]:
             errors.append(
                 "revised paper still contains inline supplementary material"
             )
+        body_limit = int(policy.get("paper_body_page_limit") or 0)
+        if body_limit:
+            pages = int(info.get("pages") or 0)
+            references_page = _references_start_page(
+                list(info.get("page_texts") or [])
+            )
+            if pages < body_limit:
+                errors.append(
+                    f"revised paper has only {pages} page(s); the body must "
+                    f"fill all {body_limit} allowed pages"
+                )
+            elif references_page and references_page <= body_limit:
+                errors.append(
+                    f"paper body must fill all {body_limit} allowed pages; "
+                    f"the References section already starts on page "
+                    f"{references_page}"
+                )
         artifacts["revised_paper"] = _artifact_record(target, target.name)
 
     supplement_value = str(marker.get("supplement") or "").strip()
@@ -1354,7 +1403,10 @@ def verify_delivery_figures(
             "verifying revised-paper figures with: "
             + ", ".join(ar.CURSOR_REVIEWER_MODELS)
         )
-    with TemporaryDirectory(prefix="loom-rebuttal-figure-review-") as tmp:
+    with TemporaryDirectory(
+        prefix="loom-rebuttal-figure-review-",
+        ignore_cleanup_errors=True,
+    ) as tmp:
         workspace = Path(tmp)
         review_pdf = workspace / "revised-paper.pdf"
         shutil.copy2(pdf, review_pdf)
@@ -1491,13 +1543,29 @@ def approve_delivery(project_id: str) -> dict[str, Any]:
     report = delivery.get("validation")
     if not isinstance(report, dict) or not report.get("ready"):
         raise ValueError("delivery preflight has not passed")
-    if delivery.get("figure_redraw") and not (
-        isinstance(delivery.get("figure_verification"), dict)
-        and delivery["figure_verification"].get("all_pass")
-    ):
-        raise ValueError(
-            "all three figure reviewers must pass before final approval"
+    artifacts_map = (
+        delivery.get("artifacts")
+        if isinstance(delivery.get("artifacts"), dict)
+        else {}
+    )
+    revised = artifacts_map.get("revised_paper")
+    if isinstance(revised, dict):
+        verification = (
+            delivery.get("figure_verification")
+            if isinstance(delivery.get("figure_verification"), dict)
+            else {}
         )
+        if not verification.get("all_pass"):
+            raise ValueError(
+                "all three figure reviewers must pass before final approval"
+            )
+        if str(verification.get("input_sha256") or "") != str(
+            revised.get("sha256") or ""
+        ):
+            raise ValueError(
+                "figure verification is stale; re-verify the current "
+                "revised paper"
+            )
     approval = rebuttal.content_approval_snapshot(project_id, state)
     if approval.get("digest") != delivery.get("content_approval_digest"):
         raise ValueError("approved response content changed; rebuild delivery")
