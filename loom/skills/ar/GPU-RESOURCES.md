@@ -48,6 +48,15 @@ venv inside the job.
   it into your notes (README or scratch notes) so every later round reuses it
   instead of rediscovering flags.
 
+## Defensive preflight in every GPU job
+
+Occasionally a leaked process squats a GPU outside slurm's accounting, and jobs
+scheduled onto that GPU OOM at model load. Start every sbatch script with a
+guard: query the assigned GPU's used memory (`nvidia-smi
+--query-gpu=memory.used --format=csv,noheader`), and if it is already above
+~20 GB, `scontrol requeue $SLURM_JOB_ID` and exit instead of loading the model.
+This turns a night of OOM-failed jobs into a few cheap requeues.
+
 ## If slurm is full
 
 `tscheduler` (`/data/shared/zhizhousha/workspace/loom-project/tscheduler`) can
