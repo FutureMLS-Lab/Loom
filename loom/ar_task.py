@@ -3305,6 +3305,7 @@ client.post_note_edit(
 SKILL_STUDIO = "AR-STUDIO.md"
 SKILL_AUTHOR = "AR-AUTHOR.md"
 SKILL_REVIEWER = "AR-REVIEWER.md"
+SKILL_GPU = "GPU-RESOURCES.md"
 SKILL_REBUTTAL = "paper-rebuttal/SKILL.md"
 
 
@@ -3350,6 +3351,18 @@ def figure_skills() -> list[dict[str, str]]:
         out.append({"name": name, "description": description, "path": str(doc)})
     return out
 
+
+
+def gpu_resources_block() -> str:
+    """The compute-resources skill as it appears in an author prompt."""
+    text = ar_skill_text(SKILL_GPU)
+    if not text:
+        return ""
+    return (
+        "=== Compute resources - run all experiments on the GPU cluster ===\n"
+        + text
+        + "\n=== end compute resources ==="
+    )
 
 def figure_skills_block() -> str:
     """The figure-skill menu as it appears in an author prompt."""
@@ -3598,6 +3611,8 @@ The idea this paper must establish:
 
 {figure_skills_block()}
 
+{gpu_resources_block()}
+
 This round you are writing the SKELETON, not results. Finish the title,
 abstract arc, introduction with its contribution list, related work with real
 citations, and a method section precise enough to reimplement from. Build out
@@ -3661,6 +3676,8 @@ The idea this paper must establish:
 === end methodology ===
 
 {figure_skills_block()}
+
+{gpu_resources_block()}
 {stuck_block}
 {feedback}
 
@@ -3727,6 +3744,8 @@ Failures that must all be fixed:
 
 Continue the SAME round. Follow the AR author methodology exactly:
 {ar_skill_text(SKILL_AUTHOR) or "(AR author skill missing)"}
+
+{gpu_resources_block()}
 
 Before signalling completion again, make the whole submission complete:
 
