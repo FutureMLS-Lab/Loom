@@ -538,3 +538,25 @@ def reap_orphaned_attaches() -> int:
         except (OSError, ValueError, IndexError):
             continue
     return reaped
+
+
+def kill_tmux_session(session_name: str) -> tuple[bool, str]:
+    """Kill one tmux session by name (used to hard-refresh an agent pane)."""
+    name = session_name.strip()
+    if not name or not re.match(r"^[A-Za-z0-9_.@-]+$", name):
+        return False, "invalid session name"
+    try:
+        r = subprocess.run(
+            ["tmux", "kill-session", "-t", name],
+            capture_output=True,
+            text=True,
+            env=tmux_subprocess_env(),
+            timeout=8,
+        )
+    except FileNotFoundError:
+        return False, "tmux not on PATH"
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+    if r.returncode == 0:
+        return True, ""
+    return False, (r.stderr or r.stdout or "tmux session not found").strip()
