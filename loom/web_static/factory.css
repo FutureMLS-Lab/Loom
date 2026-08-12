@@ -650,3 +650,10 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
   .rf-reviewer-report > header { display: block; }
   .rf-reviewer-report__scores { justify-content: flex-start; margin-top: 8px; }
 }
+
+/* On a phone the wrapped sticky bar would pin a third of the viewport.
+   Informational counters give way; the actionable chips and buttons stay. */
+@media (max-width: 640px) {
+  .rf-top { position: static; padding: 10px 16px; }
+  .rf-stat--info { display: none; }
+}

@@ -653,8 +653,11 @@ function drawGraph(papers, ideas) {
   // Label room decides the columns, rather than the columns being fixed and
   // the labels running off the edge: paper titles get a slice on the left,
   // ideas get more on the right because their titles are whole sentences.
+  // A phone gets a narrower gap: at 390px the desktop minimum would leave
+  // idea labels three characters wide.
+  const minGap = width < 640 ? 150 : 200;
   const leftX = Math.max(150, Math.min(230, Math.round(width * 0.22)));
-  const rightX = Math.max(leftX + 200, width - Math.max(230, Math.round(width * 0.3)));
+  const rightX = Math.max(leftX + minGap, width - Math.max(230, Math.round(width * 0.3)));
   const CHAR = 6.1; // average px per character of the 11px label face
   const leftChars = Math.max(12, Math.floor((leftX - 18) / CHAR));
   const rightChars = Math.max(14, Math.floor((width - rightX - 22) / CHAR));
