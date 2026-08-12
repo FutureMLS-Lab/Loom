@@ -922,6 +922,8 @@ function renderDelivery(project) {
     return;
   }
   const validation = delivery.validation || {};
+  const figureRedraw = delivery.figure_redraw || {};
+  const figureVerification = delivery.figure_verification || {};
   const errors = validation.errors || [];
   const ready = Boolean(validation.ready);
   const blocked = phase === 'blocked' || errors.length > 0;
@@ -933,6 +935,9 @@ function renderDelivery(project) {
   ].filter(Boolean).join('');
   const preflightUrl = `/api/rebuttal/projects/${encodeURIComponent(project.id)}/delivery/preflight`;
   const handoffUrl = `/api/rebuttal/projects/${encodeURIComponent(project.id)}/delivery/handoff`;
+  const deliveryFolder = delivery.attempt_path
+    ? `${String(delivery.attempt_path).replace(/\/+$/, '')}/deliverables`
+    : '';
   host.className = `rb-delivery ${ready ? 'is-ready' : ''} ${blocked ? 'is-blocked' : ''}`;
   host.innerHTML = `<div class="rb-delivery-summary">
       <p><b>${esc(phase.replaceAll('_', ' '))}</b>${delivery.run_id ? ` · run ${esc(delivery.run_id)}` : ''}</p>
@@ -940,6 +945,21 @@ function renderDelivery(project) {
     </div>
     ${errors.length ? `<div class="rb-delivery-errors"><b>Deterministic preflight blocked this attempt</b>
       <ul>${errors.map((error) => `<li>${esc(error)}</li>`).join('')}</ul></div>` : ''}
+    ${figureRedraw.status ? `<div class="rb-figure-verification">
+      <div class="rb-figure-verification__head">
+        <b>Three-model figure verification</b>
+        <span class="rb-pill ${figureVerification.all_pass ? 'rb-pill--ready' : (figureRedraw.status === 'running' ? 'rb-pill--live' : 'rb-pill--bad')}">
+          ${figureVerification.all_pass ? 'unanimous pass' : (figureRedraw.status === 'running' ? 'redraw running' : 'waiting for all reviewers')}
+        </span>
+      </div>
+      <p>The redraw can finish only when all three fixed Paper Reviewer models return PASS.</p>
+      ${(figureVerification.reviewers || []).length ? `<div class="rb-figure-reviewers">
+        ${figureVerification.reviewers.map((item) => `<div>
+          <b>${esc(item.model || 'reviewer')}</b>
+          <span>${esc(item.figure_verdict || 'FAIL')} · ${Number((item.scores || {}).rating || 0)}/10</span>
+        </div>`).join('')}
+      </div>` : ''}
+    </div>` : ''}
     ${artifacts ? `<div class="rb-delivery-artifacts">${artifacts}</div>` : ''}
     ${validation.checked_at ? `<div class="rb-delivery-links">
       <a href="${preflightUrl}" target="_blank" rel="noreferrer">Open full preflight</a>
@@ -947,7 +967,25 @@ function renderDelivery(project) {
     </div>` : ''}
     ${delivery.final_approval && delivery.final_approval.approved_at
       ? `<p class="rb-delivery-approved">Final artifact hashes approved ${esc(shortTime(delivery.final_approval.approved_at))}.</p>`
-      : ''}`;
+      : ''}
+    ${deliveryFolder ? `<div class="rb-delivery-folder">
+      <div>
+        <b>All files to inspect before approval</b>
+        <code>${esc(deliveryFolder)}</code>
+      </div>
+      <button type="button" class="rb-btn" data-copy-delivery-folder>Copy folder path</button>
+    </div>` : ''}`;
+  const copyFolder = host.querySelector('[data-copy-delivery-folder]');
+  if (copyFolder) {
+    copyFolder.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(deliveryFolder);
+        toast('Delivery folder path copied.');
+      } catch {
+        toast(`Delivery folder: ${deliveryFolder}`);
+      }
+    });
+  }
 }
 
 function renderPaperActions(project) {

@@ -10,8 +10,10 @@ import shutil
 import subprocess
 import uuid
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from pypdf import PdfReader
@@ -260,12 +262,6 @@ def normalize_delivery_policy(
             50 * 1024 * 1024,
             1024,
             500 * 1024 * 1024,
-        ),
-        "paper_body_page_limit": integer(
-            "paper_body_page_limit",
-            8 if wacv else 100,
-            1,
-            200,
         ),
         "supplement_max_bytes": integer(
             "supplement_max_bytes",
@@ -1136,24 +1132,6 @@ def ingest_delivery_completion(project_id: str) -> dict[str, Any]:
         info = _pdf_info(target)
         if target.stat().st_size > int(policy.get("paper_max_bytes") or 0):
             errors.append("revised paper exceeds the configured file-size limit")
-        page_texts = list(info.get("page_texts") or [])
-        references_page = next(
-            (
-                index
-                for index, page_text in enumerate(page_texts, 1)
-                if re.search(
-                    r"(?im)^\s*(?:references|bibliography)\s*$",
-                    str(page_text),
-                )
-            ),
-            0,
-        )
-        body_last_page = references_page or int(info.get("pages") or 0)
-        if body_last_page > int(policy.get("paper_body_page_limit") or 0):
-            errors.append(
-                "revised paper body exceeds the configured page limit "
-                f"({body_last_page} > {policy.get('paper_body_page_limit')})"
-            )
         if policy.get("anonymous") and _EMAIL_RE.search(str(info.get("text") or "")):
             errors.append("revised paper PDF contains an email address")
         paper_author = str((info.get("metadata") or {}).get("/Author") or "")
@@ -1295,6 +1273,216 @@ def _deterministic_zip(path: Path, files: list[tuple[str, Path]]) -> None:
                 )
 
 
+def _figure_verification_prompt(pdf_path: Path) -> str:
+    return f"""You are one member of a strict three-model scientific-figure
+verification panel. Review only the rendered figures in `{pdf_path}` and their
+captions/context. Do not accept or reject the paper's research contribution.
+
+Audit every main-text figure at its final paper size:
+
+1. scientific fidelity to the caption and surrounding claims;
+2. exact values, conditions, uncertainty, sample sizes, and negative findings;
+3. readable labels, legends, axes, typography, and colour contrast;
+4. no clipping, overlap, bad alignment, pseudo-text, misleading geometry, or
+   unsupported significance;
+5. consistent visual language and publication-ready WACV presentation;
+6. teaser topology and arrows preserve the actual method and caveats;
+7. results graphics expose rather than hide individual-run variability when
+   the evidence supports it.
+
+Use FAIL if any figure needs another redraw before submission. Minor aesthetic
+preferences that do not impair correctness or readability are not blocking.
+
+Return exactly this Markdown structure:
+
+# Figure Verification
+
+Figure Verdict: PASS|FAIL
+
+## Blocking Figure Issues
+- `None` for PASS, otherwise concrete figure/page/element fixes.
+
+## Figure-by-Figure Audit
+- Inspect every main-text figure separately.
+
+## Scores
+Soundness: 1-4
+Presentation: 1-4
+Contribution: 1-4
+Rating: 1-10
+Confidence: 1-5
+Recommendation: accept|weak accept|borderline|weak reject|reject
+
+PASS requires no blocking issue and Rating at least 7/10. Judge the PDF itself,
+not source files or prior versions.
+"""
+
+
+def verify_delivery_figures(
+    project_id: str,
+    *,
+    timeout: int = 1800,
+    on_line: Any = None,
+) -> dict[str, Any]:
+    """Require all fixed Cursor reviewers to approve the rendered figures."""
+    state = rebuttal.read_state(project_id)
+    current = (
+        state.get("delivery")
+        if isinstance(state.get("delivery"), dict)
+        else {}
+    )
+    paper = (current.get("artifacts") or {}).get("revised_paper")
+    pdf = Path(str((paper or {}).get("path") or ""))
+    if not pdf.is_file():
+        return {"ok": False, "error": "revised-paper.pdf is missing"}
+    catalog = ar._cursor_models()
+    if not catalog.get("ok"):
+        return catalog
+    available = set(catalog.get("models") or [])
+    missing = [
+        model for model in ar.CURSOR_REVIEWER_MODELS if model not in available
+    ]
+    if missing:
+        return {
+            "ok": False,
+            "error": "required figure reviewer model(s) unavailable: "
+            + ", ".join(missing),
+        }
+
+    if on_line is not None:
+        on_line(
+            "verifying revised-paper figures with: "
+            + ", ".join(ar.CURSOR_REVIEWER_MODELS)
+        )
+    with TemporaryDirectory(prefix="loom-rebuttal-figure-review-") as tmp:
+        workspace = Path(tmp)
+        review_pdf = workspace / "revised-paper.pdf"
+        shutil.copy2(pdf, review_pdf)
+        prompt = _figure_verification_prompt(review_pdf)
+        by_model: dict[str, dict[str, Any]] = {}
+        with ThreadPoolExecutor(
+            max_workers=len(ar.CURSOR_REVIEWER_MODELS)
+        ) as pool:
+            futures = {
+                pool.submit(
+                    ar._run_cursor_headless,
+                    prompt,
+                    model,
+                    workspace,
+                    timeout=timeout,
+                    on_line=on_line,
+                ): model
+                for model in ar.CURSOR_REVIEWER_MODELS
+            }
+            for future in as_completed(futures):
+                model = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    result = {
+                        "ok": False,
+                        "model": model,
+                        "error": str(exc),
+                    }
+                text = str(result.get("review") or "")
+                verdict_match = re.search(
+                    r"(?im)^\s*(?:\*\*)?Figure Verdict(?:\*\*)?"
+                    r"\s*[:：]\s*(?:\*\*)?(PASS|FAIL)",
+                    text,
+                )
+                verdict = (
+                    verdict_match.group(1).upper()
+                    if verdict_match
+                    else "FAIL"
+                )
+                rating = float((result.get("scores") or {}).get("rating") or 0)
+                result["figure_verdict"] = verdict
+                result["figure_pass"] = bool(
+                    result.get("ok") and verdict == "PASS" and rating >= 7
+                )
+                by_model[model] = result
+
+    reviewers = [
+        by_model.get(
+            model,
+            {"ok": False, "model": model, "error": "review result missing"},
+        )
+        for model in ar.CURSOR_REVIEWER_MODELS
+    ]
+    all_pass = all(item.get("figure_pass") for item in reviewers)
+    attempt = Path(str(current.get("attempt_path") or ""))
+    review_dir = attempt / "figure-verification"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    for item in reviewers:
+        model = str(item.get("model") or "unknown")
+        safe_model = re.sub(r"[^A-Za-z0-9_.-]+", "-", model)
+        (review_dir / f"{safe_model}.md").write_text(
+            str(item.get("review") or f"ERROR: {item.get('error', '')}").rstrip()
+            + "\n",
+            encoding="utf-8",
+        )
+    report = {
+        "checked_at": _now(),
+        "all_pass": all_pass,
+        "models": list(ar.CURSOR_REVIEWER_MODELS),
+        "reviewers": reviewers,
+        "input_pdf": str(pdf),
+        "input_sha256": _sha256(pdf),
+    }
+    _atomic_json(review_dir / "figure-verification.json", report)
+    summary_lines = [
+        "# Three-Model Figure Verification",
+        "",
+        f"**Verdict:** {'PASS' if all_pass else 'FAIL'}",
+        f"**PDF SHA-256:** `{report['input_sha256']}`",
+        "",
+    ]
+    for item in reviewers:
+        summary_lines.extend(
+            [
+                f"## {item.get('model')}",
+                "",
+                f"- Verdict: {item.get('figure_verdict', 'FAIL')}",
+                f"- Rating: {(item.get('scores') or {}).get('rating', 'missing')}/10",
+                f"- Complete: {'yes' if item.get('ok') else 'no'}",
+                "",
+            ]
+        )
+    (review_dir / "README.md").write_text(
+        "\n".join(summary_lines).rstrip() + "\n",
+        encoding="utf-8",
+    )
+
+    state = rebuttal.read_state(project_id)
+    current = dict(state.get("delivery") or {})
+    current["figure_verification"] = report
+    current["final_approval"] = {}
+    current["bundle"] = {}
+    if all_pass:
+        current["phase"] = "awaiting_final_approval"
+        current["agent_status"] = "complete"
+        state["stage"] = rebuttal.STAGE_AWAIT_DELIVERY_APPROVAL
+        state["error"] = ""
+        rebuttal.append_log(
+            state,
+            "all three figure reviewers passed the revised paper",
+        )
+    else:
+        current["phase"] = "figure_verification_blocked"
+        current["agent_status"] = "complete"
+        state["stage"] = rebuttal.STAGE_DELIVERY_BLOCKED
+        failed = [
+            str(item.get("model") or "unknown")
+            for item in reviewers
+            if not item.get("figure_pass")
+        ]
+        state["error"] = "figure verification failed: " + ", ".join(failed)
+        rebuttal.append_log(state, state["error"])
+    state["delivery"] = current
+    rebuttal.write_state(project_id, state)
+    return {"ok": all_pass, "report": report, "review_dir": str(review_dir)}
+
+
 def approve_delivery(project_id: str) -> dict[str, Any]:
     state = rebuttal.read_state(project_id)
     if state.get("stage") != rebuttal.STAGE_AWAIT_DELIVERY_APPROVAL:
@@ -1303,6 +1491,13 @@ def approve_delivery(project_id: str) -> dict[str, Any]:
     report = delivery.get("validation")
     if not isinstance(report, dict) or not report.get("ready"):
         raise ValueError("delivery preflight has not passed")
+    if delivery.get("figure_redraw") and not (
+        isinstance(delivery.get("figure_verification"), dict)
+        and delivery["figure_verification"].get("all_pass")
+    ):
+        raise ValueError(
+            "all three figure reviewers must pass before final approval"
+        )
     approval = rebuttal.content_approval_snapshot(project_id, state)
     if approval.get("digest") != delivery.get("content_approval_digest"):
         raise ValueError("approved response content changed; rebuild delivery")

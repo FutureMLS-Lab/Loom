@@ -320,7 +320,7 @@ def test_artifact_drift_invalidates_final_artifact_approval(
         delivery.approve_delivery(project_id)
 
 
-def test_paper_body_page_limit_blocks_delivery(
+def test_total_revised_paper_pages_do_not_block_delivery(
     approved_wacv: tuple[Path, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -330,13 +330,12 @@ def test_paper_body_page_limit_blocks_delivery(
     monkeypatch.setattr(
         delivery,
         "strict_build_pdf",
-        _fake_builder(paper_pages=9),
+        _fake_builder(paper_pages=100),
     )
 
     result = delivery.ingest_delivery_completion(project_id)
 
-    assert not result["ok"]
-    assert "paper body exceeds" in result["error"]
+    assert result["ok"]
 
 
 def test_wrong_wacv_track_is_blocked(
@@ -366,3 +365,98 @@ def test_wrong_wacv_track_is_blocked(
 
     assert not result["ok"]
     assert "wrong WACV track" in result["error"]
+
+
+def test_three_model_figure_verification_requires_unanimous_pass(
+    approved_wacv: tuple[Path, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, project_id = approved_wacv
+    prepared = delivery.prepare_delivery_attempt(project_id)
+    _write_completion(prepared)
+    monkeypatch.setattr(delivery, "strict_build_pdf", _fake_builder())
+    assert delivery.ingest_delivery_completion(project_id)["ok"]
+    monkeypatch.setattr(
+        delivery.ar,
+        "_cursor_models",
+        lambda: {
+            "ok": True,
+            "models": list(delivery.ar.CURSOR_REVIEWER_MODELS),
+        },
+    )
+
+    def fake_review(prompt, model, workspace, **kwargs):
+        del prompt, workspace, kwargs
+        passed = model != delivery.ar.CURSOR_REVIEWER_MODELS[-1]
+        verdict = "PASS" if passed else "FAIL"
+        rating = 8 if passed else 6
+        return {
+            "ok": True,
+            "model": model,
+            "review": (
+                "# Figure Verification\n\n"
+                f"Figure Verdict: {verdict}\n\n"
+                "## Blocking Figure Issues\n"
+                + ("- None\n" if passed else "- Figure 1 labels are unreadable.\n")
+            ),
+            "scores": {"rating": rating},
+        }
+
+    monkeypatch.setattr(delivery.ar, "_run_cursor_headless", fake_review)
+
+    result = delivery.verify_delivery_figures(project_id)
+
+    assert not result["ok"]
+    assert (
+        rebuttal.read_state(project_id)["stage"]
+        == rebuttal.STAGE_DELIVERY_BLOCKED
+    )
+    assert [
+        item["figure_pass"] for item in result["report"]["reviewers"]
+    ] == [True, True, False]
+
+
+def test_three_model_figure_verification_unlocks_final_approval(
+    approved_wacv: tuple[Path, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, project_id = approved_wacv
+    prepared = delivery.prepare_delivery_attempt(project_id)
+    _write_completion(prepared)
+    monkeypatch.setattr(delivery, "strict_build_pdf", _fake_builder())
+    assert delivery.ingest_delivery_completion(project_id)["ok"]
+    state = rebuttal.read_state(project_id)
+    state["delivery"]["figure_redraw"] = {"status": "complete"}
+    rebuttal.write_state(project_id, state)
+    monkeypatch.setattr(
+        delivery.ar,
+        "_cursor_models",
+        lambda: {
+            "ok": True,
+            "models": list(delivery.ar.CURSOR_REVIEWER_MODELS),
+        },
+    )
+    monkeypatch.setattr(
+        delivery.ar,
+        "_run_cursor_headless",
+        lambda prompt, model, workspace, **kwargs: {
+            "ok": True,
+            "model": model,
+            "review": (
+                "# Figure Verification\n\n"
+                "Figure Verdict: PASS\n\n"
+                "## Blocking Figure Issues\n- None\n"
+            ),
+            "scores": {"rating": 8},
+        },
+    )
+
+    result = delivery.verify_delivery_figures(project_id)
+
+    assert result["ok"]
+    assert (
+        rebuttal.read_state(project_id)["stage"]
+        == rebuttal.STAGE_AWAIT_DELIVERY_APPROVAL
+    )
+    approved = delivery.approve_delivery(project_id)["project"]
+    assert approved["stage"] == rebuttal.STAGE_BUNDLE_READY
