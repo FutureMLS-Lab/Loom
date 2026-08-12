@@ -332,7 +332,12 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
   border: 1px solid var(--rf-line); border-radius: var(--rf-radius);
   background: var(--rf-bg-2); color: var(--rf-dim);
 }
-@media (max-width: 780px) { .rf-skills { grid-template-columns: 1fr; } }
+@media (max-width: 780px) {
+  .rf-skills { grid-template-columns: 1fr; }
+  /* Collapsed to one column, a 60vh list buries the text it opens; keep the
+     list short so the skill body starts on screen. */
+  .rf-skills__list { max-height: 30vh; }
+}
 
 /* ---------- graph detail ---------- */
 
@@ -671,4 +676,6 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
 @media (max-width: 640px) {
   .rf-top { position: static; padding: 10px 16px; }
   .rf-stat--info { display: none; }
+  .rf-modal { padding: 14px; }
+  .rf-modal__card { padding: 18px 16px; }
 }
