@@ -1101,12 +1101,18 @@ function renderPaper(d, state) {
   }).join('');
 
   const meta = [];
-  if (d.best_rating) meta.push(`best rating ${d.best_rating}/10`);
-  if (Number(state.cost_usd) > 0) meta.push(`$${Number(state.cost_usd).toFixed(2)} spent`);
-  if (state.stop_reason) meta.push(`stopped early: ${state.stop_reason}`);
-  if (state.pdf_error) meta.push(state.pdf_error);
-  if (d.paper_dir) meta.push(d.paper_dir);
-  el('paper-meta').textContent = meta.join(' · ');
+  if (d.best_rating) meta.push(esc(`best rating ${d.best_rating}/10`));
+  if (Number(state.cost_usd) > 0) meta.push(esc(`$${Number(state.cost_usd).toFixed(2)} spent`));
+  if (state.stop_reason) meta.push(esc(`stopped early: ${state.stop_reason}`));
+  if (state.pdf_error) meta.push(esc(state.pdf_error));
+  let metaHtml = meta.join(' · ');
+  // The path is a desktop affordance (one click selects it for a shell);
+  // on a phone it is three lines of grey noise, so CSS hides it - with its
+  // separator, which is why it lives inside the span.
+  if (d.paper_dir) {
+    metaHtml += `<span class="rf-paper-meta__path">${metaHtml ? ' · ' : ''}${esc(d.paper_dir)}</span>`;
+  }
+  el('paper-meta').innerHTML = metaHtml;
 
   // gate
   const atDraft = state.stage === 'await_draft_review';
@@ -1127,7 +1133,9 @@ function renderPaper(d, state) {
   if (loop.last_action) bits.push(loop.last_action);
   if (loop.last_error) bits.push(`error: ${loop.last_error}`);
   if (d.plateaued) bits.push('score has stalled — the author was told to change tack');
-  el('loop-status').textContent = bits.join(' · ');
+  const loopStatus = el('loop-status');
+  loopStatus.textContent = bits.join(' · ');
+  loopStatus.classList.toggle('is-live', !!loop.running);
   renderLog('review-log', (d.logs || {}).review, state.review_status === 'running' || loop.running);
 
   // Rebuilding the rounds resets their summaries' scroll on every poll, so
