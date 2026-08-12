@@ -108,3 +108,29 @@ def test_nudges_stop_at_the_cap_and_tell_the_human(tmp_path, monkeypatch):
     assert not sent
     assert manager.events == ["ar-author-stalled"]
     assert ar.read_ar_state(tmp_path, slug)["rounds"][0]["stall_reported"] is True
+
+
+def test_a_nudge_that_produced_work_resets_the_cap(tmp_path, monkeypatch):
+    """An author babysitting a long experiment answers every nudge without
+    finishing the round; only consecutive fruitless nudges may hit the cap."""
+    slug = "paper-x"
+    task = make_paper(tmp_path, slug)
+    state = json.loads((task / "ar.json").read_text())
+    state["rounds"][0]["nudges"] = web._AR_MAX_NUDGES
+    state["rounds"][0]["stall_reported"] = True
+    (task / "ar.json").write_text(json.dumps(state))
+    sent: list[str] = []
+    monkeypatch.setattr(web, "capture_pane", lambda t, n: (True, "idle"))
+    monkeypatch.setattr(
+        web, "send_pane_text", lambda t, p, submit: (sent.append(p), (True, ""))[1]
+    )
+    driver = _ARLoopDriver(FakeManager(alive=True), tmp_path, "pid1", slug)
+    driver._author_idle_polls = web._AR_STALL_IDLE_POLLS
+    driver._author_worked = True  # the agent visibly worked since the last nudge
+
+    driver._watch_author(ar.read_ar_state(tmp_path, slug), 1)
+
+    assert len(sent) == 1
+    saved = ar.read_ar_state(tmp_path, slug)["rounds"][0]
+    assert saved["nudges"] == 1
+    assert "stall_reported" not in saved

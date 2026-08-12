@@ -3789,7 +3789,10 @@ _AR_STALL_IDLE_POLLS = 36
 # Between continue-nudges. Long enough that an author babysitting a slow
 # experiment gets re-woken at a sane pace instead of being spammed.
 _AR_NUDGE_COOLDOWN = 600.0
-# Nudges per round before we stop burning turns and tell the human instead.
+# Consecutive fruitless nudges before we stop burning turns and tell the
+# human instead. A nudge after which the author visibly worked resets the
+# count: an author babysitting a half-day experiment answers every nudge
+# without finishing the round, and must not exhaust its budget for it.
 _AR_MAX_NUDGES = 12
 
 
@@ -4270,6 +4273,7 @@ class _ARLoopDriver:
         self.last_error = ""
         self.last_action = ""
         self._author_idle_polls = 0
+        self._author_worked = False
         self._last_nudge_ts = 0.0
         self._stop = threading.Event()
         self.thread = threading.Thread(
@@ -4362,6 +4366,7 @@ class _ARLoopDriver:
             return
         if _AGENT_WORKING_RE.search(text or ""):
             self._author_idle_polls = 0
+            self._author_worked = True
             return
         self._author_idle_polls += 1
         if self._author_idle_polls < _AR_STALL_IDLE_POLLS:
@@ -4370,6 +4375,11 @@ class _ARLoopDriver:
             return
         rec = ar.ensure_round(state, n)
         nudges = int(rec.get("nudges") or 0)
+        if self._author_worked and nudges:
+            # The last nudge produced real work; only consecutive fruitless
+            # nudges count toward the cap.
+            nudges = 0
+            rec.pop("stall_reported", None)
         if nudges >= _AR_MAX_NUDGES:
             if not rec.get("stall_reported"):
                 rec["stall_reported"] = True
@@ -4396,6 +4406,7 @@ class _ARLoopDriver:
             self.last_error = err
             return
         self._last_nudge_ts = time.time()
+        self._author_worked = False
         rec["nudges"] = nudges + 1
         self._save(state)
         self._note(
