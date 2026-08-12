@@ -1491,7 +1491,7 @@ def test_review_readiness_rejects_a_paper_without_an_intro_figure(
     )
     labels = {item["label"]: item["ok"] for item in result["checks"]}
     assert result["ready"] is False
-    assert labels["Introduction opens with an overview figure"] is False
+    assert labels["Paper opens with an overview figure"] is False
 
 
 def test_build_submission_flags_an_unfinished_paper(tmp_path: Path) -> None:

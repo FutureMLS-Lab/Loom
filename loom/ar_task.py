@@ -2890,19 +2890,26 @@ def _has_real_results(paper_dir: Path) -> bool:
 
 
 def _intro_has_figure(paper_dir: Path) -> bool:
-    """The introduction carries a page-one overview figure.
+    """A page-one overview figure exists.
 
     Every figure skill exists so the paper opens with a real Figure 1; a
     submission whose figures all hide in the experiments reads as unfinished
-    at a venue. Comments are stripped first, so a commented-out
-    ``\\includegraphics`` does not pass.
+    at a venue. Authors legitimately place the teaser either inside the
+    introduction or directly in ``main.tex`` under the title and abstract
+    (no venue template ships an ``\\includegraphics`` of its own, so a match
+    there is always the paper's). Comments are stripped first, so a
+    commented-out ``\\includegraphics`` does not pass.
     """
-    path = paper_dir / "sections" / "01_introduction.tex"
-    try:
-        active = _active_tex(path.read_text(encoding="utf-8", errors="replace"))
-    except OSError:
-        return False
-    return bool(_INCLUDEGRAPHICS_RE.search(active))
+    for name in ("sections/01_introduction.tex", "main.tex"):
+        try:
+            active = _active_tex(
+                (paper_dir / name).read_text(encoding="utf-8", errors="replace")
+            )
+        except OSError:
+            continue
+        if _INCLUDEGRAPHICS_RE.search(active):
+            return True
+    return False
 
 
 def _bib_entry_count(paper_dir: Path) -> int:
@@ -3082,7 +3089,7 @@ def review_readiness(
     intro_figure = _intro_has_figure(paper_dir)
     check(
         intro_figure,
-        "Introduction opens with an overview figure",
+        "Paper opens with an overview figure",
         "found"
         if intro_figure
         else (
