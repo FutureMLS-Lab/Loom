@@ -344,22 +344,39 @@ def _available_skill_options(
         # let someone send it twice.
         if p == default_prompt_path().resolve():
             return
-        label = p.name
+        rel = ""
         try:
-            label = str(p.relative_to(skills_root))
+            rel = str(p.relative_to(skills_root))
         except ValueError:
             pass
-        entry: dict[str, Any] = {"label": label, "path": str(p)}
         # The AR pipeline injects everything under skills/ar/ into its own
-        # prompts; selecting one here too would send it twice.
-        if label.startswith("ar/") or label.startswith("ar\\"):
-            entry["auto"] = True
-        options.append(entry)
+        # prompts - they are not choices (read them in the Factory instead).
+        if rel.startswith("ar/") or rel.startswith("ar\\"):
+            return
+        # Inside a packaged skill directory only SKILL.md is the skill; its
+        # PROMPT_TEMPLATE/EXAMPLE/SOURCE siblings are the skill's own reading
+        # material and would inject as half a skill.
+        if p.name != "SKILL.md" and (p.parent / "SKILL.md").is_file():
+            return
+        # Label by what you'd call the skill, not where it sits on disk:
+        # dev/loom-hot-restart/SKILL.md -> loom-hot-restart,
+        # remote_control/remote_control.md -> remote_control.
+        if p.name == "SKILL.md":
+            label = p.parent.name
+        else:
+            label = p.stem
+        options.append({"label": label, "path": str(p)})
 
     add(default_skills)
     if skills_root.is_dir():
         for p in sorted(skills_root.rglob("*.md"), key=lambda x: str(x).lower()):
             add(p)
+    # The default selection reads first; everything else alphabetically.
+    try:
+        default_resolved = str(default_skills.expanduser().resolve())
+    except OSError:
+        default_resolved = ""
+    options.sort(key=lambda o: (o["path"] != default_resolved, o["label"].lower()))
     return options
 
 

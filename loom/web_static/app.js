@@ -1804,12 +1804,8 @@ function renderTaskSkillsPicker(meta = STATE.currentMeta || {}) {
       if (!path) continue;
       const option = document.createElement('option');
       option.value = path;
-      // The AR pipeline already injects these into its own prompts; say so
-      // here, where someone would otherwise select them a second time.
-      option.textContent = (opt.label || path) + (opt.auto ? '  ·  auto in AR rounds' : '');
-      option.title = opt.auto
-        ? `${path} — the AR loop injects this into its prompts by itself; selecting it here would send it twice`
-        : path;
+      option.textContent = opt.label || path;
+      option.title = path;
       sel.appendChild(option);
     }
     sel.dataset.options = wanted;
