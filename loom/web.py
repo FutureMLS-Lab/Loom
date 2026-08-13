@@ -4716,7 +4716,39 @@ def _rebuttal_resume_delivery_watchers() -> int:
     return resumed
 
 
-def _ar_ideas_job(root: Path, slug: str, count: int, model: str) -> None:
+def _ar_venue_job(root: Path, slug: str, model: str) -> None:
+    """Deep-research the venue's last completed cycle, then persist the report."""
+    state = ar.read_ar_state(root, slug)
+    log = _ar_logger(root, slug, ar.JOB_VENUE)
+    res = ar.research_venue_cycle(state, model=model, on_line=log)
+    if res.get("ok"):
+        ar.update_ar_state(
+            root,
+            slug,
+            venue_report=res.get("report") or {},
+            venue_status="done",
+            venue_error="",
+            venue_updated_at=_iso_now(),
+            cost_usd=round(
+                float(state.get("cost_usd") or 0.0) + float(res.get("cost") or 0.0), 4
+            ),
+        )
+        print(f"[ar] {slug}: venue-cycle report ready", flush=True)
+    else:
+        log(f"failed: {res.get('error')}")
+        ar.update_ar_state(
+            root, slug, venue_status="error", venue_error=str(res.get("error") or "")
+        )
+        print(f"[ar] {slug}: venue research failed - {res.get('error')}", flush=True)
+
+
+def _ar_ideas_job(
+    root: Path,
+    slug: str,
+    count: int,
+    model: str,
+    source: str = ar.IDEA_SOURCE_PAPERS,
+) -> None:
     state = ar.read_ar_state(root, slug)
     log = _ar_logger(root, slug, ar.JOB_IDEAS)
     res = ar.propose_ideas(
@@ -4724,6 +4756,7 @@ def _ar_ideas_job(root: Path, slug: str, count: int, model: str) -> None:
         ar.ar_skill_text(ar.SKILL_STUDIO),
         count=count,
         model=model,
+        source=source,
         on_line=log,
     )
     if not res.get("ok"):
@@ -5656,7 +5689,7 @@ class ARLoopManager:
                 except Exception:  # noqa: BLE001
                     continue
                 changes: dict[str, Any] = {}
-                for job in ("search_suggest", "papers", "ideas", "review"):
+                for job in ("search_suggest", "papers", "ideas", "review", "venue"):
                     if str(state.get(f"{job}_status") or "") == "running":
                         changes[f"{job}_status"] = "error"
                         changes[f"{job}_error"] = (
@@ -5840,6 +5873,7 @@ def make_handler(
                         ar.JOB_PAPERS,
                         ar.JOB_IDEAS,
                         ar.JOB_REVIEW,
+                        ar.JOB_VENUE,
                     )
                 },
             }
@@ -6000,7 +6034,7 @@ def make_handler(
                     return {"ok": True, "status": "running"}, 202
                 busy = [
                     name
-                    for name in ("papers", "ideas", "link")
+                    for name in ("papers", "ideas", "link", "venue")
                     if str(state.get(f"{name}_status")) == "running"
                 ]
                 if busy:
@@ -6053,6 +6087,28 @@ def make_handler(
                 _ar_run_async(_ar_mine_job, root, slug, limit, venue_only)
                 return {"ok": True, "status": "running"}, 202
 
+            if action == "venue":
+                state, err = self._ar_require_state(root, slug, ar.ROLE_STUDIO)
+                if state is None:
+                    return {"ok": False, "error": err}, 400
+                if str(state.get("venue_status")) == "running":
+                    return {"ok": True, "status": "running"}, 202
+                busy = [
+                    name
+                    for name in ("search_suggest", "papers", "ideas", "link")
+                    if str(state.get(f"{name}_status")) == "running"
+                ]
+                if busy:
+                    return {
+                        "ok": False,
+                        "error": f"another Studio job is running: {busy[0]}",
+                    }, 409
+                meta = read_meta(root, slug)
+                model = str(body.get("model", "")).strip() or _ar_headless_model(meta)
+                ar.update_ar_state(root, slug, venue_status="running", venue_error="")
+                _ar_run_async(_ar_venue_job, root, slug, model)
+                return {"ok": True, "status": "running"}, 202
+
             if action == "ideas":
                 state, err = self._ar_require_state(root, slug, ar.ROLE_STUDIO)
                 if state is None:
@@ -6072,11 +6128,21 @@ def make_handler(
                     return self._ar_payload(root, project_id, slug), 200
                 if str(state.get("ideas_status")) == "running":
                     return {"ok": True, "status": "running"}, 202
+                if str(state.get("venue_status")) == "running":
+                    return {"ok": False, "error": "venue research is still running"}, 409
+                source = str(body.get("source", "")).strip() or ar.IDEA_SOURCE_PAPERS
+                if source not in (ar.IDEA_SOURCE_PAPERS, ar.IDEA_SOURCE_VENUE):
+                    return {"ok": False, "error": "unknown idea source"}, 400
+                if source == ar.IDEA_SOURCE_VENUE and not state.get("venue_report"):
+                    return {
+                        "ok": False,
+                        "error": "run the venue-cycle research first",
+                    }, 400
                 count = max(1, min(12, int(body.get("count", 6) or 6)))
                 meta = read_meta(root, slug)
                 model = str(body.get("model", "")).strip() or _ar_headless_model(meta)
                 ar.update_ar_state(root, slug, ideas_status="running", ideas_error="")
-                _ar_run_async(_ar_ideas_job, root, slug, count, model)
+                _ar_run_async(_ar_ideas_job, root, slug, count, model, source)
                 return {"ok": True, "status": "running"}, 202
 
             if action == "link":

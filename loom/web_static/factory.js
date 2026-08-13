@@ -19,6 +19,7 @@ const S = {
   busy: false,
   graphSel: '',              // node the user clicked into, '' when nothing is
   graphHide: new Set(),      // relations switched off in the legend
+  venueIdeasQueued: '',      // studio slug waiting to turn its venue report into ideas
   pane: '',                  // tmux target of the open paper's author
   paneFollow: false,         // whether to keep tailing it
   filePath: '',              // where the file browser is, under work/
@@ -347,6 +348,36 @@ function paperMiningState(state, papers) {
   return 'not run yet';
 }
 
+function venueResearchState(state) {
+  const status = String(state.venue_status || '');
+  const report = state.venue_report || {};
+  if (status === 'running') return 'deep-researching the venue\u2019s last cycle\u2026';
+  if (status === 'error') return `failed: ${state.venue_error || 'unknown error'}`;
+  if (Object.keys(report).length) {
+    const queued = S.venueIdeasQueued === S.slug ? ' \u00b7 ideas queued next' : '';
+    return `report ready: ${report.cycle || 'last cycle'}${queued}`;
+  }
+  return 'not researched yet';
+}
+
+// The "ideas from last cycle" button is one press for the whole chain: run the
+// venue research if the report is missing, then generate from it as soon as
+// the report lands. The queued flag carries the slug so switching studios
+// mid-research cannot fire ideas at the wrong one.
+async function maybeQueueVenueIdeas(state) {
+  if (S.venueIdeasQueued !== S.slug) return;
+  const status = String(state.venue_status || '');
+  if (status === 'running') return;
+  S.venueIdeasQueued = '';
+  if (status !== 'done' || !Object.keys(state.venue_report || {}).length) return;
+  if (state.ideas_status === 'running') return;
+  await act(S.slug, 'ideas', {
+    count: Number(el('studio-count').value || 6),
+    source: 'venue',
+  }, 'Venue idea generation');
+  loadTask();
+}
+
 function renderStudio(d, state) {
   el('studio-title').textContent = d.title || S.slug;
   el('studio-eyebrow').textContent =
@@ -357,7 +388,9 @@ function renderStudio(d, state) {
   const logs = d.logs || {};
   renderLog('papers-log', logs.papers, state.papers_status === 'running');
   renderLog('ideas-log', logs.ideas, state.ideas_status === 'running');
+  renderLog('venue-log', logs.venue, state.venue_status === 'running');
   renderSearchSettings(d, state);
+  maybeQueueVenueIdeas(state);
 
   const papers = state.papers || [];
   const ideas = state.ideas || [];
@@ -485,7 +518,8 @@ function renderSteps(state, papers, ideas) {
   // A step whose input does not exist yet cannot run, so say so on the button
   // rather than letting it be pressed and answer with an error.
   const suggesting = state.search_suggest_status === 'running';
-  const busy = suggesting || running('papers') || running('ideas') || running('link');
+  const busy = suggesting || running('papers') || running('ideas') || running('link')
+    || running('venue');
   const terms = searchTermsFromForm();
   const categories = searchCategoriesFromForm();
   setAction('btn-search-suggest', {
@@ -502,6 +536,16 @@ function renderSteps(state, papers, ideas) {
     ok: !busy && (papers.length > 0 || state.mode === 'seed'),
     why: busy ? 'a job is already running' : 'mine the field first, or start the studio from your own idea',
   });
+  const hasVenueReport = Object.keys(state.venue_report || {}).length > 0;
+  setAction('btn-ideas-venue', {
+    ok: !busy,
+    why: busy ? 'a job is already running' : '',
+    label: running('venue') ? 'Researching last cycle…'
+      : S.venueIdeasQueued === S.slug ? 'Ideas queued…'
+      : hasVenueReport ? 'Ideas from last cycle' : 'Research last cycle → ideas',
+  });
+  const venueLabel = el('step-venue-state');
+  if (venueLabel) venueLabel.textContent = venueResearchState(state);
   setAction('btn-link', {
     ok: !busy && ideas.length > 0,
     why: busy ? 'a job is already running' : 'generate ideas first',
@@ -1302,6 +1346,45 @@ el('btn-mine').addEventListener('click', async () => {
 el('btn-ideas').addEventListener('click', async () => {
   await act(S.slug, 'ideas', { count: Number(el('studio-count').value || 6) }, 'Idea generation');
   loadTask();
+});
+el('btn-ideas-venue').addEventListener('click', async () => {
+  const state = (S.data && S.data.state) || {};
+  const hasReport = Object.keys(state.venue_report || {}).length > 0;
+  if (hasReport && state.venue_status !== 'running') {
+    await act(S.slug, 'ideas', {
+      count: Number(el('studio-count').value || 6),
+      source: 'venue',
+    }, 'Venue idea generation');
+  } else {
+    const d = await act(S.slug, 'venue', {}, 'Venue research');
+    if (d) S.venueIdeasQueued = S.slug;
+  }
+  loadTask();
+});
+el('btn-studio-delete').addEventListener('click', async () => {
+  const state = (S.data && S.data.state) || {};
+  const children = (state.ideas || []).filter((i) => i.status === 'spawned').length;
+  const warning = children
+    ? `This studio has ${children} spawned paper task(s). They will NOT be deleted, `
+      + 'but they lose their studio grouping in the Factory.\n\n'
+    : '';
+  const ok = window.confirm(
+    `${warning}Delete this studio, its mined papers and idea cards? `
+    + 'This cannot be undone.',
+  );
+  if (!ok) return;
+  try {
+    await api(`/api/tasks/${encodeURIComponent(S.slug)}`, { method: 'DELETE' });
+  } catch (err) {
+    toast(`Delete failed: ${err.message}`, true);
+    return;
+  }
+  toast('Studio deleted.');
+  S.slug = '';
+  S.data = null;
+  location.hash = '';
+  show('fleet');
+  loadFleet();
 });
 el('btn-link').addEventListener('click', async () => {
   await act(S.slug, 'link', {}, 'Linking ideas');
