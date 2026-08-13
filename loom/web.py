@@ -47,6 +47,7 @@ from loom.paths import (
     AR_ROOT_ENV,
     KERNEL_HUB_ENV,
     bundled_skills_path,
+    default_prompt_path,
     kernel_hub_dir,
     web_static_dir,
 )
@@ -54,6 +55,7 @@ from loom.rud_task import (
     AGENT_CURSOR,
     AGENT_CLAUDE,
     AGENT_CODEX,
+    RUD_DIR,
     CURSOR_DEFAULT_MODEL,
     DEFAULT_MONITOR_PATTERN,
     PLAN,
@@ -338,6 +340,10 @@ def _available_skill_options(
         ):
             return
         seen.add(p)
+        # Always injected into every prompt; listing it as a choice would only
+        # let someone send it twice.
+        if p == default_prompt_path().resolve():
+            return
         label = p.name
         try:
             label = str(p.relative_to(skills_root))
@@ -2697,6 +2703,28 @@ def _build_ar_prompt(
     return base
 
 
+def _default_prompt_text(limit: int = 8000) -> str:
+    """The always-on floor under every task prompt; empty if the file is gone."""
+    try:
+        return default_prompt_path().read_text(encoding="utf-8", errors="replace")[:limit]
+    except OSError:
+        return ""
+
+
+def _project_memory_text(project_root: Path, limit: int = 4000) -> tuple[Path, str]:
+    """The project's accumulated lessons, newest-at-the-bottom tail of them.
+
+    Capped from the end because the protocol appends: the most recent
+    lessons are the ones a new task most needs.
+    """
+    path = project_root / RUD_DIR / "MEMORY.md"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return path, ""
+    return path, text[-limit:]
+
+
 def _build_claude_prompt(
     project_root: Path,
     slug: str,
@@ -2714,6 +2742,7 @@ def _build_claude_prompt(
     plan_path = td / state_doc
     if ar.is_ar_kind(meta.kind):
         return _build_ar_prompt(project_root, slug, meta, td, skills)
+    memory_path, memory = _project_memory_text(project_root)
     return f"""You are running Loom's {agent_label(meta.agent)} pane for this task.
 
 You start in this task's work directory (your git worktree is a subdirectory here - cd into it to touch code):
@@ -2723,6 +2752,16 @@ General goal:
 {meta.general_goal}
 
 {wt_line}
+
+Default prompt (always active, before any selected skills):
+---
+{_default_prompt_text() or "(missing)"}
+---
+
+Project memory ({memory_path} - append lessons here as the default prompt describes):
+---
+{memory or "(empty - create it when you have a lesson worth keeping)"}
+---
 
 Default skills from:
 {meta.skills_path or "(bundled default)"}
