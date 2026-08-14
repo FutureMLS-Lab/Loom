@@ -42,7 +42,6 @@ flowchart TB
     SKILLS["skills/ar/*<br/>AR-AUTHOR · AR-REVIEWER · figures · GPU-RESOURCES"]
     SKILLS -.->|"注入 prompt"| AUTH
     STALL["停摆唤醒<br/>连续无效 nudge 计数"] -.-> AUTH
-    DELBTN["Delete studio 按钮<br/>rmtree .RUD 目录（真删除）"] -.-> STUDIO
 ```
 
 ## 入口与文件
