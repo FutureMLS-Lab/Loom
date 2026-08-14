@@ -3,6 +3,48 @@
 自动科研的选题与产文流水线：Studio（选题孵化）→ Paper（回合制写作循环）。
 本文以代码为锚，配合总览文档 `docs/AUTO_RESEARCH_SYSTEM_DESIGN.md` 阅读。
 
+## 总图
+
+```mermaid
+flowchart TB
+    subgraph STUDIO["Studio 选题孵化（一个 ar.json 状态机）"]
+        direction TB
+        BRIEF["方向 brief<br/>direction / custom / seed idea"]
+        SUG["search/suggest<br/>headless Claude 提检索词+类目"]
+        MINE["mine<br/>arXiv API 按词挖掘最新论文"]
+        VR["venue<br/>headless Claude 联网深调研<br/>上届 best paper / oral / 热点 / gap"]
+        IDE["ideas — propose_ideas<br/>idea 卡片：假设/新颖性/实验/风险"]
+        LNK["link — link_ideas<br/>novelty 文本→derived_from 边<br/>OpenAlex 逐条验真"]
+        SPWN["spawn<br/>勾选的 idea 孵化为 paper 任务"]
+        BRIEF --> SUG --> MINE
+        BRIEF -.->|"可跳过挖掘"| VR
+        MINE -->|"source=papers"| IDE
+        VR -->|"source=venue"| IDE
+        IDE --> LNK --> SPWN
+    end
+
+    subgraph PAPER["Paper 回合循环（每篇一个 _ARLoopDriver）"]
+        direction TB
+        AUTH["Author Agent（Claude, tmux）<br/>slurm 实验 + 写作 + 编译<br/>产出 rounds/round-NN/author.md"]
+        RG{"Readiness Gate<br/>确定性：编译干净 / 无占位符<br/>page-one 总览图 / 引用齐全"}
+        PANEL["三模型 Cursor 评审面板<br/>只读隔离 PDF · 最低分定档"]
+        STOPQ{"停止判定<br/>rating≥stop / 满轮 / plateau"}
+        AUTH -->|"author.md + main.pdf"| RG
+        RG -->|"失败清单原样打回"| AUTH
+        RG -->|"通过"| PANEL
+        PANEL -->|"review.md"| STOPQ
+        STOPQ -->|"继续下一轮"| AUTH
+    end
+
+    SPWN --> DG["🧑 Draft Gate<br/>批准骨架稿"] --> PAPER
+    STOPQ -->|"触发"| FG["🧑 Final Gate"] --> DONE["delivered"]
+
+    SKILLS["skills/ar/*<br/>AR-AUTHOR · AR-REVIEWER · figures · GPU-RESOURCES"]
+    SKILLS -.->|"注入 prompt"| AUTH
+    STALL["停摆唤醒<br/>连续无效 nudge 计数"] -.-> AUTH
+    DELBTN["Delete studio 按钮<br/>rmtree .RUD 目录（真删除）"] -.-> STUDIO
+```
+
 ## 入口与文件
 
 | 层 | 位置 |

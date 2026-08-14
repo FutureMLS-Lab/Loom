@@ -3,6 +3,50 @@
 审稿意见应对流水线：Conference Studio（会议政策）→ Paper Rebuttal（逐点回复）
 → Delivery（修订终稿 + 一页 rebuttal + supplement + bundle）。双人工 Gate。
 
+## 总图
+
+```mermaid
+flowchart TB
+    subgraph CS["Conference Studio（一个会议一份政策）"]
+        direction LR
+        CFP["CFP / 作者指南 URL"] --> PDRAFT["policy_draft<br/>模型抽取结构化政策"]
+        PDRAFT --> PGATE["🧑 政策批准"] --> ACTIVE["active<br/>子项目全部继承"]
+    end
+
+    subgraph RESP["Paper Rebuttal（回复内容）"]
+        direction TB
+        IMP["intake<br/>扫描论文包 → manifest + SHA-256"]
+        RA["Response Agent（tmux 实时面板）<br/>concern 矩阵 + 逐点回复<br/>acceptance-first · evidence-bounded"]
+        VAL{"确定性 Validation<br/>字数上限 / concern 全覆盖<br/>占位符 / 外链 / 冻结表述"}
+        G1["🧑 Gate 1 内容批准<br/>绑定政策+回复文本哈希"]
+        IMP --> RA
+        RA -->|"agent-complete.json"| VAL
+        VAL -->|"失败清单喂回 pane"| RA
+        VAL -->|"通过"| G1
+    end
+
+    subgraph DLV["Delivery（终稿交付）"]
+        direction TB
+        PREP["prepare_delivery_attempt<br/>隔离工作区 + 冻结 input_digest<br/>DELIVERY_INSTRUCTIONS.md（可带 operator 反馈）"]
+        DA["Delivery Agent（tmux）<br/>修订稿满页 + 一页官方 rebuttal<br/>separate supplement + revision-map"]
+        ING{"strict build + preflight<br/>latexmk→tectonic→pdflatex 自建<br/>满页 / 匿名 / track / 占位值 / 页限"}
+        FV{"三模型图片验收<br/>全票通过 · 绑定 PDF SHA-256"}
+        G2["🧑 Gate 2 产物哈希批准"]
+        BND["submission-bundle.zip<br/>（上传 OpenReview 永远人工）"]
+        PREP --> DA
+        DA -->|"delivery-complete.json"| ING
+        ING -->|"blocked：报告喂回 pane 迭代"| DA
+        ING -->|"通过"| FV
+        FV -->|"有一票不过：报告喂回"| DA
+        FV -->|"全票"| G2 --> BND
+    end
+
+    ACTIVE --> IMP
+    G1 -->|"自动启动交付"| PREP
+    DRIFT["源码 / 回复 / 政策任何变动"] -.->|"哈希失效 → 必须重跑"| G2
+    SKILL["paper-rebuttal-delivery/SKILL.md<br/>+ WACV.md 会议档案"] -.->|"方法论注入"| DA
+```
+
 ## 入口与文件
 
 | 层 | 位置 |
