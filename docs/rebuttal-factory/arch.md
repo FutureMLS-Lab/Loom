@@ -36,7 +36,7 @@ flowchart TB
         PREP --> DA
         DA -->|"delivery-complete.json"| ING
         ING -->|"blocked：报告喂回 pane 迭代"| DA
-        ING -->|"通过"| FV
+        ING -->|"通过：自动启动验收"| FV
         FV -->|"有一票不过：报告喂回"| DA
         FV -->|"全票"| G2 --> BND
     end
@@ -98,19 +98,27 @@ flowchart TB
    WACV track/Paper ID、**正文填满 `paper_body_page_limit` 且 References 在其后**、
    文件大小、revision-map 全覆盖；产物记录 SHA-256。
 4. **verify_delivery_figures**：三模型面板逐图审查渲染质量，**全票通过**，
-   报告绑定当前 revised-paper 的 SHA（换 PDF 自动作废）。
+   报告绑定当前 revised-paper 的 SHA（换 PDF 自动作废）。preflight 通过后
+   watcher **自动启动**验收；页面的 Verify figures 按钮（`verify-figures`
+   action）可手动重跑，最终批准按钮在全票通过前禁用。
 5. **Gate 2（产物批准，approve_delivery）**：校验 preflight 通过 + 图片验收
    非陈旧 + 内容摘要/源码摘要未漂移 + 产物哈希未变 → 确定性 zip 出
    `submission-bundle.zip`。上传 OpenReview 永远人工。
 
 失败回路：preflight/验收失败的报告可喂回同一 Delivery Agent pane 迭代
-（运维脚本 `delivery_monitor.py` 模式），或 `rerun-delivery` 起新 attempt。
+（运维脚本 `delivery_monitor.py` 模式），或 `rerun-delivery`（可带 operator
+`feedback`）起新 attempt。
+
+历史备注：早期存在过一条无 tmux 的 headless `analyze`/`draft` 生成链，
+已于 2026-08-14 随死代码清理整体移除；概念抽取与回复起草现在只有
+live tmux Response Agent 一条路径。
 
 ## API 面（常用）
 
 `GET /api/rebuttal/catalog|studios|projects`、Studio：`policy`（抓取/草案）、
 `approve-policy`、`DELETE studios/<id>`；项目：`start-agent|stop-agent`、
 `validate`、`approve`（Gate 1，自动接 `start-delivery`）、`start-delivery|
-rerun-delivery|stop-delivery`、`approve-delivery`（Gate 2）、
+rerun-delivery|stop-delivery`、`verify-figures`（三模型图片验收，preflight
+通过后也会自动触发）、`approve-delivery`（Gate 2）、
 `GET delivery/<artifact>`（revised-paper/rebuttal/supplement/bundle 下载）、
 `DELETE projects/<id>`（注销注册，源材料与 rebuttal-output 保留在磁盘）。
