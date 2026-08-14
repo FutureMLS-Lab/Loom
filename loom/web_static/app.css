@@ -1680,7 +1680,10 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   padding: 24px;
 }
 .markdown-preview--fullscreen {
-  max-width: 980px;
+  /* Fullscreen is the "study the document" mode: give wide tables the
+     screen instead of a 980px column with a horizontal scrollbar. Prose
+     lines run longer than ideal; the tradeoff is deliberate. */
+  max-width: min(1720px, 96%);
   min-height: 100%;
   margin: 0 auto;
   padding: 44px 52px;
@@ -3574,3 +3577,7 @@ textarea.editable__input {
   overflow: auto;
   tab-size: 2;
 }
+
+/* KaTeX display math: breathing room, and wide equations scroll in place
+   instead of stretching the page. */
+.markdown-preview .katex-display { margin: 14px 0; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
