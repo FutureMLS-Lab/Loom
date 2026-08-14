@@ -74,9 +74,9 @@ Needs `latexmk` + TeX Live. The agents' methodology lives in
 
 ## OpenClaw notifications
 
-Flip **Notify** on a task and Loom pings you (e.g. in Slack, via an
-[OpenClaw](https://github.com/openclaw) gateway) when its agent stops and
-waits for input — your reply is typed straight back into the pane. The
+Flip **Notify** on a task and Loom pings you (e.g. in Slack, via an OpenClaw
+gateway) when its agent stops and waits for input — your reply is typed
+straight back into the pane. The
 Factory also reports drafts ready, rounds reviewed, and stalled authors.
 
 ```bash
