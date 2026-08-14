@@ -61,8 +61,9 @@ loom --version
 loom doctor
 ```
 
-`loom doctor` names anything still missing and how to fix it. To upgrade
-later: `pipx reinstall loom-console`.
+`loom doctor` names anything still missing and how to fix it — at this
+point it fails exactly one check, "agent CLI", which step 3 installs
+next. To upgrade later: `pipx reinstall loom-console`.
 
 ## 3. Log in to an agent CLI — ASK
 
