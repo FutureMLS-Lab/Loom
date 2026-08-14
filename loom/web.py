@@ -5084,17 +5084,44 @@ class _TerminalStreamRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._masters: dict[str, int] = {}
+        self._procs: dict[str, object] = {}
 
-    def register(self, master: int) -> str:
+    def register(self, master: int, proc: object = None) -> str:
         stream_id = uuid.uuid4().hex
         with self._lock:
             self._masters[stream_id] = master
+            if proc is not None:
+                self._procs[stream_id] = proc
         return stream_id
 
     def unregister(self, stream_id: str, master: int) -> None:
         with self._lock:
             if self._masters.get(stream_id) == master:
                 self._masters.pop(stream_id, None)
+                self._procs.pop(stream_id, None)
+
+    def close(self, stream_id: str) -> tuple[bool, str]:
+        """End a stream because its client said so.
+
+        A client that goes away is supposed to close its connection, and the
+        streaming loop notices and tears the attach down. Through a proxy that
+        holds the upstream leg open, that close never arrives, and the attach
+        lives on as a tmux client - pinning the window size and accumulating
+        one per terminal ever opened. Letting the client ask directly costs
+        nothing and does not depend on the socket being honest.
+        """
+        if not re.fullmatch(r"[0-9a-f]{32}", stream_id or ""):
+            return False, "invalid terminal stream"
+        with self._lock:
+            proc = self._procs.pop(stream_id, None)
+            self._masters.pop(stream_id, None)
+        if proc is None:
+            return True, ""  # already gone; nothing to do
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        return True, ""
 
     def write(self, stream_id: str, text: str) -> tuple[bool, str]:
         if not re.fullmatch(r"[0-9a-f]{32}", stream_id):
@@ -5879,7 +5906,7 @@ def make_handler(
                     )
                     self._send(st, b, h)
                     return
-                stream_id = terminal_streams.register(master)
+                stream_id = terminal_streams.register(master, proc)
                 self.close_connection = True
                 # A dropped SSH tunnel or a lid-closed laptop never sends FIN:
                 # without keepalive the half-open socket keeps this attach (a
@@ -7100,6 +7127,17 @@ def make_handler(
                     _json_bytes({"ok": True})
                     if ok
                     else _json_bytes({"ok": False, "error": msg}, 409)
+                )
+                self._send(st, b, h)
+                return
+
+            if path == "/api/tmux/stream-close":
+                stream_id = str(body.get("stream_id", "")).strip()
+                ok, msg = terminal_streams.close(stream_id)
+                st, b, h = (
+                    _json_bytes({"ok": True})
+                    if ok
+                    else _json_bytes({"ok": False, "error": msg}, 400)
                 )
                 self._send(st, b, h)
                 return
