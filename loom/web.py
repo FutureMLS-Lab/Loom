@@ -3334,16 +3334,21 @@ class ClaudeRegistry:
     def _wait_for_claude_ready(self, target: str, timeout: float = 45.0) -> None:
         deadline = time.time() + timeout
         markers = ("\u276f", "\u256d", "tip:", "tips:", "/help", "cursor agent")
+        trust_answered = False
         while time.time() < deadline:
             ok, text = capture_pane(target, 80)
             lower = text.lower() if ok else ""
             # Cursor Agent asks once per new workspace. Loom creates isolated
             # task workdirs, so accept this prompt automatically; otherwise
             # the subsequent deep-interview paste lands on the trust screen.
-            if "trust this workspace" in lower:
+            # Answer it ONCE: the dialog's text lingers in the captured
+            # scrollback after it is dismissed, and re-keying Enter on every
+            # sighting typed a string of blank sends into the fresh composer.
+            if not trust_answered and "trust this workspace" in lower:
                 # Enter activates the preselected "Trust" row without leaking
                 # the shortcut letter `a` into the first chat prompt.
                 send_pane_key(target, "Enter")
+                trust_answered = True
                 time.sleep(2)
                 continue
             if ok and any(m in lower for m in markers):
