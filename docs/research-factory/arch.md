@@ -39,19 +39,8 @@ flowchart TB
     SPWN --> DG["🧑 Draft Gate<br/>批准骨架稿"] --> PAPER
     STOPQ -->|"触发"| FG["🧑 Final Gate"] --> DONE["delivered"]
 
-    subgraph SKILLS["技能库 skills/ar/*（方法论即文件）"]
-        direction TB
-        SK1["① 角色方法论<br/>AR-STUDIO · AR-AUTHOR · AR-REVIEWER<br/>整篇注入对应角色 prompt"]
-        SK2["② 图表工艺菜单<br/>teaser-figure 1–4 · results-figure 1–2<br/>只注入菜单，作者按需读全文"]
-        SK3["③ 质量核查<br/>checkbib 引用逐条验真"]
-        SK4["④ 基础设施纪律<br/>GPU-RESOURCES：slurm 规范 + 防占卡守卫"]
-    end
-    SK1 -.-> IDE
-    SK1 -.-> AUTH
-    SK1 -.-> PANEL
-    SK2 -.-> AUTH
-    SK3 -.-> AUTH
-    SK4 -.-> AUTH
+    SKILLS["skills/ar/*<br/>AR-AUTHOR · AR-REVIEWER · figures · GPU-RESOURCES"]
+    SKILLS -.->|"注入 prompt"| AUTH
     STALL["停摆唤醒<br/>连续无效 nudge 计数"] -.-> AUTH
 ```
 
