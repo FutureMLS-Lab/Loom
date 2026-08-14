@@ -59,15 +59,21 @@ _INLINE_TEMPLATES = {
     "PLAN.md": """\
 # Plan
 
-## Status
-Not started
+<!-- One-paragraph goal; the deep-interview pane rewrites it.
+     Run `/goal` in Claude Code to act on it. -->
 
-## Goal
-<!-- Filled in from the task goal; the deep-interview pane usually rewrites
-     this whole section.  Run `/goal` in Claude Code to act on it. -->
+## What we have done
 
-## Next steps
+## Results
+
+| metric | target | value |
+|---|---|---|
+|        |        |       |
+
+## Future to do
 - [ ] TODO
+
+## Progress Log
 """,
     "NOTES.md": """\
 # Notes

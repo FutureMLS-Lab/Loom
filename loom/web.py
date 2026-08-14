@@ -2793,20 +2793,25 @@ RUD workflow:
    one high-leverage question at a time about scope, constraints,
    acceptance, tests, risks, non-goals, and available worktrees.
 2. When the interview has enough information, write or overwrite
-   {plan_path} with a concise executable plan:
-   - Goal
-   - Context / Decisions from the interview
-   - Constraints / non-goals
-   - Acceptance criteria
-   - Next steps as a checkbox list
-   - Progress Log / Result section
+   {plan_path} with exactly this shape:
+   - Under the title, ONE paragraph: what success looks like, plus the
+     decisions and constraints the interview settled.
+   - "## What we have done" - empty at this point.
+   - "## Results" - an EMPTY table whose rows already name every number
+     this task must produce (columns like metric / target / value).
+     Cells get filled with real measured values during execution, never
+     invented ones.
+   - "## Future to do" - the executable checklist, in order.
+   - "## Progress Log" - empty.
    Do not leave interview notes only in chat; the result of the interview
    must be captured DIRECTLY in {plan_path}.
 3. After {state_doc} is solid, tell the user it is ready to run. The user can
    click RUD's "Run /goal" button (or type /goal) to execute {state_doc}.
-4. While executing and when finished, keep writing useful progress,
-   blockers, decisions, and final results back into {plan_path}. Remove
-   obsolete/noisy details, but preserve unrelated prior sections.
+4. While executing: move finished checklist items from "Future to do"
+   into "What we have done" (one concise line each), fill "Results"
+   cells as real numbers land, keep "Future to do" pointing at what is
+   actually next, and append dated one-liners to "Progress Log". Remove
+   obsolete noise, but preserve unrelated prior sections.
 
 Behavioural constraints:
 - {state_doc} is the ONLY task-state file. Do not create INTERVIEW.md,

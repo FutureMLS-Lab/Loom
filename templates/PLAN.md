@@ -1,16 +1,22 @@
 # Plan
 
-## Goal
-<!-- One short paragraph describing what success looks like.  The deep-interview
-     pane normally rewrites this whole section for you. -->
+<!-- One-paragraph goal: what success looks like, and the decisions the
+     deep-interview settled. The interview rewrites this paragraph. -->
 
-## Constraints / non-goals
+## What we have done
+<!-- Filled while running: one line per completed item, newest at the bottom. -->
 
-## Acceptance
-- [ ] How will we know it's done?
+## Results
+<!-- The deep-interview seeds this as an EMPTY table naming every number the
+     task must produce. Fill cells with real measured values as they arrive -
+     never with invented ones. -->
 
-## Next steps
-- [ ] First action
+| metric | target | value |
+|---|---|---|
+|        |        |       |
+
+## Future to do
+- [ ] <!-- The deep-interview seeds this checklist, in execution order. -->
 
 ## Progress Log
-<!-- Append concise dated entries here as work happens. -->
+<!-- Append concise dated one-liners as work happens; prune noise. -->
