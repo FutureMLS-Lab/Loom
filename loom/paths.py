@@ -14,6 +14,14 @@ def bundled_skills_path() -> Path:
     return _PKG / "skills" / "charlie_skills.md"
 
 
+def default_prompt_path() -> Path:
+    """The always-injected floor under every task prompt.
+
+    Distinct from skills: skills are chosen per task, this is not a choice.
+    """
+    return _PKG / "skills" / "DEFAULT_PROMPT.md"
+
+
 def web_static_dir() -> Path:
     return _PKG / "web_static"
 

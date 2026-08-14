@@ -314,14 +314,14 @@ def open_pane_attach(target: str, cols: int = 80, rows: int = 24):
             return None, None
     except (OSError, subprocess.TimeoutExpired):
         return None, None
-    # Fit the smallest attached client. The web xterm and a native tmux client
-    # often have different dimensions: "latest" lets them fight over the size,
-    # while "largest" forces the smaller client to pan around the larger pane as
-    # the cursor moves. "smallest" gives every client one stable, fully visible
-    # Agent screen.
+    # Follow the most recently active client. "smallest" looked stable until
+    # phones arrived: one loom-app viewer pinned every desktop to 49x22 for as
+    # long as it stayed connected. With "latest" the client you are actually
+    # typing in wins the size, an idle phone merely pans, and the window
+    # springs back the moment the desktop acts.
     try:
         subprocess.run(
-            ["tmux", "set-option", "-t", t.split(":")[0], "window-size", "smallest"],
+            ["tmux", "set-option", "-t", t.split(":")[0], "window-size", "latest"],
             capture_output=True, text=True, env=env, timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):

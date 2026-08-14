@@ -941,8 +941,47 @@ function renderMarkdownWithAssets(md, resolveAsset) {
   }
 }
 
+// TeX spans must cross the markdown renderer untouched: `x_i * y_j` inside
+// $...$ would otherwise sprout <em> tags before KaTeX ever sees it. They are
+// swapped for private-use-area placeholders up front and restored - escaped -
+// into the final HTML, where KaTeX (loaded from vendor/) typesets them.
+// Inside code fences the restore is literal text and KaTeX's default
+// ignoredTags skip <pre>/<code>, so code keeps its dollar signs.
+function protectMath(md) {
+  const spans = [];
+  const stash = (m) => {
+    spans.push(m);
+    return `${spans.length - 1}`;
+  };
+  let s = String(md || '');
+  s = s.replace(/\$\$([\s\S]+?)\$\$/g, stash);
+  s = s.replace(/(?<![\\$\w])\$([^$\n]+?)\$(?!\w)/g, stash);
+  return [s, spans];
+}
+
+function restoreMath(html, spans) {
+  if (!spans.length) return html;
+  return html.replace(/(\d+)/g, (_, i) => escapeHtml(spans[Number(i)] || ''));
+}
+
+function typesetMath(el) {
+  if (!el || typeof window.renderMathInElement !== 'function') return;
+  try {
+    window.renderMathInElement(el, {
+      delimiters: [
+        { left: '$$', right: '$$', display: true },
+        { left: '$', right: '$', display: false },
+        { left: '\\(', right: '\\)', display: false },
+        { left: '\\[', right: '\\]', display: true },
+      ],
+      throwOnError: false,
+    });
+  } catch { /* malformed TeX stays as its source text */ }
+}
+
 function renderMarkdown(md) {
-  const lines = (md || '').replace(/\r\n/g, '\n').split('\n');
+  const [safeMd, mathSpans] = protectMath(md);
+  const lines = (safeMd || '').replace(/\r\n/g, '\n').split('\n');
   const out = [];
   let paragraph = [];
   let listType = null;
@@ -1102,7 +1141,8 @@ function renderMarkdown(md) {
   if (codeLines) out.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
   flushParagraph();
   flushList();
-  return out.join('\n') || '<p class="empty-preview">Nothing to preview yet.</p>';
+  const html = restoreMath(out.join('\n'), mathSpans);
+  return html || '<p class="empty-preview">Nothing to preview yet.</p>';
 }
 
 function updateMarkdownPreview(which, force = false) {
@@ -1113,6 +1153,7 @@ function updateMarkdownPreview(which, force = false) {
   if (!force && STATE.previewCache[which] === text) return;
   STATE.previewCache[which] = text;
   preview.innerHTML = renderMarkdownWithAssets(text, markdownAssetResolver(which));
+  typesetMath(preview);
 }
 
 function updateActiveMarkdownPreview() {
@@ -1804,12 +1845,8 @@ function renderTaskSkillsPicker(meta = STATE.currentMeta || {}) {
       if (!path) continue;
       const option = document.createElement('option');
       option.value = path;
-      // The AR pipeline already injects these into its own prompts; say so
-      // here, where someone would otherwise select them a second time.
-      option.textContent = (opt.label || path) + (opt.auto ? '  ·  auto in AR rounds' : '');
-      option.title = opt.auto
-        ? `${path} — the AR loop injects this into its prompts by itself; selecting it here would send it twice`
-        : path;
+      option.textContent = opt.label || path;
+      option.title = path;
       sel.appendChild(option);
     }
     sel.dataset.options = wanted;
@@ -3491,6 +3528,7 @@ async function openNotesModal() {
     const d = await api('/api/notes');
     editor.value = d.content || '';
     preview.innerHTML = renderMarkdownWithAssets(editor.value, markdownAssetResolver('notes'));
+    typesetMath(preview);
     STATE.notesDirty = false;
     status.textContent = '';
   } catch (err) {
@@ -3537,6 +3575,7 @@ async function saveNotes() {
     STATE.notesDirty = true;
     requestAnimationFrame(() => {
       preview.innerHTML = renderMarkdownWithAssets(editor.value, markdownAssetResolver('notes'));
+      typesetMath(preview);
     });
   });
   editor.addEventListener('keydown', (ev) => {
@@ -5069,6 +5108,7 @@ async function openArReview(n) {
     const d = await api(arTaskPath('/review/' + n));
     $('#ar-review-title').textContent = n === 0 ? 'Draft review' : `Round ${n} review`;
     $('#ar-review-content').innerHTML = renderArReviewerReports(d);
+    typesetMath($('#ar-review-content'));
     $('#ar-review-modal').hidden = false;
     document.body.classList.add('preview-open');
   } catch (err) {

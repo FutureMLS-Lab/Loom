@@ -49,6 +49,7 @@ from loom.paths import (
     AR_ROOT_ENV,
     KERNEL_HUB_ENV,
     bundled_skills_path,
+    default_prompt_path,
     kernel_hub_dir,
     web_static_dir,
 )
@@ -56,6 +57,7 @@ from loom.rud_task import (
     AGENT_CURSOR,
     AGENT_CLAUDE,
     AGENT_CODEX,
+    RUD_DIR,
     CURSOR_DEFAULT_MODEL,
     DEFAULT_MONITOR_PATTERN,
     PLAN,
@@ -340,22 +342,43 @@ def _available_skill_options(
         ):
             return
         seen.add(p)
-        label = p.name
+        # Always injected into every prompt; listing it as a choice would only
+        # let someone send it twice.
+        if p == default_prompt_path().resolve():
+            return
+        rel = ""
         try:
-            label = str(p.relative_to(skills_root))
+            rel = str(p.relative_to(skills_root))
         except ValueError:
             pass
-        entry: dict[str, Any] = {"label": label, "path": str(p)}
         # The AR pipeline injects everything under skills/ar/ into its own
-        # prompts; selecting one here too would send it twice.
-        if label.startswith("ar/") or label.startswith("ar\\"):
-            entry["auto"] = True
-        options.append(entry)
+        # prompts - they are not choices (read them in the Factory instead).
+        if rel.startswith("ar/") or rel.startswith("ar\\"):
+            return
+        # Inside a packaged skill directory only SKILL.md is the skill; its
+        # PROMPT_TEMPLATE/EXAMPLE/SOURCE siblings are the skill's own reading
+        # material and would inject as half a skill.
+        if p.name != "SKILL.md" and (p.parent / "SKILL.md").is_file():
+            return
+        # Label by what you'd call the skill, not where it sits on disk:
+        # dev/loom-hot-restart/SKILL.md -> loom-hot-restart,
+        # remote_control/remote_control.md -> remote_control.
+        if p.name == "SKILL.md":
+            label = p.parent.name
+        else:
+            label = p.stem
+        options.append({"label": label, "path": str(p)})
 
     add(default_skills)
     if skills_root.is_dir():
         for p in sorted(skills_root.rglob("*.md"), key=lambda x: str(x).lower()):
             add(p)
+    # The default selection reads first; everything else alphabetically.
+    try:
+        default_resolved = str(default_skills.expanduser().resolve())
+    except OSError:
+        default_resolved = ""
+    options.sort(key=lambda o: (o["path"] != default_resolved, o["label"].lower()))
     return options
 
 
@@ -2695,6 +2718,28 @@ def _build_ar_prompt(
     return base
 
 
+def _default_prompt_text(limit: int = 8000) -> str:
+    """The always-on floor under every task prompt; empty if the file is gone."""
+    try:
+        return default_prompt_path().read_text(encoding="utf-8", errors="replace")[:limit]
+    except OSError:
+        return ""
+
+
+def _project_memory_text(project_root: Path, limit: int = 4000) -> tuple[Path, str]:
+    """The project's accumulated lessons, newest-at-the-bottom tail of them.
+
+    Capped from the end because the protocol appends: the most recent
+    lessons are the ones a new task most needs.
+    """
+    path = project_root / RUD_DIR / "MEMORY.md"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return path, ""
+    return path, text[-limit:]
+
+
 def _build_claude_prompt(
     project_root: Path,
     slug: str,
@@ -2712,6 +2757,7 @@ def _build_claude_prompt(
     plan_path = td / state_doc
     if ar.is_ar_kind(meta.kind):
         return _build_ar_prompt(project_root, slug, meta, td, skills)
+    memory_path, memory = _project_memory_text(project_root)
     return f"""You are running Loom's {agent_label(meta.agent)} pane for this task.
 
 You start in this task's work directory (your git worktree is a subdirectory here - cd into it to touch code):
@@ -2721,6 +2767,16 @@ General goal:
 {meta.general_goal}
 
 {wt_line}
+
+Default prompt (always active, before any selected skills):
+---
+{_default_prompt_text() or "(missing)"}
+---
+
+Project memory ({memory_path} - append lessons here as the default prompt describes):
+---
+{memory or "(empty - create it when you have a lesson worth keeping)"}
+---
 
 Default skills from:
 {meta.skills_path or "(bundled default)"}
@@ -2735,20 +2791,25 @@ RUD workflow:
    one high-leverage question at a time about scope, constraints,
    acceptance, tests, risks, non-goals, and available worktrees.
 2. When the interview has enough information, write or overwrite
-   {plan_path} with a concise executable plan:
-   - Goal
-   - Context / Decisions from the interview
-   - Constraints / non-goals
-   - Acceptance criteria
-   - Next steps as a checkbox list
-   - Progress Log / Result section
+   {plan_path} with exactly this shape:
+   - Under the title, ONE paragraph: what success looks like, plus the
+     decisions and constraints the interview settled.
+   - "## What we have done" - empty at this point.
+   - "## Results" - an EMPTY table whose rows already name every number
+     this task must produce (columns like metric / target / value).
+     Cells get filled with real measured values during execution, never
+     invented ones.
+   - "## Future to do" - the executable checklist, in order.
+   - "## Progress Log" - empty.
    Do not leave interview notes only in chat; the result of the interview
    must be captured DIRECTLY in {plan_path}.
 3. After {state_doc} is solid, tell the user it is ready to run. The user can
    click RUD's "Run /goal" button (or type /goal) to execute {state_doc}.
-4. While executing and when finished, keep writing useful progress,
-   blockers, decisions, and final results back into {plan_path}. Remove
-   obsolete/noisy details, but preserve unrelated prior sections.
+4. While executing: move finished checklist items from "Future to do"
+   into "What we have done" (one concise line each), fill "Results"
+   cells as real numbers land, keep "Future to do" pointing at what is
+   actually next, and append dated one-liners to "Progress Log". Remove
+   obsolete noise, but preserve unrelated prior sections.
 
 Behavioural constraints:
 - {state_doc} is the ONLY task-state file. Do not create INTERVIEW.md,
@@ -3274,16 +3335,21 @@ class ClaudeRegistry:
     def _wait_for_claude_ready(self, target: str, timeout: float = 45.0) -> None:
         deadline = time.time() + timeout
         markers = ("\u276f", "\u256d", "tip:", "tips:", "/help", "cursor agent")
+        trust_answered = False
         while time.time() < deadline:
             ok, text = capture_pane(target, 80)
             lower = text.lower() if ok else ""
             # Cursor Agent asks once per new workspace. Loom creates isolated
             # task workdirs, so accept this prompt automatically; otherwise
             # the subsequent deep-interview paste lands on the trust screen.
-            if "trust this workspace" in lower:
+            # Answer it ONCE: the dialog's text lingers in the captured
+            # scrollback after it is dismissed, and re-keying Enter on every
+            # sighting typed a string of blank sends into the fresh composer.
+            if not trust_answered and "trust this workspace" in lower:
                 # Enter activates the preselected "Trust" row without leaking
                 # the shortcut letter `a` into the first chat prompt.
                 send_pane_key(target, "Enter")
+                trust_answered = True
                 time.sleep(2)
                 continue
             if ok and any(m in lower for m in markers):
@@ -5679,17 +5745,44 @@ class _TerminalStreamRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._masters: dict[str, int] = {}
+        self._procs: dict[str, object] = {}
 
-    def register(self, master: int) -> str:
+    def register(self, master: int, proc: object = None) -> str:
         stream_id = uuid.uuid4().hex
         with self._lock:
             self._masters[stream_id] = master
+            if proc is not None:
+                self._procs[stream_id] = proc
         return stream_id
 
     def unregister(self, stream_id: str, master: int) -> None:
         with self._lock:
             if self._masters.get(stream_id) == master:
                 self._masters.pop(stream_id, None)
+                self._procs.pop(stream_id, None)
+
+    def close(self, stream_id: str) -> tuple[bool, str]:
+        """End a stream because its client said so.
+
+        A client that goes away is supposed to close its connection, and the
+        streaming loop notices and tears the attach down. Through a proxy that
+        holds the upstream leg open, that close never arrives, and the attach
+        lives on as a tmux client - pinning the window size and accumulating
+        one per terminal ever opened. Letting the client ask directly costs
+        nothing and does not depend on the socket being honest.
+        """
+        if not re.fullmatch(r"[0-9a-f]{32}", stream_id or ""):
+            return False, "invalid terminal stream"
+        with self._lock:
+            proc = self._procs.pop(stream_id, None)
+            self._masters.pop(stream_id, None)
+        if proc is None:
+            return True, ""  # already gone; nothing to do
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        return True, ""
 
     def write(self, stream_id: str, text: str) -> tuple[bool, str]:
         if not re.fullmatch(r"[0-9a-f]{32}", stream_id):
@@ -6518,7 +6611,7 @@ def make_handler(
                     )
                     self._send(st, b, h)
                     return
-                stream_id = terminal_streams.register(master)
+                stream_id = terminal_streams.register(master, proc)
                 self.close_connection = True
                 # A dropped SSH tunnel or a lid-closed laptop never sends FIN:
                 # without keepalive the half-open socket keeps this attach (a
@@ -8396,6 +8489,17 @@ def make_handler(
                     _json_bytes({"ok": True})
                     if ok
                     else _json_bytes({"ok": False, "error": msg}, 409)
+                )
+                self._send(st, b, h)
+                return
+
+            if path == "/api/tmux/stream-close":
+                stream_id = str(body.get("stream_id", "")).strip()
+                ok, msg = terminal_streams.close(stream_id)
+                st, b, h = (
+                    _json_bytes({"ok": True})
+                    if ok
+                    else _json_bytes({"ok": False, "error": msg}, 400)
                 )
                 self._send(st, b, h)
                 return

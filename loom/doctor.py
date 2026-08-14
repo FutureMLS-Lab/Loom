@@ -118,6 +118,21 @@ def _check_agents() -> Check:
     )
 
 
+def _check_latex() -> Check:
+    """WARN, not FAIL: Loom itself runs without LaTeX, but the Factory's
+    paper pipeline compiles with latexmk on every round - a fresh host
+    without it fails at the first PDF build, long after setup."""
+    path = shutil.which("latexmk")
+    if path:
+        return Check("latexmk", OK, path)
+    return Check(
+        "latexmk",
+        WARN,
+        "not found - AR papers cannot build their PDFs",
+        hint="for the Research Factory: `apt install latexmk texlive-latex-extra` (or a full TeX Live)",
+    )
+
+
 def _check_assets() -> list[Check]:
     checks: list[Check] = []
     static = web_static_dir()
@@ -191,6 +206,7 @@ def run_checks(host: str = "127.0.0.1", port: int = 8765) -> Report:
     report.checks.append(_check_binary("tmux", "install tmux, e.g. `apt install tmux` or `brew install tmux`", "-V"))
     report.checks.append(_check_binary("git", "install git, e.g. `apt install git` or `brew install git`", "--version"))
     report.checks.append(_check_agents())
+    report.checks.append(_check_latex())
     report.checks.extend(_check_assets())
     report.checks.append(_check_kernel_hub())
     report.checks.append(_check_port(host, port))
