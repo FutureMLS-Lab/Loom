@@ -57,6 +57,44 @@ flowchart TB
 
 同一个 `ar.json` 按 `role` 字段区分两种实体：`studio` 与 `paper`。
 
+## 技能库（`loom/skills/ar/`）
+
+技能是 Markdown 文件、方法论即代码：改文件即升级所有 Agent，无需改 Python。
+按用途分五类，注入方式各不相同：
+
+**① 角色方法论**（整篇注入对应角色的每个 prompt，`ar_skill_text`）
+
+| 技能 | 角色 | 内容 |
+|---|---|---|
+| `AR-STUDIO.md` | 选题 | 方向 → 可证伪 idea 卡片的标准：每个 idea 必须有假设/新颖性论证/实验/风险 |
+| `AR-AUTHOR.md` | 作者 | 一轮之内的完整纪律：实验先行、占位符规则、readiness 自检、何时交 `author.md` |
+| `AR-REVIEWER.md` | 评审 | 以顶会 PC 成员标准只读 PDF 评审，输出固定结构的分数与意见 |
+
+**② 图表工艺**（菜单式：`figure_skills_block()` 只把"名字+一句话描述"注入
+author prompt，Agent 需要哪个再自己读全文，控制 prompt 体积）
+
+| 技能 | 工艺路线 |
+|---|---|
+| `teaser-figure-1` | 三联"问题/方法/结果"着色圆角盒矢量示意（Excalidraw 风），全矢量 PDF |
+| `teaser-figure-2` | 无装饰会议惯用风（SAM / FlashAttention 风）：白底、画物体不画盒子、result panel 用真实测量图 |
+| `teaser-figure-3` | Cursor GenerateImage（Nano Banana）生成图标丰富的管线/闭环图：确定性语义蓝图 + 参考图 + 人工箭头/文字审查迭代 |
+| `teaser-figure-4` | Happy Figure 工作流:事实/文字锁定 + 多个视觉方向 + 渲染后逐项审计 |
+| `results-figure-1` | house style 测量图:Okabe-Ito 配色、基线画成标注线而非图例、打印图中每个数字 |
+| `results-figure-2` | 分布证据版（Nature 风）:均值旁摆出全部 replicate、参考线自带颜色、面板内统计 |
+| `figures/display.md` | 各图表技能 example 效果速览页 |
+| `figures/reference/` | 下载的参考论文 PDF 与抽取图,供风格迁移对照 |
+
+**③ 质量核查**：`figures/checkbib` — 逐条引用验真（`\cite` → .bib → DOI/arXiv/
+venue 实源核对），防造假引用混入提交。
+
+**④ 基础设施纪律**（`gpu_resources_block()` 整篇注入 author prompt）：
+`GPU-RESOURCES.md` — slurm 集群规范：禁止登录节点跑推理、sbatch 模板、
+显存被野进程占用时的防御性 requeue 守卫。
+
+**⑤ Rebuttal 域技能**（物理上同在 `skills/ar/` 下，逻辑属 Rebuttal Factory，
+见 `docs/rebuttal-factory/arch.md`）：`paper-rebuttal/`（回复起草）、
+`paper-rebuttal-delivery/`（终稿交付通用方法论 + `WACV.md` 会议档案）。
+
 ## Studio（选题孵化）
 
 状态要点（`new_studio_state`）：`direction/custom_direction/venue/mode/seed_idea`、
