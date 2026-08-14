@@ -1,22 +1,24 @@
 # Rebuttal Factory — TODOs 与技术债
 
-更新于 2026-08-13。死代码条目**只列不删**，等 operator 逐项定夺。
+更新于 2026-08-14。
 
-## 死代码 / 遗留路径候选（等定夺）
+## 死代码清理（2026-08-14 已执行）
 
-| # | 位置 | 说明 | 现状 |
-|---|---|---|---|
-| 1 | headless `analyze`/`draft` 整条链：web.py 路由 `("analyze","draft")`、`_rebuttal_analyze_job`、`_rebuttal_draft_job`、`auto_draft` 状态接链、`JOB_ANALYZE/JOB_DRAFT` | 早期的无 tmux 版本（模型一次性产 concerns/responses），已被 live tmux Response Agent 取代 | API 仍可达，但前端 `rebuttal_factory.js` 从不调用 |
-| 2 | `rebuttal_task.update_studio` / `update_state` | 产线代码直接 read/write state | 仅测试与外部运维脚本使用（`update_state` 建议保留给脚本） |
-| 3 | 状态字段 `execution_mode` | 只在 `_rebuttal_start_agent` 写死 `"tmux"`，无任何读方 | 佐证 #1 的双模式残留 |
+经 operator 批准后已删除：headless `analyze`/`draft` 整条链（web.py 路由、
+`_rebuttal_analyze_job`、`_rebuttal_draft_job`、`analyze_project`、
+`draft_project` 及其专属辅助 `_pdf_text`/`_paper_material`/`_review_material`/
+`_evidence_material`/`_strip_markdown_fence`、`JOB_ANALYZE/JOB_DRAFT` 常量、
+`auto_draft`/`execution_mode` 状态字段写入）、`rebuttal_task.update_studio`。
+按计划保留：`rebuttal_task.update_state`（测试与运维脚本在用）。
+注：注册接口的 `auto_draft` 请求参数仍在——它现在的语义是"导入后自动启动
+live tmux Agent"，与已删的 headless draft 无关。
 
 ## 已知缺陷 / 改进项
 
-1. **图片验收没有产品入口**：`approve_delivery` 强制要求三模型验收通过且
-   绑定当前 PDF，但触发 `verify_delivery_figures` 目前只能靠外部脚本
-   （`/data/shared/zhizhousha/.cursor-runtime/scripts/delivery_monitor.py`）。
-   应加 `POST /api/rebuttal/projects/<id>/verify-figures` + UI 按钮，
-   preflight 通过后自动触发更佳。
+1. ~~**图片验收没有产品入口**~~：已修（2026-08-14）——新增
+   `POST /api/rebuttal/projects/<id>/verify-figures` 路由与 UI 按钮，
+   且 delivery preflight 通过后 watcher **自动触发**三模型验收；
+   最终批准按钮在全票通过前保持禁用。
 2. **失败迭代回路未产品化**：preflight/验收失败后"报告喂回同一 Agent pane、
    删 marker、置回 running、等新 marker 再 ingest"这套循环目前活在运维脚本里；
    watcher 原生支持多轮迭代会更稳。

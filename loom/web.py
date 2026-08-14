@@ -1111,10 +1111,6 @@ def _ensure_kernel_task_layout(root: Path, slug: str) -> Path:
     return base
 
 
-def _kernel_record_path(root: Path, slug: str, run_uid: str) -> Path:
-    return _kernel_task_run_dir(root, slug, run_uid) / "run.json"
-
-
 def _kernel_write_record(root: Path, rec: dict[str, Any]) -> None:
     slug = str(rec.get("slug") or "").strip()
     if slug:
@@ -3313,29 +3309,6 @@ class ClaudeRegistry:
                     return
             time.sleep(2)
 
-    def _paste_prompt_and_watch_session(
-        self,
-        project_root: Path,
-        slug: str,
-        target: str,
-        cwd: Path,
-        agent: str,
-        existing_ids: set[str],
-        default_skills: Path | None = None,
-    ) -> None:
-        # Give the CLI a short chance to paint its input prompt, but do not
-        # wait 90s: if the readiness heuristic misses a newer Claude/Codex UI
-        # the paste should still happen quickly.
-        time.sleep(2)
-        self._wait_for_claude_ready(target, timeout=12.0)
-        result = self._paste_prompt_to_target(project_root, slug, target, default_skills=default_skills)
-        if not result.get("ok"):
-            print(
-                f"[web] paste prompt failed slug={slug}: {result.get('error', 'unknown error')}",
-                flush=True,
-            )
-        self._watch_for_session_id(project_root, slug, cwd, agent, existing_ids)
-
     def _paste_prompt_to_target(
         self,
         project_root: Path,
@@ -4092,83 +4065,6 @@ def _rebuttal_policy_job(studio_id: str, model: str) -> None:
     rebuttal.write_studio(studio_id, state)
 
 
-def _rebuttal_analyze_job(project_id: str, model: str) -> None:
-    log = _rebuttal_logger(project_id)
-    result = rebuttal.analyze_project(project_id, model=model, on_line=log)
-    state = rebuttal.read_state(project_id)
-    if not state:
-        return
-    auto_draft = bool(state.get("auto_draft"))
-    state["active_job"] = (
-        rebuttal.JOB_DRAFT if result.get("ok") and auto_draft else ""
-    )
-    state["cost_usd"] = round(
-        float(state.get("cost_usd") or 0.0) + float(result.get("cost") or 0.0),
-        4,
-    )
-    if result.get("ok"):
-        state["reviewers"] = result.get("reviewers") or []
-        state["responses"] = {}
-        state["validation"] = {}
-        state["approved_at"] = ""
-        state["content_approval"] = {}
-        rebuttal.invalidate_delivery(state, "review concerns were regenerated")
-        state["stage"] = rebuttal.STAGE_CONCERNS
-        state["error"] = ""
-        rebuttal.append_log(
-            state,
-            f"extracted {sum(len(r.get('concerns') or []) for r in state['reviewers'])} "
-            f"concern(s) across {len(state['reviewers'])} reviewer(s)",
-        )
-        if auto_draft:
-            rebuttal.append_log(
-                state,
-                "automatically starting reviewer-specific rebuttal drafts",
-            )
-    else:
-        state["auto_draft"] = False
-        state["error"] = str(result.get("error") or "review analysis failed")
-        rebuttal.append_log(state, f"analysis failed: {state['error']}")
-    rebuttal.write_state(project_id, state)
-    if result.get("ok") and auto_draft:
-        _ar_run_async(_rebuttal_draft_job, project_id, model)
-
-
-def _rebuttal_draft_job(project_id: str, model: str) -> None:
-    log = _rebuttal_logger(project_id)
-    result = rebuttal.draft_project(project_id, model=model, on_line=log)
-    state = rebuttal.read_state(project_id)
-    if not state:
-        return
-    state["active_job"] = ""
-    state["auto_draft"] = False
-    state["cost_usd"] = round(
-        float(state.get("cost_usd") or 0.0) + float(result.get("cost") or 0.0),
-        4,
-    )
-    if result.get("ok"):
-        state["responses"] = result.get("responses") or {}
-        state["validation"] = {}
-        state["approved_at"] = ""
-        state["content_approval"] = {}
-        rebuttal.invalidate_delivery(state, "response drafts were regenerated")
-        state["stage"] = rebuttal.STAGE_RESPONSES
-        state["error"] = ""
-        rebuttal.append_log(
-            state,
-            f"drafted {len(state['responses'])} reviewer response(s)",
-        )
-    else:
-        # Keep successfully written partial drafts inspectable, but do not mark
-        # the package ready until every reviewer response exists.
-        partial = result.get("responses")
-        if isinstance(partial, dict) and partial:
-            state["responses"] = partial
-        state["error"] = str(result.get("error") or "response drafting failed")
-        rebuttal.append_log(state, f"drafting failed: {state['error']}")
-    rebuttal.write_state(project_id, state)
-
-
 def _rebuttal_session_name(project_id: str) -> str:
     return _sanitize_session_name(
         f"loom-rebuttal-{project_id}",
@@ -4331,14 +4227,12 @@ def _rebuttal_start_agent(
     if not ok:
         return {"ok": False, "error": error}
     state = rebuttal.read_state(project_id)
-    state["execution_mode"] = "tmux"
     state["tmux_target"] = target
     state["agent_status"] = "running"
     state["agent_model"] = selected_model
     state["agent_started_at"] = _iso_now()
     state["agent_summary"] = ""
     state["active_job"] = ""
-    state["auto_draft"] = False
     state["error"] = ""
     rebuttal.append_log(state, f"started live rebuttal agent in {target}")
     rebuttal.write_state(project_id, state)
@@ -4404,6 +4298,31 @@ def _rebuttal_delivery_session_name(project_id: str) -> str:
     )
 
 
+def _rebuttal_verify_figures_job(project_id: str) -> None:
+    """Run the three-model figure panel; it writes the verdict state itself."""
+    log = _rebuttal_logger(project_id)
+    try:
+        result = delivery.verify_delivery_figures(project_id, on_line=log)
+    except Exception as exc:  # noqa: BLE001 - job boundary
+        result = {"ok": False, "error": str(exc)}
+    if "report" in result:
+        # The panel ran to a verdict; verify_delivery_figures already moved the
+        # stage/phase and stored the per-model reports.
+        return
+    latest = rebuttal.read_state(project_id)
+    current = dict(latest.get("delivery") or {})
+    if current.get("phase") == "figure_verification_running":
+        # The panel could not run at all (missing PDF, model catalog failure):
+        # fall back to the pre-run phase so the button comes back.
+        current["phase"] = "awaiting_final_approval"
+        latest["delivery"] = current
+        latest["error"] = str(result.get("error") or "figure verification failed to run")
+        rebuttal.append_log(
+            latest, f"figure verification failed to run: {latest['error']}"
+        )
+        rebuttal.write_state(project_id, latest)
+
+
 def _rebuttal_watch_delivery_agent(project_id: str) -> None:
     while True:
         state = rebuttal.read_state(project_id)
@@ -4444,6 +4363,25 @@ def _rebuttal_watch_delivery_agent(project_id: str) -> None:
                     )
                     rebuttal.append_log(latest, latest["error"])
                     rebuttal.write_state(project_id, latest)
+                return
+            # Preflight passed. Final approval requires a unanimous figure
+            # verdict bound to this exact PDF, so start the panel now instead
+            # of waiting for someone to trigger it by script.
+            latest = rebuttal.read_state(project_id)
+            if latest.get("stage") == rebuttal.STAGE_AWAIT_DELIVERY_APPROVAL:
+                current = dict(latest.get("delivery") or {})
+                current["phase"] = "figure_verification_running"
+                latest["delivery"] = current
+                rebuttal.append_log(
+                    latest, "starting the three-model figure verification"
+                )
+                rebuttal.write_state(project_id, latest)
+                threading.Thread(
+                    target=_rebuttal_verify_figures_job,
+                    args=(project_id,),
+                    name=f"loom-rebuttal-figures-{project_id}",
+                    daemon=True,
+                ).start()
             return
 
         target = str(current.get("tmux_target") or "")
@@ -5689,7 +5627,14 @@ class ARLoopManager:
                 except Exception:  # noqa: BLE001
                     continue
                 changes: dict[str, Any] = {}
-                for job in ("search_suggest", "papers", "ideas", "review", "venue"):
+                for job in (
+                    "search_suggest",
+                    "papers",
+                    "ideas",
+                    "review",
+                    "venue",
+                    "link",
+                ):
                     if str(state.get(f"{job}_status") or "") == "running":
                         changes[f"{job}_status"] = "error"
                         changes[f"{job}_error"] = (
@@ -7870,6 +7815,35 @@ def make_handler(
                     self._send(st, b, h)
                     return
 
+                if action == "verify-figures":
+                    phase = str(delivery_state.get("phase") or "")
+                    artifacts = (
+                        delivery_state.get("artifacts")
+                        if isinstance(delivery_state.get("artifacts"), dict)
+                        else {}
+                    )
+                    if phase == "figure_verification_running":
+                        st, b, h = _json_bytes({"ok": True, "status": "running"}, 202)
+                    elif not artifacts.get("revised_paper"):
+                        st, b, h = _json_bytes(
+                            {
+                                "ok": False,
+                                "error": "run the delivery preflight first",
+                            },
+                            409,
+                        )
+                    else:
+                        latest = rebuttal.read_state(project_id)
+                        current = dict(latest.get("delivery") or {})
+                        current["phase"] = "figure_verification_running"
+                        latest["delivery"] = current
+                        rebuttal.append_log(latest, "figure verification requested")
+                        rebuttal.write_state(project_id, latest)
+                        _ar_run_async(_rebuttal_verify_figures_job, project_id)
+                        st, b, h = _json_bytes({"ok": True, "status": "running"}, 202)
+                    self._send(st, b, h)
+                    return
+
                 if action == "approve-delivery":
                     try:
                         payload = delivery.approve_delivery(project_id)
@@ -7963,50 +7937,6 @@ def make_handler(
                         st, b, h = _json_bytes(
                             rebuttal.project_payload(project_id)
                         )
-                    self._send(st, b, h)
-                    return
-
-                if action in ("analyze", "draft"):
-                    if active:
-                        st, b, h = _json_bytes(
-                            {"ok": True, "status": "running", "job": active},
-                            202,
-                        )
-                    else:
-                        job = (
-                            rebuttal.JOB_ANALYZE
-                            if action == "analyze"
-                            else rebuttal.JOB_DRAFT
-                        )
-                        if action == "draft" and not state.get("reviewers"):
-                            st, b, h = _json_bytes(
-                                {"ok": False, "error": "analyze reviews first"},
-                                409,
-                            )
-                        else:
-                            state["active_job"] = job
-                            state["error"] = ""
-                            if action == "analyze":
-                                state["reviewers"] = []
-                                state["responses"] = {}
-                                state["validation"] = {}
-                                state["stage"] = rebuttal.STAGE_INTAKE
-                            rebuttal.append_log(state, f"started {job} job")
-                            rebuttal.write_state(project_id, state)
-                            model = (
-                                str(body.get("model") or "").strip()
-                                or _ar_headless_model(None)
-                            )
-                            target = (
-                                _rebuttal_analyze_job
-                                if action == "analyze"
-                                else _rebuttal_draft_job
-                            )
-                            _ar_run_async(target, project_id, model)
-                            st, b, h = _json_bytes(
-                                {"ok": True, "status": "running", "job": job},
-                                202,
-                            )
                     self._send(st, b, h)
                     return
 

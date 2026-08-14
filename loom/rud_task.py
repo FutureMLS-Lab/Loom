@@ -52,7 +52,6 @@ AGENT_CLAUDE = "claude"
 AGENT_CODEX = "codex"
 SUPPORTED_AGENTS = frozenset({AGENT_CURSOR, AGENT_CLAUDE, AGENT_CODEX})
 CURSOR_DEFAULT_MODEL = "gpt-5.6-sol-max-fast"
-CURSOR_DEFAULT_MODEL_FAMILY = "gpt-5.6-sol"
 
 # Models currently available to this installation. These feed the web pickers;
 # the fields remain editable, so an API/CLI model added later can be typed
@@ -184,60 +183,6 @@ def agent_default_model(name: str) -> str:
         AGENT_CLAUDE: "claude-fable-5",
         AGENT_CODEX: "",  # codex falls back to its own ~/.codex/config.toml default
     }.get(normalize_agent(name), "")
-
-
-def ensure_cursor_default_model_config(home: Path | None = None) -> tuple[bool, str]:
-    """Persist Cursor's 1M/Max/Fast parameters for compatibility callers."""
-    config_path = (home or Path.home()) / ".cursor" / "cli-config.json"
-    try:
-        if config_path.is_file():
-            data = json.loads(config_path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                return False, "Cursor CLI config is not a JSON object"
-            mode = config_path.stat().st_mode & 0o777
-        else:
-            data = {"version": 1}
-            mode = 0o600
-
-        parameters = [
-            {"id": "context", "value": "1m"},
-            {"id": "reasoning", "value": "max"},
-            {"id": "fast", "value": "true"},
-        ]
-        model = data.get("model")
-        if not isinstance(model, dict):
-            model = {}
-        data["model"] = {
-            **model,
-            "modelId": CURSOR_DEFAULT_MODEL_FAMILY,
-            "displayModelId": CURSOR_DEFAULT_MODEL_FAMILY,
-            "displayName": "GPT-5.6 Sol 1M Max Fast",
-            "displayNameShort": "GPT-5.6 Sol 1M Max Fast",
-            "maxMode": True,
-        }
-        model_parameters = data.get("modelParameters")
-        if not isinstance(model_parameters, dict):
-            model_parameters = {}
-        model_parameters[CURSOR_DEFAULT_MODEL_FAMILY] = parameters
-        data["modelParameters"] = model_parameters
-        data["selectedModel"] = {
-            "modelId": CURSOR_DEFAULT_MODEL_FAMILY,
-            "parameters": parameters,
-        }
-        data["hasChangedDefaultModel"] = True
-        data["maxMode"] = True
-
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = config_path.with_name(f".{config_path.name}.{os.getpid()}.tmp")
-        try:
-            tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-            os.chmod(tmp, mode)
-            tmp.replace(config_path)
-        finally:
-            tmp.unlink(missing_ok=True)
-    except (OSError, json.JSONDecodeError) as exc:
-        return False, str(exc)
-    return True, ""
 
 
 def agent_model_options(name: str) -> tuple[dict[str, str], ...]:
@@ -482,12 +427,6 @@ def ensure_unique_slug(project_root: Path, base: str) -> str:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def load_default_skills(skills_path: Path) -> str:
-    if not skills_path.is_file():
-        return ""
-    return skills_path.read_text(encoding="utf-8", errors="replace")
 
 
 # A task can use SEVERAL skills files together: meta.skills_path holds one or

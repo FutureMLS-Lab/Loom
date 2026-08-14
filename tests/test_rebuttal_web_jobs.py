@@ -36,107 +36,50 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     return rebuttal.register_project(str(source))["project"]["id"]
 
 
-def test_analyze_job_updates_stage_cost_and_logs(
+def test_verify_figures_job_restores_phase_when_panel_cannot_run(
     project: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    reviewer = {
-        "id": "R1",
-        "label": "R1",
-        "concerns": [{"id": "R1-W1", "summary": "Concern"}],
-    }
-    monkeypatch.setattr(
-        web.rebuttal,
-        "analyze_project",
-        lambda project_id, model, on_line: {
-            "ok": True,
-            "reviewers": [reviewer],
-            "cost": 0.4,
-        },
-    )
-    rebuttal.update_state(project, active_job=rebuttal.JOB_ANALYZE)
-
-    web._rebuttal_analyze_job(project, "claude-test")
-
     state = rebuttal.read_state(project)
-    assert state["active_job"] == ""
-    assert state["stage"] == rebuttal.STAGE_CONCERNS
-    assert state["reviewers"] == [reviewer]
-    assert state["cost_usd"] == 0.4
-    assert any("extracted 1 concern" in line for line in state["logs"])
-
-
-def test_analyze_job_chains_automatic_draft(
-    project: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    reviewer = {
-        "id": "R1",
-        "label": "R1",
-        "concerns": [{"id": "R1-W1", "summary": "Concern"}],
-    }
+    state["stage"] = rebuttal.STAGE_AWAIT_DELIVERY_APPROVAL
+    state["delivery"] = {"phase": "figure_verification_running"}
+    rebuttal.write_state(project, state)
     monkeypatch.setattr(
-        web.rebuttal,
-        "analyze_project",
-        lambda project_id, model, on_line: {
-            "ok": True,
-            "reviewers": [reviewer],
-            "cost": 0.1,
-        },
-    )
-    launched = []
-    monkeypatch.setattr(
-        web,
-        "_ar_run_async",
-        lambda fn, *args: launched.append((fn, args)),
-    )
-    rebuttal.update_state(
-        project,
-        active_job=rebuttal.JOB_ANALYZE,
-        auto_draft=True,
-    )
-
-    web._rebuttal_analyze_job(project, "claude-test")
-
-    state = rebuttal.read_state(project)
-    assert state["active_job"] == rebuttal.JOB_DRAFT
-    assert launched == [
-        (web._rebuttal_draft_job, (project, "claude-test"))
-    ]
-    assert any("automatically starting" in line for line in state["logs"])
-
-
-def test_draft_job_keeps_partial_responses_on_failure(
-    project: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    partial = {
-        "R1": {
-            "reviewer_id": "R1",
-            "path": "/tmp/response-R1.md",
-            "characters": 100,
-        }
-    }
-    monkeypatch.setattr(
-        web.rebuttal,
-        "draft_project",
-        lambda project_id, model, on_line: {
+        web.delivery,
+        "verify_delivery_figures",
+        lambda project_id, on_line=None: {
             "ok": False,
-            "error": "R2 model failed",
-            "responses": partial,
-            "cost": 0.2,
+            "error": "revised-paper.pdf is missing",
         },
     )
-    rebuttal.update_state(
-        project,
-        active_job=rebuttal.JOB_DRAFT,
-        reviewers=[{"id": "R1", "concerns": []}, {"id": "R2", "concerns": []}],
-    )
 
-    web._rebuttal_draft_job(project, "claude-test")
+    web._rebuttal_verify_figures_job(project)
 
     state = rebuttal.read_state(project)
-    assert state["active_job"] == ""
-    assert state["error"] == "R2 model failed"
-    assert state["responses"] == partial
-    assert state["cost_usd"] == 0.2
+    assert state["delivery"]["phase"] == "awaiting_final_approval"
+    assert any(
+        "figure verification failed to run" in line for line in state["logs"]
+    )
+
+
+def test_verify_figures_job_leaves_panel_verdict_untouched(
+    project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+
+    def fake_panel(project_id: str, on_line=None) -> dict:
+        calls.append(project_id)
+        return {"ok": True, "report": {"all_pass": True}}
+
+    monkeypatch.setattr(web.delivery, "verify_delivery_figures", fake_panel)
+    state = rebuttal.read_state(project)
+    state["delivery"] = {"phase": "figure_verification_running"}
+    rebuttal.write_state(project, state)
+
+    web._rebuttal_verify_figures_job(project)
+
+    assert calls == [project]
+    state = rebuttal.read_state(project)
+    assert state["delivery"]["phase"] == "figure_verification_running"
 
 
 def test_policy_job_updates_studio_stage_and_sources(
@@ -177,11 +120,10 @@ def test_policy_job_updates_studio_stage_and_sources(
             "cost": 0.15,
         },
     )
-    rebuttal.update_studio(
-        studio_id,
-        active_job=rebuttal.JOB_POLICY,
-        stage=rebuttal.STUDIO_STAGE_POLICY_DRAFT,
-    )
+    studio_state = rebuttal.read_studio(studio_id)
+    studio_state["active_job"] = rebuttal.JOB_POLICY
+    studio_state["stage"] = rebuttal.STUDIO_STAGE_POLICY_DRAFT
+    rebuttal.write_studio(studio_id, studio_state)
 
     web._rebuttal_policy_job(studio_id, "claude-test")
 

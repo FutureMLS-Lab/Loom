@@ -538,7 +538,6 @@ def test_store_round_trip(store: Path) -> None:
     assert got["real_title"] == "QeRL"
     assert got["verified"] is True
     assert store.is_file()
-    assert ar.store_stats()["papers"] == 1
 
 
 def test_store_expiry(store: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -910,18 +909,13 @@ def test_ensure_round_is_idempotent_and_sorted() -> None:
     assert ar.round_record(state, 2)["author"]["summary"] == "done"
 
 
-def test_latest_review_and_completion() -> None:
+def test_latest_review_returns_newest_round() -> None:
     state = _paper_state(max_rounds=2)
     assert ar.latest_review(state) is None
 
     ar.ensure_round(state, 1)["review"] = {"headline": "rating 3/10"}
     ar.ensure_round(state, 2)["review"] = {"headline": "rating 5/10"}
     assert ar.latest_review(state)["headline"] == "rating 5/10"
-
-    state["round"] = 1
-    assert not ar.loop_is_complete(state)
-    state["round"] = 2
-    assert ar.loop_is_complete(state)
 
 
 def test_progress_summary_shows_round_counter() -> None:
@@ -1231,18 +1225,6 @@ def test_latex_errors_extracts_file_line_messages() -> None:
         "./main.tex:12: Undefined control sequence.",
         "./x.sty:3: Emergency stop.",
     ]
-
-
-def test_paper_source_text_concatenates_sections(tmp_path: Path) -> None:
-    venue = ar.DEFAULT_VENUE
-    if not ar.venue_is_available(venue):
-        pytest.skip("styles not vendored; run scripts/fetch_paper_styles.py")
-    dest = tmp_path / "paper"
-    ar.seed_paper_skeleton(dest, venue, {"title": "T"})
-    text = ar.paper_source_text(dest)
-    assert "% ===== main.tex =====" in text
-    assert "sections/04_experiments.tex" in text
-    assert len(ar.paper_source_text(dest, limit=500)) <= 600
 
 
 # --- OpenReview submission prep ---------------------------------------------

@@ -945,14 +945,17 @@ function renderDelivery(project) {
     </div>
     ${errors.length ? `<div class="rb-delivery-errors"><b>Deterministic preflight blocked this attempt</b>
       <ul>${errors.map((error) => `<li>${esc(error)}</li>`).join('')}</ul></div>` : ''}
-    ${figureRedraw.status ? `<div class="rb-figure-verification">
+    ${(figureRedraw.status || figureVerification.checked_at || phase === 'figure_verification_running') ? `<div class="rb-figure-verification">
       <div class="rb-figure-verification__head">
         <b>Three-model figure verification</b>
-        <span class="rb-pill ${figureVerification.all_pass ? 'rb-pill--ready' : (figureRedraw.status === 'running' ? 'rb-pill--live' : 'rb-pill--bad')}">
-          ${figureVerification.all_pass ? 'unanimous pass' : (figureRedraw.status === 'running' ? 'redraw running' : 'waiting for all reviewers')}
+        <span class="rb-pill ${figureVerification.all_pass ? 'rb-pill--ready' : ((phase === 'figure_verification_running' || figureRedraw.status === 'running') ? 'rb-pill--live' : 'rb-pill--bad')}">
+          ${figureVerification.all_pass ? 'unanimous pass'
+            : phase === 'figure_verification_running' ? 'verifying…'
+            : figureRedraw.status === 'running' ? 'redraw running'
+            : 'waiting for all reviewers'}
         </span>
       </div>
-      <p>The redraw can finish only when all three fixed Paper Reviewer models return PASS.</p>
+      <p>Final approval unlocks only after all three fixed Paper Reviewer models return PASS on the current PDF.</p>
       ${(figureVerification.reviewers || []).length ? `<div class="rb-figure-reviewers">
         ${figureVerification.reviewers.map((item) => `<div>
           <b>${esc(item.model || 'reviewer')}</b>
@@ -1018,10 +1021,23 @@ function renderPaperActions(project) {
     deliveryRunning ? 'delivery agent is running' : (canStartDelivery ? '' : 'approve response content first'),
   );
   setButton('btn-delivery-stop', delivery.agent_status === 'running', 'delivery agent is not running');
+  const verifyingFigures = delivery.phase === 'figure_verification_running';
+  el('btn-verify-figures').textContent = verifyingFigures ? 'Verifying figures…' : 'Verify figures';
+  setButton(
+    'btn-verify-figures',
+    project.stage === 'await_delivery_approval' && !verifyingFigures
+      && Boolean(((delivery.artifacts || {}).revised_paper || {}).sha256),
+    verifyingFigures ? 'the three-model panel is reviewing the figures'
+      : 'the delivery preflight must pass first',
+  );
   setButton(
     'btn-delivery-approve',
-    project.stage === 'await_delivery_approval' && Boolean((delivery.validation || {}).ready),
-    project.stage === 'bundle_ready' ? 'final artifacts are already approved' : 'strict artifact preflight must pass first',
+    project.stage === 'await_delivery_approval'
+      && Boolean((delivery.validation || {}).ready)
+      && Boolean((delivery.figure_verification || {}).all_pass),
+    project.stage === 'bundle_ready' ? 'final artifacts are already approved'
+      : !Boolean((delivery.figure_verification || {}).all_pass) ? 'all three figure reviewers must pass first'
+      : 'strict artifact preflight must pass first',
   );
   setButton('btn-policy-save', !active && !agentRunning && !deliveryRunning, deliveryRunning ? 'stop the delivery agent before changing policy' : (agentRunning ? 'stop the agent before changing policy' : (active ? `${active} is running` : '')));
   el('action-status').textContent = agentRunning
@@ -1242,6 +1258,10 @@ el('btn-delivery-start').addEventListener('click', async () => {
   if (payload) toast(rerun ? 'Delivery Agent restarted with preflight feedback.' : 'Delivery Agent started.');
 });
 el('btn-delivery-stop').addEventListener('click', () => runPaperAction('stop-delivery'));
+el('btn-verify-figures').addEventListener('click', async () => {
+  const payload = await runPaperAction('verify-figures');
+  if (payload) toast('Three-model figure verification started.');
+});
 el('btn-delivery-approve').addEventListener('click', async () => {
   if (!window.confirm('Approve the exact validated PDF hashes and build the manual-upload bundle?')) return;
   const payload = await runPaperAction('approve-delivery');

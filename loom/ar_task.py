@@ -1121,38 +1121,9 @@ def latex_errors(log: str, limit: int = 20) -> list[str]:
     return out
 
 
-def paper_source_text(paper_dir: Path, limit: int = 90000) -> str:
-    """Concatenate the paper's LaTeX sources for a reviewer prompt."""
-    parts: list[str] = []
-    total = 0
-    candidates = [paper_dir / "main.tex"]
-    sections = paper_dir / "sections"
-    if sections.is_dir():
-        candidates.extend(sorted(sections.glob("*.tex")))
-    for path in candidates:
-        try:
-            body = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        try:
-            name = str(path.relative_to(paper_dir))
-        except ValueError:
-            name = path.name
-        chunk = f"% ===== {name} =====\n{body}\n"
-        if total + len(chunk) > limit:
-            parts.append(chunk[: max(0, limit - total)])
-            parts.append("\n% ... (sources truncated for review) ...\n")
-            break
-        parts.append(chunk)
-        total += len(chunk)
-    return "".join(parts).strip()
-
-
 # --- Paper mining -----------------------------------------------------------
 
 ARXIV_API = "https://export.arxiv.org/api/query"
-# Compatibility alias for callers that imported the old fixed category tuple.
-ARXIV_CATEGORIES = DEFAULT_ARXIV_CATEGORIES
 _ATOM_NS = "{http://www.w3.org/2005/Atom}"
 _ARXIV_NS = "{http://arxiv.org/schemas/atom}"
 
@@ -2006,15 +1977,6 @@ def store_put(key: str, record: dict[str, Any]) -> None:
         _write_paper_store(data)
 
 
-def store_stats() -> dict[str, Any]:
-    data = read_paper_store()
-    return {
-        "papers": len(data),
-        "verified": sum(1 for r in data.values() if isinstance(r, dict) and r.get("verified")),
-        "path": str(paper_store_path()),
-    }
-
-
 def remember_papers(papers: list[dict[str, Any]]) -> int:
     """Fold mined arXiv results into the store so a later lookup is free."""
     stored = 0
@@ -2689,10 +2651,6 @@ def latest_review(state: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(rec, dict) and isinstance(rec.get("review"), dict):
             return rec["review"]
     return None
-
-
-def loop_is_complete(state: dict[str, Any]) -> bool:
-    return current_round(state) >= max_rounds(state)
 
 
 # --- Adapting the loop ------------------------------------------------------

@@ -58,8 +58,6 @@ STUDIO_STAGE_AWAIT_POLICY_REVIEW = "await_policy_review"
 STUDIO_STAGE_ACTIVE = "active"
 STUDIO_STAGE_CLOSED = "closed"
 
-JOB_ANALYZE = "analyze"
-JOB_DRAFT = "draft"
 JOB_POLICY = "policy_discovery"
 
 DEFAULT_POLICY = {
@@ -274,14 +272,6 @@ def write_studio(studio_id: str, state: dict[str, Any]) -> bool:
     with _LOCK:
         _atomic_json(studio_path(studio_id), payload)
     return True
-
-
-def update_studio(studio_id: str, **changes: Any) -> dict[str, Any]:
-    with _LOCK:
-        state = read_studio(studio_id)
-        state.update(changes)
-        write_studio(studio_id, state)
-        return read_studio(studio_id)
 
 
 def _validate_url_syntax(value: str, label: str) -> str:
@@ -950,91 +940,11 @@ def _safe_response_id(value: str, fallback: str = "reviewer") -> str:
     return slug[:80] or fallback
 
 
-def _pdf_text(path: Path, limit: int = 120_000) -> tuple[str, str]:
-    try:
-        reader = PdfReader(str(path))
-        text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
-    except Exception as exc:  # noqa: BLE001 - document boundary
-        return "", str(exc)
-    return text[:limit], ""
-
-
 def _read_text(path: Path, limit: int = 12_000) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="replace")[:limit]
     except OSError:
         return ""
-
-
-def _review_material(state: dict[str, Any]) -> tuple[str, list[str]]:
-    manifest = state.get("manifest") if isinstance(state.get("manifest"), dict) else {}
-    blocks: list[str] = []
-    errors: list[str] = []
-    for index, raw in enumerate(manifest.get("review_pdfs") or [], 1):
-        path = Path(str(raw))
-        text, error = _pdf_text(path, 90_000)
-        if error:
-            errors.append(f"{path.name}: {error}")
-            continue
-        if not text.strip():
-            errors.append(
-                f"{path.name}: no extractable review text; provide an OCR-readable PDF"
-            )
-            continue
-        blocks.append(f"=== REVIEW DOCUMENT {index}: {path.name} ===\n{text}")
-    return "\n\n".join(blocks), errors
-
-
-def _paper_material(state: dict[str, Any]) -> tuple[str, list[str]]:
-    manifest = state.get("manifest") if isinstance(state.get("manifest"), dict) else {}
-    value = str(manifest.get("paper_pdf") or "")
-    if not value:
-        return "", ["paper PDF is missing"]
-    text, error = _pdf_text(Path(value), 140_000)
-    if error:
-        return "", [error]
-    if not text.strip():
-        return "", ["paper PDF has no extractable text; provide an OCR-readable PDF"]
-    return text, []
-
-
-def _evidence_material(state: dict[str, Any], limit: int = 120_000) -> str:
-    manifest = state.get("manifest") if isinstance(state.get("manifest"), dict) else {}
-    files = [
-        item
-        for item in manifest.get("files") or []
-        if isinstance(item, dict) and item.get("kind") == "material"
-    ]
-
-    def score(item: dict[str, Any]) -> tuple[int, int, str]:
-        name = str(item.get("relative_path") or "").lower()
-        preferred = bool(
-            re.search(
-                r"(claim|evidence|result|proof|theory|experiment|table|figure|"
-                r"review|readme|note|manifest)",
-                name,
-            )
-        )
-        return (0 if preferred else 1, int(item.get("size") or 0), name)
-
-    chunks: list[str] = []
-    total = 0
-    for item in sorted(files, key=score):
-        path = Path(str(item.get("path") or ""))
-        if path.suffix.lower() not in _TEXT_SUFFIXES:
-            continue
-        body = _read_text(path, 12_000)
-        if not body.strip():
-            continue
-        chunk = f"=== {item.get('relative_path')} ===\n{body}\n"
-        if total + len(chunk) > limit:
-            remaining = limit - total
-            if remaining > 500:
-                chunks.append(chunk[:remaining])
-            break
-        chunks.append(chunk)
-        total += len(chunk)
-    return "\n".join(chunks)
 
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:
@@ -1804,113 +1714,6 @@ def ingest_agent_outputs(project_id: str) -> dict[str, Any]:
 ModelRunner = Callable[..., dict[str, Any]]
 
 
-def analyze_project(
-    project_id: str,
-    *,
-    model: str = "",
-    on_line: Callable[[str], None] | None = None,
-    runner: ModelRunner | None = None,
-) -> dict[str, Any]:
-    state = read_state(project_id)
-    if not state:
-        return {"ok": False, "error": "rebuttal project not found", "cost": 0.0}
-    manifest = state.get("manifest") if isinstance(state.get("manifest"), dict) else {}
-    if not manifest.get("ready"):
-        return {
-            "ok": False,
-            "error": "package needs one paper PDF and at least one review PDF",
-            "cost": 0.0,
-        }
-    paper_text, paper_errors = _paper_material(state)
-    review_text, review_errors = _review_material(state)
-    if paper_errors or review_errors:
-        return {
-            "ok": False,
-            "error": "; ".join(paper_errors + review_errors),
-            "cost": 0.0,
-        }
-    prompt = f"""You are extracting an atomic concern matrix for an academic rebuttal.
-
-Read the submitted paper and every review below. Do not draft responses yet.
-Do not invent reviewer statements. Preserve each reviewer's identity label when
-present; otherwise assign R1, R2, and so on.
-
-Return one JSON object and nothing else:
-{{
-  "reviewers": [
-    {{
-      "id": "reviewer id or R1",
-      "label": "display label",
-      "summary": "one short paragraph",
-      "positive_points": ["..."],
-      "concerns": [
-        {{
-          "id": "R1-W1 or R1-Q1",
-          "type": "weakness|question|meta",
-          "verbatim": "short exact quote from the review",
-          "summary": "faithful one-line restatement",
-          "severity": "critical|high|medium|low",
-          "response_mode": "correct|clarify|scope|dispute|future",
-          "evidence_needed": "what proof/result/source is needed"
-        }}
-      ]
-    }}
-  ]
-}}
-
-Rules:
-- Every weakness and question gets exactly one concern row.
-- Repeated concerns from different reviewers remain separate.
-- Do not weaken a concern while summarizing it.
-- Do not infer that a concern is resolved.
-- Scores and praise are metadata, not weaknesses.
-
-=== SUBMITTED PAPER ===
-{paper_text}
-
-=== REVIEWS ===
-{review_text}
-"""
-    if on_line:
-        on_line("asking the model to atomize reviewer concerns")
-    run = runner or ar._run_headless
-    result = run(prompt, model=model, timeout=900, on_line=on_line)
-    if not result.get("ok"):
-        return result
-    raw = _extract_json_object(str(result.get("text") or ""))
-    if raw is None:
-        return {
-            "ok": False,
-            "error": "model did not return a JSON concern object",
-            "cost": result.get("cost", 0.0),
-        }
-    reviewers = _normalize_concerns(raw)
-    if not reviewers:
-        return {
-            "ok": False,
-            "error": "model returned no usable reviewer concerns",
-            "cost": result.get("cost", 0.0),
-        }
-    source = _source_for(project_id)
-    assert source is not None
-    _atomic_json(output_root(source) / CONCERNS_FILE, {"reviewers": reviewers})
-    (output_root(source) / CONCERN_MATRIX_FILE).write_text(
-        concern_matrix_markdown(reviewers),
-        encoding="utf-8",
-    )
-    return {
-        "ok": True,
-        "reviewers": reviewers,
-        "cost": result.get("cost", 0.0),
-    }
-
-
-def _strip_markdown_fence(text: str) -> str:
-    value = str(text or "").strip()
-    match = re.fullmatch(r"```(?:markdown|md)?\s*(.*?)\s*```", value, re.S | re.I)
-    return match.group(1).strip() if match else value
-
-
 def _has_unconditional_future_manuscript_action(text: str) -> bool:
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
         for match in _FUTURE_MANUSCRIPT_ACTION_RE.finditer(sentence):
@@ -1918,104 +1721,6 @@ def _has_unconditional_future_manuscript_action(text: str) -> bool:
             if "if accepted," not in prefix:
                 return True
     return False
-
-
-def draft_project(
-    project_id: str,
-    *,
-    model: str = "",
-    on_line: Callable[[str], None] | None = None,
-    runner: ModelRunner | None = None,
-) -> dict[str, Any]:
-    state = read_state(project_id)
-    reviewers = [item for item in state.get("reviewers") or [] if isinstance(item, dict)]
-    if not reviewers:
-        return {"ok": False, "error": "analyze reviews first", "cost": 0.0}
-    paper_text, errors = _paper_material(state)
-    if errors:
-        return {"ok": False, "error": "; ".join(errors), "cost": 0.0}
-    evidence = _evidence_material(state)
-    policy = normalize_policy(state.get("policy") if isinstance(state.get("policy"), dict) else {})
-    skill = ar.ar_skill_text(ar.SKILL_REBUTTAL, limit=40_000)
-    source = _source_for(project_id)
-    assert source is not None
-    response_dir = output_root(source) / RESPONSES_SUBDIR
-    response_dir.mkdir(parents=True, exist_ok=True)
-    responses: dict[str, dict[str, Any]] = {}
-    total_cost = 0.0
-    run = runner or ar._run_headless
-
-    for reviewer in reviewers:
-        reviewer_id = str(reviewer.get("id") or "reviewer")
-        concern_ids = [
-            str(item.get("id") or "")
-            for item in reviewer.get("concerns") or []
-            if isinstance(item, dict)
-        ]
-        if on_line:
-            on_line(f"{reviewer_id}: drafting point-by-point response")
-        prompt = f"""{skill}
-
-=== END REBUTTAL SKILL ===
-
-Draft one paste-ready response to this reviewer. Return Markdown only, without
-code fences or internal notes.
-
-Venue policy:
-{json.dumps(policy, ensure_ascii=False, indent=2)}
-
-Mandatory response rules:
-- Open with specific gratitude.
-- Use one heading for every concern id, preserving each id exactly.
-- Under every heading: brief thanks, direct response, evidence, and action/scope.
-- Maximize acceptance probability using the strongest accurate framing.
-- Use only evidence supplied below; never invent results or manuscript changes.
-- Character target: below {policy['internal_target']}; hard limit {policy['character_limit']}.
-- Response language: {policy['response_language']}.
-- Manuscript frozen: {policy['manuscript_frozen']}.
-- Links allowed: {policy['allow_links']}.
-- Attachments allowed: {policy['allow_attachments']}.
-
-Reviewer record:
-{json.dumps(reviewer, ensure_ascii=False, indent=2)}
-
-Required concern ids:
-{json.dumps(concern_ids, ensure_ascii=False)}
-
-Submitted paper text:
-{paper_text[:100_000]}
-
-Available evidence and notes:
-{evidence}
-"""
-        result = run(prompt, model=model, timeout=1_200, on_line=on_line)
-        total_cost += float(result.get("cost") or 0.0)
-        if not result.get("ok"):
-            return {
-                "ok": False,
-                "error": f"{reviewer_id}: {result.get('error')}",
-                "cost": total_cost,
-                "responses": responses,
-            }
-        body = _strip_markdown_fence(str(result.get("text") or ""))
-        if len(body) < 100:
-            return {
-                "ok": False,
-                "error": f"{reviewer_id}: model returned an empty response",
-                "cost": total_cost,
-                "responses": responses,
-            }
-        filename = f"response-{_safe_response_id(reviewer_id)}.md"
-        path = response_dir / filename
-        path.write_text(body.rstrip() + "\n", encoding="utf-8")
-        responses[reviewer_id] = {
-            "reviewer_id": reviewer_id,
-            "path": str(path),
-            "filename": filename,
-            "characters": len(body),
-            "updated_at": _now(),
-        }
-    return {"ok": True, "responses": responses, "cost": total_cost}
 
 
 def response_body(project_id: str, reviewer_id: str) -> str:

@@ -1,29 +1,24 @@
 # Research Factory — TODOs 与技术债
 
-更新于 2026-08-13。死代码条目**只列不删**，等 operator 逐项定夺。
+更新于 2026-08-14。
 
-## 死代码 / 无引用候选（等定夺）
+## 死代码清理（2026-08-14 已执行）
 
-| # | 位置 | 说明 | 产线引用 |
-|---|---|---|---|
-| 1 | `ar_task.paper_source_text` | 旧"评审读 LaTeX 源码"输入路径，PDF 评审上线后废弃 | 仅测试 |
-| 2 | `ar_task.ARXIV_CATEGORIES`（`= DEFAULT_ARXIV_CATEGORIES` 别名） | 无人引用 | 无 |
-| 3 | `ar_task.store_stats` | 论文缓存计数器 | 仅测试 |
-| 4 | `ar_task.loop_is_complete` | 循环驱动器不用它判停 | 仅测试 |
-| 5 | `rud_task.ensure_cursor_default_model_config` | 改用显式 `--model` 传参后废弃 | 仅测试 |
-| 6 | `rud_task.load_default_skills` | 全仓无调用 | 无 |
-| 7 | `web._kernel_record_path` | 全仓无调用 | 无 |
-| 8 | `web._paste_prompt_and_watch_session` | 被现行 watcher 流程取代 | 无 |
+经 operator 批准后已删除（含对应的 test-only 测试）：
+`ar_task.paper_source_text`、`ar_task.ARXIV_CATEGORIES` 别名、
+`ar_task.store_stats`、`ar_task.loop_is_complete`、
+`rud_task.ensure_cursor_default_model_config`（及级联孤儿常量
+`CURSOR_DEFAULT_MODEL_FAMILY`）、`rud_task.load_default_skills`、
+`web._kernel_record_path`、`web._paste_prompt_and_watch_session`。
 
-相邻发现（factory 范围外）：`app.js`（classic 任务台）有 5 个未调用函数
-（`clearPaneDraftForTask` / `formatMonitorTime` / `saveTemplate` /
+相邻发现（factory 范围外，未动）：`app.js`（classic 任务台）有 5 个未调用
+函数（`clearPaneDraftForTask` / `formatMonitorTime` / `saveTemplate` /
 `scrollTmuxOutputToBottom` / `writeInterviewToPlan`）。
 
 ## 已知缺陷 / 改进项
 
-1. **重启清扫漏掉 link 作业**：`sweep_stale_jobs` 清 `search_suggest/papers/
-   ideas/review/venue`，不含 `link_status`——重启时正在 grounding 会把按钮
-   永久卡在 running。一行修复，待做。
+1. ~~**重启清扫漏掉 link 作业**~~：已修（2026-08-14），`sweep_stale_jobs`
+   现在含 `link_status`。
 2. **Studio 删除的残留**：真删除 `.RUD/<slug>`，但 (a) Studio 的 tmux
    interview 会话会变孤儿；(b) 已孵化 paper 失去 Studio 分组后在 Factory
    fleet 的展示路径需要确认（目前依赖 ideas.child_slug 反查）。

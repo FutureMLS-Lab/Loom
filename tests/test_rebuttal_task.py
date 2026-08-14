@@ -243,90 +243,10 @@ def test_policy_approval_gates_paper_creation_and_inherits_policy(
         rebuttal.delete_studio(studio_id)
 
 
-def test_analyze_reviews_writes_atomic_concern_matrix(
+def test_validate_edit_and_approve(
     package: tuple[Path, str],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source, project_id = package
-    monkeypatch.setattr(
-        rebuttal,
-        "_paper_material",
-        lambda state: ("Submitted paper text.", []),
-    )
-    monkeypatch.setattr(
-        rebuttal,
-        "_review_material",
-        lambda state: ("Reviewer says the baseline is incomplete.", []),
-    )
-
-    def fake_runner(*args, **kwargs):
-        return {
-            "ok": True,
-            "text": """{
-              "reviewers": [{
-                "id": "R1",
-                "label": "Reviewer R1",
-                "summary": "Promising but underspecified.",
-                "positive_points": ["Important question"],
-                "concerns": [
-                  {
-                    "id": "R1-W1",
-                    "type": "weakness",
-                    "verbatim": "The baseline is incomplete.",
-                    "summary": "Missing a strong baseline.",
-                    "severity": "high",
-                    "response_mode": "correct",
-                    "evidence_needed": "Controlled baseline result"
-                  },
-                  {
-                    "id": "R1-Q1",
-                    "type": "question",
-                    "verbatim": "How sensitive is lambda?",
-                    "summary": "Clarify lambda sensitivity.",
-                    "severity": "medium",
-                    "response_mode": "clarify",
-                    "evidence_needed": "Ablation"
-                  }
-                ]
-              }]
-            }""",
-            "cost": 0.2,
-        }
-
-    result = rebuttal.analyze_project(project_id, runner=fake_runner)
-    assert result["ok"]
-    assert [item["id"] for item in result["reviewers"][0]["concerns"]] == [
-        "R1-W1",
-        "R1-Q1",
-    ]
-    concern_json = source / rebuttal.OUTPUT_SUBDIR / rebuttal.CONCERNS_FILE
-    concern_md = source / rebuttal.OUTPUT_SUBDIR / rebuttal.CONCERN_MATRIX_FILE
-    assert concern_json.is_file()
-    assert "R1-W1" in concern_md.read_text(encoding="utf-8")
-
-
-def test_analysis_refuses_image_only_or_empty_pdfs(
-    package: tuple[Path, str],
-) -> None:
-    _, project_id = package
-    result = rebuttal.analyze_project(
-        project_id,
-        runner=lambda *args, **kwargs: pytest.fail("model must not run"),
-    )
-    assert not result["ok"]
-    assert "no extractable text" in result["error"]
-
-
-def test_draft_validate_edit_and_approve(
-    package: tuple[Path, str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source, project_id = package
-    monkeypatch.setattr(
-        rebuttal,
-        "_paper_material",
-        lambda state: ("Submitted paper text.", []),
-    )
     reviewers = [
         {
             "id": "R1",
@@ -352,25 +272,28 @@ def test_draft_validate_edit_and_approve(
         stage=rebuttal.STAGE_CONCERNS,
     )
 
-    def fake_runner(*args, **kwargs):
-        return {
-            "ok": True,
-            "text": (
-                "# Response to Reviewer R1\n\n"
-                "Thank you for the careful review and for recognizing the problem.\n\n"
-                "### R1-W1: Missing baseline\n\n"
-                "**Response.** We agree that this comparison is decisive.\n\n"
-                "**Evidence.** The controlled result is 75% versus a 70% baseline.\n\n"
-                "**Action/Scope.** If accepted, we will add this comparison to the paper."
-            ),
-            "cost": 0.1,
-        }
-
-    result = rebuttal.draft_project(project_id, runner=fake_runner)
-    assert result["ok"]
+    response_dir = source / rebuttal.OUTPUT_SUBDIR / rebuttal.RESPONSES_SUBDIR
+    response_dir.mkdir(parents=True, exist_ok=True)
+    body = (
+        "# Response to Reviewer R1\n\n"
+        "Thank you for the careful review and for recognizing the problem.\n\n"
+        "### R1-W1: Missing baseline\n\n"
+        "**Response.** We agree that this comparison is decisive.\n\n"
+        "**Evidence.** The controlled result is 75% versus a 70% baseline.\n\n"
+        "**Action/Scope.** If accepted, we will add this comparison to the paper.\n"
+    )
+    response_path = response_dir / "response-R1.md"
+    response_path.write_text(body, encoding="utf-8")
     rebuttal.update_state(
         project_id,
-        responses=result["responses"],
+        responses={
+            "R1": {
+                "reviewer_id": "R1",
+                "path": str(response_path),
+                "filename": "response-R1.md",
+                "characters": len(body),
+            }
+        },
         stage=rebuttal.STAGE_RESPONSES,
     )
     report = rebuttal.validate_project(project_id)
@@ -511,7 +434,7 @@ def test_sweep_marks_interrupted_jobs(
     package: tuple[Path, str],
 ) -> None:
     _, project_id = package
-    rebuttal.update_state(project_id, active_job=rebuttal.JOB_DRAFT)
+    rebuttal.update_state(project_id, active_job=rebuttal.JOB_POLICY)
     assert rebuttal.sweep_interrupted_jobs() == 1
     state = rebuttal.read_state(project_id)
     assert state["active_job"] == ""

@@ -706,37 +706,6 @@ def test_cursor_models_prefer_available_fast_sibling(
     )
 
 
-def test_ensure_cursor_default_model_config_sets_1m_max_fast(tmp_path: Path) -> None:
-    import json as _json
-
-    config_dir = tmp_path / ".cursor"
-    config_dir.mkdir()
-    config_path = config_dir / "cli-config.json"
-    config_path.write_text(
-        _json.dumps(
-            {
-                "version": 1,
-                "authInfo": {"email": "kept@example.com"},
-                "modelParameters": {
-                    "gpt-5.6-sol": [{"id": "context", "value": "272k"}]
-                },
-            }
-        )
-    )
-
-    ok, error = rud_task.ensure_cursor_default_model_config(tmp_path)
-
-    assert ok is True
-    assert error == ""
-    updated = _json.loads(config_path.read_text())
-    assert updated["authInfo"] == {"email": "kept@example.com"}
-    assert updated["model"]["displayName"] == "GPT-5.6 Sol 1M Max Fast"
-    assert updated["maxMode"] is True
-    assert updated["selectedModel"]["parameters"] == [
-        {"id": "context", "value": "1m"},
-        {"id": "reasoning", "value": "max"},
-        {"id": "fast", "value": "true"},
-    ]
 
 
 def test_build_agent_command_claude() -> None:
