@@ -1506,6 +1506,10 @@ el('btn-studio-create').addEventListener('click', async () => {
   const status = el('studio-modal-status');
   if (!title) { status.textContent = 'A name is required.'; return; }
   if (mode === 'seed' && !seed) { status.textContent = 'Describe the idea, or switch to auto.'; return; }
+  // "Last cycle" is a kickoff choice, not a studio state: the backend still
+  // runs the studio in auto mode, but the first job is the venue deep
+  // research, and ideas chain from its report instead of an arXiv haul.
+  const venueKickoff = mode === 'venue';
   status.textContent = 'Creating…';
   try {
     const { meta } = await api('/api/tasks', {
@@ -1515,7 +1519,7 @@ el('btn-studio-create').addEventListener('click', async () => {
         ar_direction: direction,
         ar_custom_direction: el('new-custom-direction').value.trim(),
         ar_venue: el('new-venue').value,
-        ar_mode: mode,
+        ar_mode: venueKickoff ? 'auto' : mode,
         ar_seed_idea: seed,
         ar_max_rounds: Number(el('new-rounds').value || 10),
       }),
@@ -1523,7 +1527,14 @@ el('btn-studio-create').addEventListener('click', async () => {
     el('studio-modal').hidden = true;
     el('new-title').value = ''; el('new-seed').value = '';
     openStudio(meta.slug);
-    if (direction === 'custom') {
+    if (venueKickoff) {
+      const started = await act(meta.slug, 'venue', {}, 'Venue research');
+      if (started) {
+        S.venueIdeasQueued = meta.slug;
+        toast('Deep-researching the venue\u2019s last cycle \u2014 ideas will follow automatically.');
+      }
+      loadTask();
+    } else if (direction === 'custom') {
       const started = await act(meta.slug, 'search/suggest', {}, 'Search suggestion');
       if (started) toast('Generating editable arXiv search settings from the brief.');
       loadTask();
