@@ -180,6 +180,40 @@ def test_venue_job_persists_report_and_cost(tmp_path: Path, monkeypatch) -> None
     assert state["cost_usd"] == 0.5
 
 
+def test_venue_job_chains_idea_generation_server_side(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, slug = _studio(tmp_path)
+    ar.update_ar_state(
+        root, slug, venue_status="running", venue_chain_ideas=True
+    )
+    monkeypatch.setattr(
+        web.ar,
+        "research_venue_cycle",
+        lambda state, model="", on_line=None: {
+            "ok": True,
+            "report": ar.normalize_venue_report(
+                {"cycle": "WSDM 2026", "best_papers": [{"title": "Winner"}]}
+            ),
+            "cost": 0.1,
+        },
+    )
+    launched: list = []
+    monkeypatch.setattr(
+        web, "_ar_run_async", lambda fn, *args: launched.append((fn, args))
+    )
+
+    web._ar_venue_job(root, slug, "claude-test")
+
+    state = ar.read_ar_state(root, slug)
+    assert state["venue_status"] == "done"
+    assert state["venue_chain_ideas"] is False
+    assert state["ideas_status"] == "running"
+    assert launched == [
+        (web._ar_ideas_job, (root, slug, 6, "claude-test", ar.IDEA_SOURCE_VENUE))
+    ]
+
+
 def test_venue_job_records_error(tmp_path: Path, monkeypatch) -> None:
     root, slug = _studio(tmp_path)
     ar.update_ar_state(root, slug, venue_status="running")

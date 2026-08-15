@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Paper Factory</title>
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
-  <link rel="stylesheet" href="/static/factory.css?v=20260815-4" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260815-5" />
 </head>
 <body>
 
@@ -290,7 +290,7 @@
       <label class="rf-mode"><input type="radio" name="new-mode" value="venue" />
         <span><b>Last cycle</b><small>Deep-research what this venue rewarded last cycle — best papers, orals, hot topics — and propose ideas from that. No arXiv mining.</small></span></label>
     </div>
-    <label for="new-venue-url" id="new-venue-url-label" hidden>Venue page to start from</label>
+    <label for="new-venue-url" id="new-venue-url-label" hidden>Venue page to start from (required — it decides which venue gets researched)</label>
     <input type="text" id="new-venue-url" placeholder="https://… — awards / accepted-papers / program page; the research agent crawls from here" hidden />
     <label for="new-seed" id="new-seed-label">What the paper should be about (optional)</label>
     <textarea id="new-seed" rows="3" placeholder="Constraints, a dataset you must use, an angle you want covered."></textarea>
@@ -336,6 +336,6 @@
 
 <div class="rf-toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/factory.js?v=20260815-4"></script>
+<script src="/static/factory.js?v=20260815-5"></script>
 </body>
 </html>

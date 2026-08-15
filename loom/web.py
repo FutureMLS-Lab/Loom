@@ -4722,10 +4722,15 @@ def _rebuttal_resume_delivery_watchers() -> int:
 
 
 def _ar_venue_job(root: Path, slug: str, model: str) -> None:
-    """Deep-research the venue's last completed cycle, then persist the report."""
+    """Deep-research the venue's last completed cycle, then persist the report.
+
+    Chaining lives here rather than in the browser: a page reload must not be
+    able to lose the "and then propose ideas from it" half of the kickoff.
+    """
     state = ar.read_ar_state(root, slug)
     log = _ar_logger(root, slug, ar.JOB_VENUE)
     res = ar.research_venue_cycle(state, model=model, on_line=log)
+    chain = bool(state.get("venue_chain_ideas"))
     if res.get("ok"):
         ar.update_ar_state(
             root,
@@ -4733,16 +4738,27 @@ def _ar_venue_job(root: Path, slug: str, model: str) -> None:
             venue_report=res.get("report") or {},
             venue_status="done",
             venue_error="",
+            venue_chain_ideas=False,
             venue_updated_at=_iso_now(),
             cost_usd=round(
                 float(state.get("cost_usd") or 0.0) + float(res.get("cost") or 0.0), 4
             ),
         )
         print(f"[ar] {slug}: venue-cycle report ready", flush=True)
+        if chain:
+            log("report ready - generating ideas from it")
+            ar.update_ar_state(root, slug, ideas_status="running", ideas_error="")
+            _ar_run_async(
+                _ar_ideas_job, root, slug, 6, model, ar.IDEA_SOURCE_VENUE
+            )
     else:
         log(f"failed: {res.get('error')}")
         ar.update_ar_state(
-            root, slug, venue_status="error", venue_error=str(res.get("error") or "")
+            root,
+            slug,
+            venue_status="error",
+            venue_error=str(res.get("error") or ""),
+            venue_chain_ideas=False,
         )
         print(f"[ar] {slug}: venue research failed - {res.get('error')}", flush=True)
 
@@ -6179,6 +6195,7 @@ def make_handler(
                 changes: dict[str, Any] = {
                     "venue_status": "running",
                     "venue_error": "",
+                    "venue_chain_ideas": bool(body.get("chain_ideas")),
                 }
                 if venue_url:
                     changes["venue_url"] = venue_url

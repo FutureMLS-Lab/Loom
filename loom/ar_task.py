@@ -1748,18 +1748,25 @@ def research_venue_cycle(
     web search: award pages, accepted-paper lists, and trend write-ups. The
     reply is normalized and bounded before it is trusted.
     """
-    venue = str(venue_entry(str(state.get("venue") or DEFAULT_VENUE)).get("label"))
     direction = direction_label(state)
     venue_url = str(state.get("venue_url") or "").strip()
-    start_block = (
-        (
+    if venue_url:
+        # The operator's URL names the venue. The catalog dropdown only picks
+        # a paper TEMPLATE and must never override which venue gets surveyed
+        # (a WSDM URL once lost to the dropdown's default ICLR).
+        venue = f"the venue that owns {venue_url}"
+        start_block = (
             f"START HERE: the operator supplied this venue page - {venue_url}\n"
-            "Crawl it and the pages it links (awards, accepted papers, program)\n"
-            "before falling back to your own web search for anything missing.\n\n"
+            "That page decides which venue you survey; identify the venue from\n"
+            "the page itself and say its name in the `cycle` field. Crawl it and\n"
+            "the pages it links (awards, accepted papers, program) before\n"
+            "falling back to your own web search for anything missing.\n\n"
         )
-        if venue_url
-        else "Use your own web search. "
-    )
+    else:
+        venue = str(
+            venue_entry(str(state.get("venue") or DEFAULT_VENUE)).get("label")
+        )
+        start_block = "Use your own web search. "
     prompt = f"""You are surveying the most recent COMPLETED cycle of {venue} so a
 research studio can propose ideas that fit what this venue actually rewards.
 The studio's research direction is: {direction}.

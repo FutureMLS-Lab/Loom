@@ -19,7 +19,6 @@ const S = {
   busy: false,
   graphSel: '',              // node the user clicked into, '' when nothing is
   graphHide: new Set(),      // relations switched off in the legend
-  venueIdeasQueued: '',      // studio slug waiting to turn its venue report into ideas
   pane: '',                  // tmux target of the open paper's author
   paneFollow: false,         // whether to keep tailing it
   filePath: '',              // where the file browser is, under work/
@@ -351,31 +350,16 @@ function paperMiningState(state, papers) {
 function venueResearchState(state) {
   const status = String(state.venue_status || '');
   const report = state.venue_report || {};
-  if (status === 'running') return 'deep-researching the venue\u2019s last cycle\u2026';
+  if (status === 'running') {
+    return state.venue_chain_ideas
+      ? 'deep-researching the last cycle\u2026 ideas will follow automatically'
+      : 'deep-researching the venue\u2019s last cycle\u2026';
+  }
   if (status === 'error') return `failed: ${state.venue_error || 'unknown error'}`;
   if (Object.keys(report).length) {
-    const queued = S.venueIdeasQueued === S.slug ? ' \u00b7 ideas queued next' : '';
-    return `report ready: ${report.cycle || 'last cycle'}${queued}`;
+    return `report ready: ${report.cycle || 'last cycle'}`;
   }
   return 'not researched yet';
-}
-
-// The "ideas from last cycle" button is one press for the whole chain: run the
-// venue research if the report is missing, then generate from it as soon as
-// the report lands. The queued flag carries the slug so switching studios
-// mid-research cannot fire ideas at the wrong one.
-async function maybeQueueVenueIdeas(state) {
-  if (S.venueIdeasQueued !== S.slug) return;
-  const status = String(state.venue_status || '');
-  if (status === 'running') return;
-  S.venueIdeasQueued = '';
-  if (status !== 'done' || !Object.keys(state.venue_report || {}).length) return;
-  if (state.ideas_status === 'running') return;
-  await act(S.slug, 'ideas', {
-    count: Number(el('studio-count').value || 6),
-    source: 'venue',
-  }, 'Venue idea generation');
-  loadTask();
 }
 
 function renderStudio(d, state) {
@@ -392,7 +376,6 @@ function renderStudio(d, state) {
   renderLog('ideas-log', logs.ideas, state.ideas_status === 'running');
   renderLog('venue-log', logs.venue, state.venue_status === 'running');
   renderSearchSettings(d, state);
-  maybeQueueVenueIdeas(state);
 
   const papers = state.papers || [];
   const ideas = state.ideas || [];
@@ -555,8 +538,8 @@ function renderSteps(state, papers, ideas) {
   setAction('btn-ideas-venue', {
     ok: !busy,
     why: busy ? 'a job is already running' : '',
-    label: running('venue') ? 'Researching last cycle…'
-      : S.venueIdeasQueued === S.slug ? 'Ideas queued…'
+    label: running('venue')
+      ? (state.venue_chain_ideas ? 'Researching… ideas will follow' : 'Researching last cycle…')
       : hasVenueReport ? 'Ideas from last cycle' : 'Research last cycle → ideas',
   });
   const venueLabel = el('step-venue-state');
@@ -1371,8 +1354,7 @@ el('btn-ideas-venue').addEventListener('click', async () => {
       source: 'venue',
     }, 'Venue idea generation');
   } else {
-    const d = await act(S.slug, 'venue', {}, 'Venue research');
-    if (d) S.venueIdeasQueued = S.slug;
+    await act(S.slug, 'venue', { chain_ideas: true }, 'Venue research');
   }
   loadTask();
 });
@@ -1515,7 +1497,9 @@ function syncStudioModalMode() {
     ? 'What the paper should be about'
     : 'What the paper should be about (optional)';
   const venueMode = mode === 'venue';
-  el('new-direction').closest('div').hidden = venueMode;
+  // The URL names the venue in this mode, so both catalog pickers disappear:
+  // direction comes from what the venue rewarded, the venue from the page.
+  el('new-direction').closest('.rf-row').hidden = venueMode;
   el('new-custom-direction').hidden = venueMode
     || el('new-direction').value !== 'custom';
   el('new-venue-url-label').hidden = !venueMode;
@@ -1537,7 +1521,11 @@ el('btn-studio-create').addEventListener('click', async () => {
   // research, and ideas chain from its report instead of an arXiv haul.
   const venueKickoff = mode === 'venue';
   const venueUrl = el('new-venue-url').value.trim();
-  if (venueKickoff && venueUrl && !/^https?:\/\//.test(venueUrl)) {
+  if (venueKickoff && !venueUrl) {
+    status.textContent = 'Paste the venue page URL — it decides which venue gets researched.';
+    return;
+  }
+  if (venueKickoff && !/^https?:\/\//.test(venueUrl)) {
     status.textContent = 'The venue page must be an http(s) URL.';
     return;
   }
@@ -1565,9 +1553,10 @@ el('btn-studio-create').addEventListener('click', async () => {
     el('new-title').value = ''; el('new-seed').value = ''; el('new-venue-url').value = '';
     openStudio(meta.slug);
     if (venueKickoff) {
-      const started = await act(meta.slug, 'venue', {}, 'Venue research');
+      const started = await act(
+        meta.slug, 'venue', { url: venueUrl, chain_ideas: true }, 'Venue research',
+      );
       if (started) {
-        S.venueIdeasQueued = meta.slug;
         toast('Deep-researching the venue\u2019s last cycle \u2014 ideas will follow automatically.');
       }
       loadTask();
