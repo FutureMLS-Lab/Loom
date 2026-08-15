@@ -1479,6 +1479,7 @@ el('btn-new-studio').addEventListener('click', () => {
     if (cat.default_max_rounds) el('new-rounds').value = cat.default_max_rounds;
   }
   el('studio-modal-status').textContent = '';
+  syncStudioModalMode();
   el('studio-modal').hidden = false;
   el('new-title').focus();
 });
@@ -1490,13 +1491,21 @@ el('new-title').addEventListener('keydown', (ev) => {
 el('new-direction').addEventListener('change', () => {
   el('new-custom-direction').hidden = el('new-direction').value !== 'custom';
 });
+// Last-cycle studios take their direction from what the venue rewarded, so
+// the Direction picker disappears in that mode; the Venue picker stays - it
+// is the one input the deep research cannot do without.
+function syncStudioModalMode() {
+  const mode = document.querySelector('input[name="new-mode"]:checked').value;
+  el('new-seed-label').textContent = mode === 'seed'
+    ? 'What the paper should be about'
+    : 'What the paper should be about (optional)';
+  const venueMode = mode === 'venue';
+  el('new-direction').closest('div').hidden = venueMode;
+  el('new-custom-direction').hidden = venueMode
+    || el('new-direction').value !== 'custom';
+}
 document.querySelectorAll('input[name="new-mode"]').forEach((radio) => {
-  radio.addEventListener('change', () => {
-    const seeded = document.querySelector('input[name="new-mode"]:checked').value === 'seed';
-    el('new-seed-label').textContent = seeded
-      ? 'What the paper should be about'
-      : 'What the paper should be about (optional)';
-  });
+  radio.addEventListener('change', syncStudioModalMode);
 });
 el('btn-studio-create').addEventListener('click', async () => {
   const title = el('new-title').value.trim();
@@ -1516,8 +1525,12 @@ el('btn-studio-create').addEventListener('click', async () => {
       method: 'POST',
       body: JSON.stringify({
         title, kind: 'ar', agent: 'cursor',
-        ar_direction: direction,
-        ar_custom_direction: el('new-custom-direction').value.trim(),
+        // In last-cycle mode the hidden Direction picker must not leak its
+        // stale value into the studio: the direction IS the venue's taste.
+        ar_direction: venueKickoff ? 'custom' : direction,
+        ar_custom_direction: venueKickoff
+          ? 'Open direction: follow whatever this venue rewarded in its last completed cycle.'
+          : el('new-custom-direction').value.trim(),
         ar_venue: el('new-venue').value,
         ar_mode: venueKickoff ? 'auto' : mode,
         ar_seed_idea: seed,
