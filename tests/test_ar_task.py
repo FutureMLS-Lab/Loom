@@ -538,7 +538,6 @@ def test_store_round_trip(store: Path) -> None:
     assert got["real_title"] == "QeRL"
     assert got["verified"] is True
     assert store.is_file()
-    assert ar.store_stats()["papers"] == 1
 
 
 def test_store_expiry(store: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -658,9 +657,9 @@ def test_paper_state_defaults_to_cursor_reviewer_panel() -> None:
     state = ar.new_paper_state(parent_slug="p", idea={"title": "T"})
     assert state["reviewer_models"] == list(ar.CURSOR_REVIEWER_MODELS)
     assert ar.CURSOR_REVIEWER_MODELS == (
-        "gpt-5.6-sol-max",
+        "gpt-5.6-sol-max-fast",
         "claude-fable-5-thinking-max",
-        "cursor-grok-4.5-high",
+        "cursor-grok-4.5-high-fast",
     )
 
 
@@ -674,9 +673,9 @@ def test_cursor_reviewer_panel_reads_only_isolated_pdf(
     (paper / "main.tex").write_text("LATEX_SECRET_MUST_NOT_LEAK", encoding="utf-8")
 
     ratings = {
-        "gpt-5.6-sol-max": (4, "weak reject"),
+        "gpt-5.6-sol-max-fast": (4, "weak reject"),
         "claude-fable-5-thinking-max": (6, "borderline"),
-        "cursor-grok-4.5-high": (8, "weak accept"),
+        "cursor-grok-4.5-high-fast": (8, "weak accept"),
     }
     review_commands: list[list[str]] = []
 
@@ -738,7 +737,7 @@ def test_cursor_reviewer_panel_reads_only_isolated_pdf(
     assert result["models"] == list(ar.CURSOR_REVIEWER_MODELS)
     assert result["scores"]["rating"] == 4
     assert result["scores"]["recommendation"] == "weak reject"
-    assert result["deciding_model"] == "gpt-5.6-sol-max"
+    assert result["deciding_model"] == "gpt-5.6-sol-max-fast"
     assert result["cost"] == pytest.approx(0.18)
     assert result["headline"].startswith("3 reviewers")
     assert result["input_pdf"] == str(pdf)
@@ -910,18 +909,13 @@ def test_ensure_round_is_idempotent_and_sorted() -> None:
     assert ar.round_record(state, 2)["author"]["summary"] == "done"
 
 
-def test_latest_review_and_completion() -> None:
+def test_latest_review_returns_newest_round() -> None:
     state = _paper_state(max_rounds=2)
     assert ar.latest_review(state) is None
 
     ar.ensure_round(state, 1)["review"] = {"headline": "rating 3/10"}
     ar.ensure_round(state, 2)["review"] = {"headline": "rating 5/10"}
     assert ar.latest_review(state)["headline"] == "rating 5/10"
-
-    state["round"] = 1
-    assert not ar.loop_is_complete(state)
-    state["round"] = 2
-    assert ar.loop_is_complete(state)
 
 
 def test_progress_summary_shows_round_counter() -> None:
@@ -998,9 +992,9 @@ def test_plateau_keeps_fixed_panel_then_pauses_for_human() -> None:
     state["round"] = 5
     assert ar.should_pause_for_plateau(state, 5) is True
     assert ar.CURSOR_REVIEWER_MODELS == (
-        "gpt-5.6-sol-max",
+        "gpt-5.6-sol-max-fast",
         "claude-fable-5-thinking-max",
-        "cursor-grok-4.5-high",
+        "cursor-grok-4.5-high-fast",
     )
 
     improved = _with_reviews(4, 4, 4, 5)
@@ -1233,18 +1227,6 @@ def test_latex_errors_extracts_file_line_messages() -> None:
     ]
 
 
-def test_paper_source_text_concatenates_sections(tmp_path: Path) -> None:
-    venue = ar.DEFAULT_VENUE
-    if not ar.venue_is_available(venue):
-        pytest.skip("styles not vendored; run scripts/fetch_paper_styles.py")
-    dest = tmp_path / "paper"
-    ar.seed_paper_skeleton(dest, venue, {"title": "T"})
-    text = ar.paper_source_text(dest)
-    assert "% ===== main.tex =====" in text
-    assert "sections/04_experiments.tex" in text
-    assert len(ar.paper_source_text(dest, limit=500)) <= 600
-
-
 # --- OpenReview submission prep ---------------------------------------------
 
 
@@ -1401,7 +1383,9 @@ def test_review_readiness_accepts_complete_rendered_paper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paper = _write_ready_paper(tmp_path)
-    monkeypatch.setattr(ar, "pdf_page_count", lambda pdf: 9)
+    # Total PDF length is not a readiness condition: references and appendices
+    # are venue-specific and may be unbounded.
+    monkeypatch.setattr(ar, "pdf_page_count", lambda pdf: 500)
     monkeypatch.setattr(
         ar,
         "_pdf_text",
@@ -1418,6 +1402,7 @@ def test_review_readiness_accepts_complete_rendered_paper(
     assert result["ready"] is True
     assert result["failed"] == []
     assert all(item["ok"] for item in result["checks"])
+    assert not any("page count" in item["label"].lower() for item in result["checks"])
     report = ar.review_readiness_markdown(result)
     assert "PASS — reviewer may run" in report
 

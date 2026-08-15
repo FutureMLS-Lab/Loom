@@ -706,9 +706,9 @@ Reviewer 是 Headless Cursor 子进程，不在 Author 的 tmux pane 中。
 固定模型：
 
 ```text
-gpt-5.6-sol-max
+gpt-5.6-sol-max-fast
 claude-fable-5-thinking-max
-cursor-grok-4.5-high
+cursor-grok-4.5-high-fast
 ```
 
 三个 Reviewer：
@@ -1697,9 +1697,9 @@ rounds/round-NN/readiness.md
 三个固定 Reviewer：
 
 ```text
-gpt-5.6-sol-max
+gpt-5.6-sol-max-fast
 claude-fable-5-thinking-max
-cursor-grok-4.5-high
+cursor-grok-4.5-high-fast
 ```
 
 运行方式：
@@ -1718,9 +1718,9 @@ Controller
 
 ```text
 rounds/round-NN/review.md
-rounds/round-NN/review-gpt-5.6-sol-max.md
+rounds/round-NN/review-gpt-5.6-sol-max-fast.md
 rounds/round-NN/review-claude-fable-5-thinking-max.md
-rounds/round-NN/review-cursor-grok-4.5-high.md
+rounds/round-NN/review-cursor-grok-4.5-high-fast.md
 ```
 
 最终评分策略：
@@ -1929,3 +1929,188 @@ UI 只读取和触发，不是状态真相
 
 7. [`loom/skills/ar/`](loom/skills/ar/)
    看 Studio、Author、Reviewer 的方法论来源。
+
+## 20. Auto Rebuttal Factory
+
+Auto Rebuttal Factory 是与 Research Factory 并列的独立工作流：
+
+```text
+/rebuttal-factory
+    → Conference Studio
+        → fetch official CFP and author guidance
+        → source-backed Policy + separate Strategy
+        → Human Policy Gate
+        → multiple Paper Rebuttals
+            → import absolute server path
+            → concern matrix
+            → reviewer-specific responses
+            → inherited policy validation
+            → response-content approval
+            → isolated Delivery Agent
+            → deterministic artifact preflight
+            → final artifact approval
+            → manual-upload bundle
+```
+
+关键文件：
+
+- [`loom/rebuttal_task.py`](loom/rebuttal_task.py)：项目注册、材料 Manifest、
+  Concern Matrix、Response 文件、Policy Validation 和持久状态；
+- [`loom/rebuttal_delivery.py`](loom/rebuttal_delivery.py)：Delivery attempt、
+  严格 LaTeX 构建、PDF preflight、SHA-bound final approval 和 bundle；
+- [`loom/web.py`](loom/web.py)：`/api/rebuttal/*` 路由、专用 tmux Agent 和
+  Completion Marker watcher；
+- [`loom/web_static/rebuttal_factory.html`](loom/web_static/rebuttal_factory.html)；
+- [`loom/web_static/rebuttal_factory.js`](loom/web_static/rebuttal_factory.js)；
+- [`loom/web_static/rebuttal_factory.css`](loom/web_static/rebuttal_factory.css)；
+- [`loom/skills/ar/paper-rebuttal/SKILL.md`](loom/skills/ar/paper-rebuttal/SKILL.md)；
+- [`loom/skills/ar/paper-rebuttal-delivery/SKILL.md`](loom/skills/ar/paper-rebuttal-delivery/SKILL.md)。
+
+### 20.1 Conference Studio
+
+每个 Conference + Year 建立一个 Studio：
+
+```text
+NeurIPS 2027
+ICLR 2027
+WACV 2027
+```
+
+输入 CFP URL 和可选的 Rebuttal Policy URL。Loom 只抓取公共官方页面和相关
+OpenReview 页面，拒绝 private/loopback/link-local 地址。
+
+Policy Discovery 输出：
+
+```text
+~/.loom/rebuttal-studios/<studio-id>/
+├── studio.json
+├── policy-sources.json
+├── rebuttal-policy.json
+├── rebuttal-policy.md
+└── rebuttal-strategy.md
+```
+
+`rebuttal-policy` 中每个官方字段都保存：
+
+```text
+value
+source_url
+quote
+confidence
+```
+
+模型生成的 Strategy 与官方 Policy 分开保存。用户批准 Policy 后，所有新建
+Paper 自动继承；重新批准后的 Policy 也会传播给已有 Paper，并使旧 Validation
+失效。
+
+### 20.2 Paper 输入和输出
+
+用户输入一个服务器目录。该目录至少包含：
+
+```text
+main.pdf / paper.pdf / submission.pdf
+*review*.pdf
+proof / result / experiment / notes files
+```
+
+Loom 不修改输入 Paper 或 Review，而是在输入目录中创建：
+
+```text
+rebuttal-output/
+├── state.json
+├── source-manifest.json
+├── concerns.json
+├── concern-matrix.md
+├── responses/
+│   └── response-<reviewer>.md
+├── validation.json
+└── validation.md
+```
+
+项目注册表：
+
+```text
+~/.loom/rebuttal-projects.json
+```
+
+删除 Factory Project 只会删除注册项，不会删除输入和
+`rebuttal-output/`。
+
+### 20.3 双层状态机
+
+```mermaid
+stateDiagram-v2
+    [*] --> PolicyInput
+    PolicyInput --> PolicyDraft: discover official policy
+    PolicyDraft --> AwaitPolicyReview: extraction complete
+    AwaitPolicyReview --> Active: human approves policy
+    Active --> PaperIntake: add Paper path
+    PaperIntake --> ConcernsReady: analyze review PDFs
+    ConcernsReady --> ResponsesReady: draft per-reviewer responses
+    ResponsesReady --> Validated: inherited policy checks pass
+    Validated --> Approved: human approves response content
+    Approved --> DeliveryAgent: generate synchronized sources
+    DeliveryAgent --> DeliveryBlocked: deterministic preflight fails
+    DeliveryBlocked --> DeliveryAgent: rerun with failure report
+    DeliveryAgent --> AwaitArtifactApproval: deterministic preflight passes
+    AwaitArtifactApproval --> BundleReady: human approves exact PDF hashes
+    Approved --> ResponsesReady: response or policy edit
+    AwaitArtifactApproval --> ResponsesReady: response, policy, or source edit
+```
+
+Conference 阶段：
+
+```text
+policy_input
+policy_draft
+await_policy_review
+active
+closed
+```
+
+Paper 阶段：
+
+```text
+intake
+concerns_ready
+responses_ready
+validated
+approved
+delivery_agent_running
+delivery_validating
+delivery_blocked
+await_delivery_approval
+bundle_ready
+```
+
+### 20.4 模型与确定性边界
+
+模型负责：
+
+- 将官方页面整理成带 Quote/URL 的 Policy 草案；
+- 根据 Policy 生成独立的接收导向 Strategy；
+- 专用 Cursor Agent 在 tmux 中读取原始 Review/Paper/Evidence；
+- 从 Review PDF 拆出 Weakness/Question；
+- 根据 Paper、Evidence 和 `paper-rebuttal` Skill 起草逐 Reviewer Markdown；
+- Delivery Agent 在隔离 attempt 中同步 revised paper，并将批准的回复压缩为
+  venue-compliant rebuttal source。
+
+Python 负责：
+
+- 公共 URL 与 SSRF 检查；
+- 页面抓取、Snapshot 和来源保留；
+- 文件分类和 SHA256 Manifest；
+- 生成 `AGENT_INSTRUCTIONS.md`；
+- 监控 `agent-complete.json` 并从磁盘接收 Concern/Response；
+- 冻结 Response/Policy/Source SHA，创建隔离 Delivery attempt；
+- 独立重编译 revised paper 和 rebuttal，检查页数、Track、Paper ID、匿名性、
+  链接、文件大小和 source freshness；
+- 将最终人工批准绑定到精确 PDF SHA，再生成可复现的手工上传 bundle；
+- 字符限制；
+- Concern ID 覆盖；
+- Placeholder、URL、Email 和冻结稿件表述；
+- `If accepted, we will ...` 条件性修改规则；
+- 状态转换和 Hot Restart 后的中断恢复。
+
+Loom 不自动向 OpenReview 或其他外部平台提交。`approved` 只表示用户确认
+磁盘中的回复包可供复制。

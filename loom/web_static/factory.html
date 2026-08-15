@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Research Factory</title>
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
-  <link rel="stylesheet" href="/static/factory.css?v=20260812-5" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260813-1" />
 </head>
 <body>
 
@@ -22,6 +22,7 @@
     <span class="rf-stat rf-stat--info" id="stat-cost"><b>—</b> spent</span>
     <button type="button" class="rf-btn rf-btn--ghost" id="btn-skills">Skills</button>
     <button type="button" class="rf-btn rf-btn--ghost" id="btn-refresh">Refresh</button>
+    <a class="rf-btn rf-btn--ghost" href="/rebuttal-factory">Rebuttal</a>
     <a class="rf-btn rf-btn--ghost" href="/">Loom</a>
   </nav>
 </header>
@@ -63,6 +64,7 @@
       <h1 id="studio-title">…</h1>
       <p class="rf-lede" id="studio-sub"></p>
     </div>
+    <button type="button" class="rf-btn rf-btn--danger rf-btn--sm" id="btn-studio-delete">Delete studio</button>
   </section>
 
   <!-- The studio is a sequence, so show it as one: each step says what it is
@@ -111,6 +113,12 @@
           <button type="button" class="rf-btn" id="btn-ideas">Generate ideas</button>
           <span class="rf-hint" id="step-ideas-state"></span>
         </div>
+        <div class="rf-step__actions">
+          <button type="button" class="rf-btn" id="btn-ideas-venue">Ideas from last cycle</button>
+          <span class="rf-hint" id="step-venue-state"></span>
+        </div>
+        <p class="rf-hint">Instead of mining arXiv: a Claude deep-researches what this venue rewarded last cycle — best papers, orals, the hottest topics — and proposes ideas that fit it.</p>
+        <pre class="rf-log" id="venue-log" hidden></pre>
       </div>
     </li>
     <li class="rf-step" data-step="link">
@@ -324,6 +332,6 @@
 
 <div class="rf-toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/factory.js?v=20260812-5"></script>
+<script src="/static/factory.js?v=20260813-1"></script>
 </body>
 </html>

@@ -1,0 +1,99 @@
+\section{Related Work}
+
+% Our loop edits the whole harness around a frozen model (prompt, knowledge,
+% control-loop code, and configuration), a broader surface than the prompt- and
+% workflow-optimization it builds on. Given that scope, two difficulties from
+% \S\ref{sec:intro} organize the prior work: knowing which change truly helped, and how to
+% search the space of changes. We take each in turn, then the proposals and measurements the
+% loop rests on.
+
+% \paragraph{What to evolve.}
+% A frozen model can be improved by editing the scaffolding around it: prompts,
+% tools, memory, control loop, configuration~\citep{gao2026survey,xu2026lifeharness}.
+% Prior methods either search prompts and workflows
+% \citep{zhou2023ape,yang2024opro,fernando2023promptbreeder,khattab2024dspy,zhang2025aflow,lu2026empiricalmcts,agrawal2026gepa}
+% or let an agent rewrite its own code against an open-ended archive
+% \citep{romeraparedes2024funsearch,hu2025adas,robeyns2025sica,zhang2026dgm}. A
+% parallel line evolves the agent's \emph{context or memory} rather than its
+% code (agentic context engineering, reasoning/experience memory, and self-evolving
+% memory architectures~\citep{zhang2025ace,ouyang2026reasoningbank,liu2026evolvemem,yu2026molem,zhang2026latentevolve}), which
+% our \textsc{knowledge} lever subsumes as one editable surface among four. GEPA~\citep{agrawal2026gepa} is
+% the closest on efficiency, evolving prompts on a Pareto front via natural-language
+% reflection with up to $35\times$ fewer rollouts than RL; like the rest of this
+% line, it neither gates edits on statistical significance nor reports held-out
+% generalization.
+
+% At production scale, a \emph{systems} line updates weights from production
+% workloads~\citep{yan2026arlsystems}, treating harness evolution as a control-plane axis
+% but, like the optimization line, not saying how a change is \emph{credibly credited}. Our
+% frozen-weight, sealed-test measurement supplies the credit judgment a control plane needs,
+% offline.
+
+% \paragraph{Closest to us: coding-agent harness evolution.}
+% The nearest answers to \emph{what to evolve} come from a 2026 line auto-evolving
+% coding-agent harnesses, several on benchmarks we use. \textbf{Self-Harness}~\citep{zhang2026selfharness}
+% clusters failed traces by a (cause, status, mechanism) signature, akin to our \where{}/\why{}
+% split, and promotes edits by a non-regression rule;
+% \textbf{HarnessFix}~\citep{chen2026harnessfix} maps failures to repair operators;
+% \textbf{AHE}~\citep{lin2026ahe} verifies each edit against a self-declared prediction
+% (terminal-bench-2 $69.7\!\to\!77.0$); \textbf{Meta-Harness}~\citep{lee2026metaharness}
+% searches harness code with an agentic proposer; \textbf{HarnessX}~\citep{chen2026harnessx}
+% reports multi-benchmark gains; and \textbf{EvoTrainer}~\citep{chen2026evotrainer} co-evolves
+% weights \emph{and} harness, whereas we freeze weights to isolate the harness. We build on this
+% line and add three elements it has not combined: a \emph{categorical quality-diversity
+% archive} keyed on the diagnosed pathology, with cross-cell recombination; a
+% \emph{paired-$2\sigma$} significance gate alongside a measurement-validity gate; and a
+% \emph{retention} scalar on a test withheld from all decisions and scored once.
+
+% \paragraph{How to know a change helped.}
+% All of the above accept edits without statistical validation.
+% \textbf{VeRO}~\citep{ursekar2026vero} is the closest: access-controlled train/val/test
+% splits documenting how agent self-optimization overfits; it establishes the held-out
+% discipline we adopt but is a measurement substrate, not a method, and reports no retention
+% scalar (related: validation-gated skill edits~\citep{yang2026skillopt} and direct optimizer
+% ranking~\citep{ong2026shor}). AIRA\_2~\citep{hambardzumyan2026aira2} argues some reported
+% overfitting is evaluation \emph{noise}, not memorization, motivating exactly our
+% paired-significance and measurement-validity gates, while benchmark-gaming and
+% contamination work~\citep{abdelnabi2026measuring,ishida2026capbencher} motivates
+% withholding the test set. Against this, our result is \emph{positive}: in a frozen-27B,
+% long-horizon regime the evolved harness's gains largely survive on a sealed test.
+
+% \paragraph{How to search.}
+% Quality-diversity supplies our search template.
+% MAP-Elites~\citep{mouret2015illuminating,cully2018unifying} illuminates a behavior
+% space by keeping an elite per descriptor cell. Recent work applies it to LLMs with
+% \emph{hand-defined structural} prompt descriptors~\citep{santos2025diverse} or
+% \emph{learned/embedding} descriptors~\citep{guo2026qdllm}. Our descriptor is
+% neither measured nor learned but an LLM-assigned \wxw{} \emph{pathology of the
+% harness}; combined with quality-biased selection and cross-cell recombination,
+% this categorical, pathology-keyed archive is, to our knowledge, absent from prior
+% QD-for-LLM work.
+
+% \paragraph{Proposals and measurements.}
+% The search is only as good as its proposals and measurements. Failure attribution in
+% (multi-)agent systems is active~\citep{zhang2025whowhen,chen2026elephant,in2026mpbench};
+% our \why{} labeling is a single-agent instance, and reflection
+% studies~\citep{huang2026benchtrace,zhu2025agentdebug} find root-cause diagnosis where even
+% strong models fail most (end-to-end below $30\%$; stronger models' errors resist
+% self-correction~\citep{li2026decomposing}), the fallibility our propose-but-never-credit
+% split survives. \citet{lin2026harnessbenefit} find the capacity to
+% \emph{produce} harness updates model-tier-flat; we revisit this for diagnosis \emph{quality}.
+% Our anchor screening (${\approx}0.5$-pass tasks) is the dual of discarding all-pass/all-fail
+% prompts~\citep{xiong2025minimalist,chen2025sec}.
+
+\subsection{LLM Agents and Agent Harnesses}
+
+Large Language Models (LLMs) have progressed from passive text generators to the reasoning core of autonomous agents capable of solving long-horizon tasks~\citep{yao2023react,zhang2024codeagent,he2024webvoyager}. An \emph{LLM agent} places an LLM within an iterative perception--reasoning--action loop, allowing it to maintain task state, invoke external tools, observe environmental feedback, and revise its behavior over multiple steps. This system-level perspective has motivated extensive research on tool-augmented reasoning, memory-enhanced agents, workflow construction, and adaptive control~\citep{gao2026survey,xu2026lifeharness}.
+
+\emph{Agent harness} denotes the executable scaffolding that surrounds a backbone LLM and converts it into a task-performing agent. It includes system and role prompts, injected knowledge and memory, tool interfaces, control-loop code, recovery and finalization policies, validators, and runtime configurations. Earlier work typically optimizes individual harness components in isolation, such as prompts, tools, memory, or workflows~\cite{hu-etal-2026-evermemos,su-etal-2026-u}. More recent studies have begun to treat the harness as a unified engineering surface whose heterogeneous components jointly determine agent behavior~\citep{gao2026survey,xu2026lifeharness}. This broader view is particularly important when model weights are frozen, closed, or costly to update.
+%
+However, manually developing a harness is often labor-intensive and error-prone. To address this, recent work has turned to automatic harness evolution, guided by the principle of improving agents with agents.
+
+\subsection{Agent-Harness Self-Evolution}
+A substantial body of agent-harness self-evolution can be understood as \emph{partial agent-harness self-evolution}, where execution feedback is used to improve one restricted component. Prompt-optimization methods automatically generate, refine, or select instructions~\citep{zhou2023ape,yang2024opro,khattab2024dspy,agrawal2026gepa}, while workflow-optimization approaches search over module compositions, operator orderings, and execution graphs~\citep{zhang2025aflow,lu2026empiricalmcts}. A parallel line updates contextual knowledge or memory from accumulated interactions~\citep{zhang2025ace,liu2026evolvemem,yu2026molem,zhang2026latentevolve}. 
+%Open-ended program and agent-design search further demonstrates that LLMs can iteratively propose and improve executable artifacts~\citep{romeraparedes2024funsearch,hu2025adas,robeyns2025sica,zhang2026dgm}. 
+These methods establish that individual harness components can be optimized from trajectories or task scores, but their search spaces are limited.
+
+More recent work studies \emph{full agent-harness self-evolution}, which iteratively diagnoses execution trajectories, generates harness modifications, evaluates the resulting agent, and retains beneficial changes~\citep{lee2026metaharness,chen2026harnessx}. For example, Self-Harness clusters recurring failure patterns and proposes targeted harness edits under a non-regression rule~\citep{zhang2026selfharness}. HarnessFix maps trace-grounded failure diagnoses to scoped repair operators~\citep{chen2026harnessfix}. AHE exposes harness components as editable artifacts and validates modifications against self-declared behavioral predictions~\citep{lin2026ahe}. %Meta-Harness and HarnessX broaden the editable surface through agentic code search and compositional harness representations~\citep{lee2026metaharness,chen2026harnessx}, while EvoTrainer jointly adapts model parameters and the harness~\citep{chen2026evotrainer}.
+
+Despite this progress, existing methods often rely on greedy search and noisy selection criteria, making them vulnerable to search collapse, task-specific overfitting, and unreliable gains. HarnessBank addresses these issues with a \textbf{Harness Gene Bank} for preserving semantically diverse harnesses and \textbf{Gated Harness Screening} for efficiently verifying candidate improvements.

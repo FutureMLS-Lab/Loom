@@ -339,9 +339,9 @@ TBD
 1. 将编译后的 PDF 复制到隔离临时目录。
 2. 临时目录中只放 `submission.pdf`。
 3. 并行启动三个 Cursor Reviewer：
-   - `gpt-5.6-sol-max`
+   - `gpt-5.6-sol-max-fast`
    - `claude-fable-5-thinking-max`
-   - `cursor-grok-4.5-high`
+   - `cursor-grok-4.5-high-fast`
 4. Reviewer 检查：
    - 图片是否清晰；
    - 标签是否可读；

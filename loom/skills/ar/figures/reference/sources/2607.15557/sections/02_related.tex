@@ -1,0 +1,79 @@
+% =============================================================================
+% §2 Related Work (~0.7 page) — narrative, minimal redundancy with §1
+% =============================================================================
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Skill acquisition and curation}
+
+Work on the skill layer divides by when skills enter
+the system.  One strand acquires them at run time, while the
+agent is solving tasks.  Voyager grows a skill library through
+environment exploration \citep{Wang2023Voyager}, Toolformer
+trains the model to invoke tools self-supervisedly
+\citep{Schick2023Toolformer}, ToolLLM and Gorilla scale API
+calling to large tool inventories
+\citep{Qin2024ToolLLM,Patil2023Gorilla}, and recent
+agent-evolution work lets agents redesign their own scaffolding
+\citep{Zhang2024Memento,AEvolve2025}.  All of these build on
+agent harness scaffolds \citep{Yao2023ReAct,Shinn2023Reflexion}.
+The other strand, which this paper occupies, prepares skills
+before the agent ever runs.  We curate a
+community-contributed corpus at ingest time, so that runtime
+systems have a trustworthy library to draw from.  This
+ingest-time curation mirrors data-quality work in language-model
+training, where deduplication \citep{Lee2022Dedup} and
+quality-based data selection \citep{Zhou2023LIMA} improve
+downstream models more than raw scale.
+
+Released community skill corpora vary in emphasis.
+\citet{SkillNet2026}, concurrent with our work, releases a
+200K-skill ontology rated along five quality rubrics and linked
+by a skill-relation graph.  It measures benefit on
+simulated environments, with skills synthesised from each
+benchmark's own expert trajectories rather than on real tasks
+served by a deployed corpus.  \citet{SkillFlow2026} pairs a 36K
+uncurated library with a four-stage retrieval pipeline and
+treats quality only implicitly, through artifact-density
+signals.
+\citet{AgentSkillsDataAnalysis2026} provides a data-driven
+characterisation of a smaller curated set.  None of these releases
+reports a source-licence audit, so their redistribution rights are
+left unresolved.  Nor does prior work tie these per-skill scores to
+their downstream operational role.  We introduce a
+compact three-facet framework chosen for measurable facet
+separation rather than rubric coverage, and characterise its
+operational signal directly (\S\ref{sec:claim-a}).
+
+\subsection{Skill retrieval and evaluation}
+
+Skill retrieval architectures range from lexical and dense
+recall to learned skill routers \citep{SkillRouter2026},
+supported by dedicated retrieval benchmarks \citep{SkillRet2026},
+corpus-size scaling analyses \citep{ScalingLaws2026}, and
+dependency-aware composition \citep{GraphOfSkills2026}.  A
+complementary line of work emphasises skill orchestration and
+context-injection over retrieval per se.
+\citet{AgentSkillOS2026} couples capability-tree retrieval with
+DAG-based orchestration at $\sim$$200$K scale, and
+\citet{SkillRAE2026} reports $+11.7\%$ on SkillsBench via a
+skill graph plus compact compilation.  That gain, however, is
+measured against the prior state-of-the-art injection method
+rather than a no-skill or community-corpus baseline, so it is not
+directly comparable to our end-to-end $\Delta$.
+The retrieval strand reports ranking metrics on its
+own curated pools rather than task outcomes.  Our
+stack is fine-tuned on the deduplicated
+corpus it serves and adds an LLM selector that reads full skill
+bodies before injection, with both its standalone retrieval
+performance and its end-to-end effect on task pass rates
+measured directly.
+
+On evaluation, \citet{SkillsBench2026} characterises oracle-skill
+efficacy, and \citet{UCSBSkillsWild2026} reports diminishing
+returns on uncurated libraries at scale.  Neither
+evaluates a single community-curated corpus under a
+deployable retrieval-and-selection stack across multiple
+real-world benchmarks.  \S\ref{sec:experiments} fills this gap
+with a cross-benchmark, cross-harness, multi-backbone measurement
+of end-to-end task gains.

@@ -1,0 +1,129 @@
+% =============================================================================
+% SkillCorpus — AAAI-27 PREPRINT / arXiv version (real authors, no AAAI copyright)
+% Compile: pdflatex main_arxiv && bibtex main_arxiv && pdflatex main_arxiv x2
+% Style files: aaai2027.sty / aaai2027.bst (AAAI-27 Author Kit, AuthorKit27.zip)
+% [preprint] shows real authors and suppresses the AAAI copyright slug (which
+% camera-ready mode would force). Do NOT use camera-ready for a preprint.
+% =============================================================================
+\documentclass[letterpaper]{article} % DO NOT CHANGE THIS
+\usepackage[preprint]{aaai2027}       % preprint: real authors, no copyright slug
+% Fonts (serif/sans/mono) are loaded automatically by aaai2027.sty.
+% DO NOT add times/helvet/courier/fontenc/inputenc.
+\usepackage[hyphens]{url}   % DO NOT CHANGE THIS
+\usepackage{graphicx}       % DO NOT CHANGE THIS
+\urlstyle{rm}               % DO NOT CHANGE THIS
+\def\UrlFont{\rm}           % DO NOT CHANGE THIS
+\usepackage{natbib}         % DO NOT CHANGE THIS AND DO NOT ADD OPTIONS
+\usepackage{caption}        % DO NOT CHANGE THIS AND DO NOT ADD OPTIONS
+\frenchspacing              % DO NOT CHANGE THIS
+
+% --- Packages needed by the ported content (none are on the AAAI banned list) ---
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}   % \toprule \midrule \bottomrule
+\usepackage{multirow}   % appendix ablation table
+\usepackage{array}
+
+\pdfinfo{
+/TemplateVersion (2027.1)
+}
+
+% Keep section numbers so the paper's \S\ref{...} cross-references resolve.
+\setcounter{secnumdepth}{2}
+
+% Version switch: this is the arXiv/preprint build (full Limitations section,
+% inline appendix). The AAAI submission build (main.tex) sets \arxivfalse, which
+% turns on the condensed limitations woven into the discussion/conclusion.
+\newif\ifarxiv\arxivtrue
+
+% =============================================================================
+% Title (mixed / title case) and author block (preprint = shown).
+% =============================================================================
+\title{SkillCorpus: Consolidating and Evaluating the Open Skill Ecosystem for Real-World LLM Agents}
+
+\author{
+    Yanze~Wang\textsuperscript{\rm 1,2,3}\equalcontrib,
+    Pengfei~Yao\textsuperscript{\rm 1,2}\equalcontrib,
+    Tianyi~Sun\textsuperscript{\rm 1,2,3},
+    Chuanrui~Hu\textsuperscript{\rm 1,2}\footnote{Project leader.},
+    Yan~Xiao\textsuperscript{\rm 1,2},
+    Xiaotian~Luo\textsuperscript{\rm 1,2},
+    Yunyun~Han\textsuperscript{\rm 1,2},
+    Yifan~Chen\textsuperscript{\rm 1,2},
+    Jun~Sun\textsuperscript{\rm 3}\corresponding,
+    Yafeng~Deng\textsuperscript{\rm 1,2}\corresponding
+}
+\affiliations{
+    \textsuperscript{\rm 1}EverMind\qquad
+    \textsuperscript{\rm 2}Shanda Group\qquad
+    \textsuperscript{\rm 3}Peking University\\
+    \{yanze.wang, yaopengfei, tianyi.sun, chuanrui.hu, hanyunyun, yifan.chen, dengyafeng\}@shanda.com,\\
+    \{yan.xiao, xiaotian.luo\}@evermind.ai, jsun@pku.edu.cn
+}
+
+\begin{document}
+\maketitle
+
+% =============================================================================
+% Abstract
+% =============================================================================
+\begin{abstract}
+Agent skills, \texttt{SKILL.md} files that package reusable
+procedural knowledge for an LLM agent, are a popular
+mechanism for extending agent capabilities.  Public
+repositories now host them in large and growing numbers, yet these
+artifacts are fragmented, redundant, and uneven in quality, and their
+value in practice is unclear.  A core
+question remains open, namely how to consolidate this open-source
+\texttt{SKILL.md} ecosystem into a single usable corpus, and
+what bounds its benefit on real-world agent tasks.
+We present \textbf{SkillCorpus}, a framework that aggregates,
+curates, matches, and evaluates the open skill ecosystem at
+scale.  It filters $\sim$$821{,}000$ crawled skills through
+a multi-stage pipeline into $96{,}401$ skills
+organised by a 16-class taxonomy and three quality facets
+(utility, robustness, safety), and pairs them with a fine-tuned
+retrieval-and-selection stack that matches task-relevant skills.
+We evaluate end-to-end across three benchmarks (SkillsBench,
+GDPVal, QwenClawBench), two harnesses, and two open backbones
+with a frontier robustness check.
+Integrating SkillCorpus yields consistent gains across all
+three benchmarks, largest on SkillsBench ($+7.5$\,pp).  An operational
+analysis traces the gains to a coverage boundary and a harness
+boundary.
+SkillCorpus is, to our
+knowledge, the first end-to-end account of when a curated,
+retrieval-served community corpus improves real agent tasks, and
+where it does not.
+The dataset, models, and code will be released upon acceptance.
+\end{abstract}
+
+% =============================================================================
+% Body — sections shared verbatim with the ACL working copy.
+% =============================================================================
+\input{sections/01_introduction}
+\input{sections/02_related}
+\input{sections/03_corpus}
+\input{sections/04_experiments}
+\input{sections/05_conclusion}
+
+\section*{Limitations}
+\label{sec:limitations}
+\input{sections/08_limitations}
+
+\section*{Ethical Statement}
+\input{sections/09_ethics}
+
+% =============================================================================
+% References — aaai2027.sty already sets \bibliographystyle{aaai2027},
+% so no \bibliographystyle command is placed here (per AAAI instructions).
+% =============================================================================
+\bibliography{refs}
+
+% =============================================================================
+% Appendix
+% =============================================================================
+\appendix
+\input{sections/A_appendix}
+
+\end{document}

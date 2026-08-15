@@ -102,15 +102,16 @@ MAX_ROUNDS_LIMIT = 50
 MODE_AUTO = "auto"
 MODE_SEED = "seed"
 
-# Cursor's account-scoped model catalog exposes these as the strongest
-# non-fast variants currently available for the requested reviewer families.
+# Prefer Fast variants whenever Cursor exposes one for the requested reviewer
+# family. Fable Thinking Max currently has no Fast sibling in the account
+# catalogue, so it remains on the strongest available non-fast variant.
 # Fable has an explicit Thinking variant. GPT-5.6 Sol and Cursor Grok do not
 # expose a separate Thinking switch; max/high is their strongest reasoning
 # preset, and Cursor intentionally suppresses private reasoning in print mode.
 CURSOR_REVIEWER_MODELS: tuple[str, ...] = (
-    "gpt-5.6-sol-max",
+    "gpt-5.6-sol-max-fast",
     "claude-fable-5-thinking-max",
-    "cursor-grok-4.5-high",
+    "cursor-grok-4.5-high-fast",
 )
 CURSOR_REVIEWER_PANEL = "cursor-reviewer-panel"
 
@@ -581,6 +582,10 @@ def new_studio_state(
         "search_terms_updated_at": "",
         "search_suggest_status": "idle",
         "search_suggest_error": "",
+        "venue_report": {},
+        "venue_status": "idle",
+        "venue_error": "",
+        "venue_updated_at": "",
         "ideas": [],
         "ideas_updated_at": "",
         "cost_usd": 0.0,
@@ -1116,38 +1121,9 @@ def latex_errors(log: str, limit: int = 20) -> list[str]:
     return out
 
 
-def paper_source_text(paper_dir: Path, limit: int = 90000) -> str:
-    """Concatenate the paper's LaTeX sources for a reviewer prompt."""
-    parts: list[str] = []
-    total = 0
-    candidates = [paper_dir / "main.tex"]
-    sections = paper_dir / "sections"
-    if sections.is_dir():
-        candidates.extend(sorted(sections.glob("*.tex")))
-    for path in candidates:
-        try:
-            body = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        try:
-            name = str(path.relative_to(paper_dir))
-        except ValueError:
-            name = path.name
-        chunk = f"% ===== {name} =====\n{body}\n"
-        if total + len(chunk) > limit:
-            parts.append(chunk[: max(0, limit - total)])
-            parts.append("\n% ... (sources truncated for review) ...\n")
-            break
-        parts.append(chunk)
-        total += len(chunk)
-    return "".join(parts).strip()
-
-
 # --- Paper mining -----------------------------------------------------------
 
 ARXIV_API = "https://export.arxiv.org/api/query"
-# Compatibility alias for callers that imported the old fixed category tuple.
-ARXIV_CATEGORIES = DEFAULT_ARXIV_CATEGORIES
 _ATOM_NS = "{http://www.w3.org/2005/Atom}"
 _ARXIV_NS = "{http://arxiv.org/schemas/atom}"
 
@@ -1330,6 +1306,7 @@ JOB_PAPERS = "papers"
 JOB_IDEAS = "ideas"
 JOB_REVIEW = "review"
 JOB_SEARCH = "search"
+JOB_VENUE = "venue"
 
 
 def job_log_path(project_root: Path, slug: str, job: str) -> Path:
@@ -1660,12 +1637,178 @@ def _papers_block(papers: list[dict[str, Any]], limit: int = 30) -> str:
     return "\n".join(lines)
 
 
+VENUE_REPORT_MAX_ENTRIES = 16
+VENUE_REPORT_MAX_TOPICS = 8
+VENUE_REPORT_MAX_GAPS = 8
+
+
+def _venue_paper_entry(raw: Any) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    title = str(raw.get("title") or "").strip()[:300]
+    if not title:
+        return None
+    return {
+        "title": title,
+        "arxiv_id": str(raw.get("arxiv_id") or "").strip()[:40],
+        "topic": str(raw.get("topic") or "").strip()[:200],
+        "note": str(raw.get("note") or "").strip()[:400],
+    }
+
+
+def normalize_venue_report(raw: dict[str, Any]) -> dict[str, Any]:
+    """Clamp a model-written venue-cycle report into a bounded structure."""
+    best = [
+        e
+        for e in (_venue_paper_entry(x) for x in (raw.get("best_papers") or []))
+        if e
+    ][:VENUE_REPORT_MAX_ENTRIES]
+    orals = [
+        e for e in (_venue_paper_entry(x) for x in (raw.get("orals") or [])) if e
+    ][:VENUE_REPORT_MAX_ENTRIES]
+    topics = []
+    for item in raw.get("hot_topics") or []:
+        if not isinstance(item, dict):
+            continue
+        topic = str(item.get("topic") or "").strip()[:200]
+        if not topic:
+            continue
+        topics.append(
+            {
+                "topic": topic,
+                "evidence": str(item.get("evidence") or "").strip()[:400],
+                "papers": [
+                    e
+                    for e in (
+                        _venue_paper_entry(x) for x in (item.get("papers") or [])
+                    )
+                    if e
+                ][:6],
+            }
+        )
+    topics = topics[:VENUE_REPORT_MAX_TOPICS]
+    gaps = [
+        str(x).strip()[:300] for x in (raw.get("gaps") or []) if str(x).strip()
+    ][:VENUE_REPORT_MAX_GAPS]
+    return {
+        "cycle": str(raw.get("cycle") or "").strip()[:120],
+        "best_papers": best,
+        "orals": orals,
+        "hot_topics": topics,
+        "gaps": gaps,
+        "summary": str(raw.get("summary") or "").strip()[:2000],
+    }
+
+
+def venue_report_block(report: dict[str, Any]) -> str:
+    """The venue-cycle report as it appears inside an ideation prompt."""
+    lines: list[str] = [f"Cycle surveyed: {report.get('cycle') or '(unnamed)'}"]
+    if report.get("summary"):
+        lines += ["", str(report["summary"])]
+
+    def paper_lines(label: str, entries: list[dict[str, Any]]) -> None:
+        if not entries:
+            return
+        lines.append("")
+        lines.append(f"{label}:")
+        for e in entries:
+            arx = f" [{e['arxiv_id']}]" if e.get("arxiv_id") else ""
+            note = f" - {e['note']}" if e.get("note") else ""
+            lines.append(f"- {e['title']}{arx} ({e.get('topic', '')}){note}")
+
+    paper_lines("Best papers / honorable mentions", report.get("best_papers") or [])
+    paper_lines("Orals / highlighted papers", report.get("orals") or [])
+    if report.get("hot_topics"):
+        lines += ["", "Hot topics of the cycle:"]
+        for t in report["hot_topics"]:
+            lines.append(f"- {t['topic']}: {t.get('evidence', '')}")
+            for p in t.get("papers") or []:
+                arx = f" [{p['arxiv_id']}]" if p.get("arxiv_id") else ""
+                lines.append(f"    - {p['title']}{arx}")
+    if report.get("gaps"):
+        lines += ["", "Gaps the community called out:"]
+        lines += [f"- {g}" for g in report["gaps"]]
+    return "\n".join(lines)
+
+
+def research_venue_cycle(
+    state: dict[str, Any],
+    *,
+    model: str = "",
+    timeout: int = 1500,
+    on_line: Any = None,
+) -> dict[str, Any]:
+    """Deep-research what the target venue rewarded in its last finished cycle.
+
+    OpenReview's API rejects scripted crawls, so this leans on the model's own
+    web search: award pages, accepted-paper lists, and trend write-ups. The
+    reply is normalized and bounded before it is trusted.
+    """
+    venue = str(venue_entry(str(state.get("venue") or DEFAULT_VENUE)).get("label"))
+    direction = direction_label(state)
+    prompt = f"""You are surveying the most recent COMPLETED cycle of {venue} so a
+research studio can propose ideas that fit what this venue actually rewards.
+The studio's research direction is: {direction}.
+
+Use your own web search. For the last completed edition of {venue}, find:
+1. the best paper / honorable mention winners;
+2. papers highlighted as orals or award candidates (up to 12);
+3. the hottest topics of that cycle - recurring themes across accepted papers,
+   each with 2-4 representative accepted papers;
+4. gaps or "next questions" visibly called out in award talks, retrospectives,
+   or trend write-ups about that cycle.
+
+Prefer the venue's official award and program pages, then reputable summaries.
+Mark anything you could not confirm as "unverified" in its note rather than
+inventing it. Where a paper has an arXiv id, give it bare (e.g. 2406.01234).
+
+Reply with ONE JSON object and nothing else:
+{{"cycle": "<edition surveyed>",
+ "best_papers": [{{"title": "", "arxiv_id": "", "topic": "", "note": ""}}],
+ "orals": [{{"title": "", "arxiv_id": "", "topic": "", "note": ""}}],
+ "hot_topics": [{{"topic": "", "evidence": "", "papers": [{{"title": "", "arxiv_id": ""}}]}}],
+ "gaps": [""],
+ "summary": ""}}"""
+    if on_line is not None:
+        on_line(f"deep-researching the last completed {venue} cycle (web search)")
+    res = _run_headless(prompt, model=model, timeout=timeout, on_line=on_line)
+    if not res.get("ok"):
+        return res
+    raw = _extract_json_object(str(res.get("text") or ""))
+    if raw is None:
+        return {
+            "ok": False,
+            "error": "model did not return a JSON venue report",
+            "cost": res.get("cost", 0.0),
+        }
+    report = normalize_venue_report(raw)
+    if not (report["best_papers"] or report["orals"] or report["hot_topics"]):
+        return {
+            "ok": False,
+            "error": "venue report came back empty - try again",
+            "cost": res.get("cost", 0.0),
+        }
+    if on_line is not None:
+        on_line(
+            f"report ready: {report.get('cycle') or venue} - "
+            f"{len(report['best_papers'])} best paper(s), "
+            f"{len(report['orals'])} oral(s), "
+            f"{len(report['hot_topics'])} hot topic(s)"
+        )
+    return {"ok": True, "report": report, "cost": res.get("cost", 0.0)}
+
+
+IDEA_SOURCE_PAPERS = "papers"
+IDEA_SOURCE_VENUE = "venue"
+
+
 def propose_ideas(
     state: dict[str, Any],
     skill_text: str,
     *,
     count: int = 6,
     model: str = "",
+    source: str = IDEA_SOURCE_PAPERS,
     timeout: int = 900,
     on_line: Any = None,
 ) -> dict[str, Any]:
@@ -1674,6 +1817,17 @@ def propose_ideas(
     venue = str(venue_entry(str(state.get("venue") or DEFAULT_VENUE)).get("label"))
     seed = str(state.get("seed_idea") or "").strip()
     papers = [p for p in (state.get("papers") or []) if isinstance(p, dict)]
+    report = (
+        state.get("venue_report")
+        if isinstance(state.get("venue_report"), dict)
+        else {}
+    )
+
+    if source == IDEA_SOURCE_VENUE and not report:
+        return {
+            "ok": False,
+            "error": "no venue report yet - run the venue-cycle research first",
+        }
 
     if mode == MODE_SEED and seed:
         task_block = (
@@ -1683,6 +1837,18 @@ def propose_ideas(
             "existing work.\n\n"
             f"User's idea:\n{seed}"
         )
+    elif source == IDEA_SOURCE_VENUE:
+        task_block = (
+            f"MODE: venue-informed. Propose {count} ideas grounded in what this "
+            "venue rewarded in its last completed cycle (report below): ride the "
+            "hot topics forward, answer the called-out gaps, or extend what the "
+            "winners opened up - while staying inside the studio's research "
+            "direction. Cite the report's papers (with their arXiv ids where "
+            "given) in each idea's `novelty` field, and use your own search to "
+            "check an idea is not already taken."
+        )
+        if seed:
+            task_block += f"\n\nExtra context from the user:\n{seed}"
     else:
         task_block = (
             f"MODE: auto direction. Propose {count} ideas in this direction, "
@@ -1691,19 +1857,31 @@ def propose_ideas(
         if seed:
             task_block += f"\n\nExtra context from the user:\n{seed}"
 
+    if source == IDEA_SOURCE_VENUE:
+        grounding_block = (
+            f"What {venue} rewarded last cycle:\n{venue_report_block(report)}"
+        )
+    else:
+        grounding_block = f"Recent papers mined from arXiv:\n{_papers_block(papers)}"
+
     prompt = (
         f"{skill_text}\n\n"
         "=== end methodology ===\n\n"
         f"Research direction: {direction_label(state)}\n"
         f"Target venue: {venue}\n\n"
         f"{task_block}\n\n"
-        f"Recent papers mined from arXiv:\n{_papers_block(papers)}\n\n"
+        f"{grounding_block}\n\n"
         "Reply with the JSON array of idea cards and nothing else."
     )
     if on_line is not None:
+        grounding = (
+            f"last-cycle report ({str(report.get('cycle') or 'unnamed')})"
+            if source == IDEA_SOURCE_VENUE
+            else f"{len(papers)} mined paper(s)"
+        )
         on_line(
             f"asking for {count} idea(s) in {direction_label(state)} "
-            f"for {venue} ({mode} mode, {len(papers)} mined paper(s))"
+            f"for {venue} ({mode} mode, grounded in {grounding})"
         )
     res = _run_headless(prompt, model=model, timeout=timeout, on_line=on_line)
     if not res.get("ok"):
@@ -1797,15 +1975,6 @@ def store_put(key: str, record: dict[str, Any]) -> None:
         data = read_paper_store()
         data[key] = {**record, "fetched_at": time.time()}
         _write_paper_store(data)
-
-
-def store_stats() -> dict[str, Any]:
-    data = read_paper_store()
-    return {
-        "papers": len(data),
-        "verified": sum(1 for r in data.values() if isinstance(r, dict) and r.get("verified")),
-        "path": str(paper_store_path()),
-    }
 
 
 def remember_papers(papers: list[dict[str, Any]]) -> int:
@@ -2484,10 +2653,6 @@ def latest_review(state: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def loop_is_complete(state: dict[str, Any]) -> bool:
-    return current_round(state) >= max_rounds(state)
-
-
 # --- Adapting the loop ------------------------------------------------------
 
 # A rating this high means the reviewer would argue for the paper, so more
@@ -3118,19 +3283,6 @@ def review_readiness(
         "none" if not warnings else ", ".join(dict.fromkeys(warnings)),
     )
 
-    pages = pdf_page_count(pdf) if pdf_exists else None
-    page_limit = int(entry.get("page_limit") or 0)
-    page_ok = pages is not None and (not page_limit or pages <= page_limit + 2)
-    check(
-        page_ok,
-        f"PDF page count is inspectable and within {entry['label']} allowance",
-        (
-            f"{pages} pages (main-text limit {page_limit}, +2 allowance for references)"
-            if pages is not None
-            else "pdfinfo could not read the PDF"
-        ),
-    )
-
     rendered = _pdf_text(pdf) if pdf_exists else {"ok": False, "error": "PDF missing"}
     if rendered.get("ok"):
         pdf_text = str(rendered.get("text") or "")
@@ -3217,13 +3369,6 @@ def build_submission(
         f"stage: {progress_summary(state)}",
     )
     check(pdf.is_file(), "PDF is compiled", str(pdf) if pdf.is_file() else "run Rebuild PDF")
-    limit = int(entry.get("page_limit") or 0)
-    if pages is not None and limit:
-        check(
-            pages <= limit + 2,
-            f"Page count within the {entry['label']} limit",
-            f"{pages} pages, main-text limit {limit} (references and appendix usually excluded)",
-        )
     check(
         markers == 0,
         "No unfilled placeholders left",
@@ -3324,6 +3469,7 @@ client.post_note_edit(
 SKILL_STUDIO = "AR-STUDIO.md"
 SKILL_AUTHOR = "AR-AUTHOR.md"
 SKILL_REVIEWER = "AR-REVIEWER.md"
+SKILL_GPU = "GPU-RESOURCES.md"
 SKILL_REBUTTAL = "paper-rebuttal/SKILL.md"
 
 
@@ -3369,6 +3515,18 @@ def figure_skills() -> list[dict[str, str]]:
         out.append({"name": name, "description": description, "path": str(doc)})
     return out
 
+
+
+def gpu_resources_block() -> str:
+    """The compute-resources skill as it appears in an author prompt."""
+    text = ar_skill_text(SKILL_GPU)
+    if not text:
+        return ""
+    return (
+        "=== Compute resources - run all experiments on the GPU cluster ===\n"
+        + text
+        + "\n=== end compute resources ==="
+    )
 
 def figure_skills_block() -> str:
     """The figure-skill menu as it appears in an author prompt."""
@@ -3617,6 +3775,8 @@ The idea this paper must establish:
 
 {figure_skills_block()}
 
+{gpu_resources_block()}
+
 This round you are writing the SKELETON, not results. Finish the title,
 abstract arc, introduction with its contribution list, related work with real
 citations, and a method section precise enough to reimplement from. Build out
@@ -3680,6 +3840,8 @@ The idea this paper must establish:
 === end methodology ===
 
 {figure_skills_block()}
+
+{gpu_resources_block()}
 {stuck_block}
 {feedback}
 
@@ -3746,6 +3908,8 @@ Failures that must all be fixed:
 
 Continue the SAME round. Follow the AR author methodology exactly:
 {ar_skill_text(SKILL_AUTHOR) or "(AR author skill missing)"}
+
+{gpu_resources_block()}
 
 Before signalling completion again, make the whole submission complete:
 

@@ -1,0 +1,385 @@
+% Bibliography for the self-evolving harness paper.
+% Populated 2026-06-26 from a 5-agent literature sweep; see
+% docs/literature/2026-06-26-harness-evolution-landscape.md for relevance notes.
+% Metadata cross-checked against arXiv on 2026-07-02 (see "% verified" tags):
+%   SCOPE (2512.15374) and ReCreate (2601.11100) titles+authors corrected to the real papers;
+%   SkillOpt/Empirical-MCTS/QD-LLM/AIRA_2 confirmed; a fabricated ANCHOR entry (its arXiv id
+%   pointed to a different paper, and it was uncited) was removed.
+
+% ============================================================
+% Surveys / framing
+% ============================================================
+@article{gao2026survey,
+  title={A Survey of Self-Evolving Agents: What, When, How, and Where to Evolve on the Path to Artificial Super Intelligence},
+  author={Gao, Huan-ang and Geng, Jiayi and Hua, Wenyue and Hu, Mengkang and Juan, Xinzhe and others},
+  journal={Transactions on Machine Learning Research},
+  year={2026}, note={arXiv:2507.21046}
+}
+
+% ============================================================
+% Closest competitors -- end-to-end harness self-evolution
+% ============================================================
+@misc{zhang2026selfharness,
+  title={Self-Harness: Harnesses That Improve Themselves},
+  author={Zhang, Hangfan and Zhang, Shao and Li, Kangcong and Zhang, Chen and Chen, Yang and Zhang, Yiqun and Bai, Lei and Hu, Shuyue},
+  year={2026}, eprint={2606.09498}, archivePrefix={arXiv}
+}
+@misc{chen2026harnessfix,
+  title={From Failed Trajectories to Reliable LLM Agents: Diagnosing and Repairing Harness Flaws},
+  author={Chen, Mengzhuo and Wang, Junjie and Liu, Zhe and Wang, Yawen and Wang, Qing},
+  year={2026}, eprint={2606.06324}, archivePrefix={arXiv}
+}
+@misc{lin2026ahe,
+  title={Agentic Harness Engineering: Observability-Driven Automatic Evolution of Coding-Agent Harnesses},
+  author={Lin, Jiahang and Liu, Shichun and Pan, Chengjun and Lin, Lizhi and Dou, Shihan and Xi, Zhiheng and Huang, Xuanjing and Yan, Hang and Han, Zhenhua and Gui, Tao and Jiang, Yu-Gang},
+  year={2026}, eprint={2604.25850}, archivePrefix={arXiv}
+}
+@inproceedings{ursekar2026vero,
+  title={VeRO: A Harness for Agents to Optimize Agents},
+  author={Ursekar, Varun and Shanker, Apaar and Chatrath, Veronica and Xue, Yuan and Denton, Samuel Marc},
+  booktitle={International Conference on Machine Learning (ICML)},
+  year={2026}, note={arXiv:2602.22480}
+}
+@misc{lee2026metaharness,
+  title={Meta-Harness: End-to-End Optimization of Model Harnesses},
+  author={Lee, Yoonho and Nair, Roshen and Zhang, Qizheng and Lee, Kangwook and Khattab, Omar and Finn, Chelsea},
+  year={2026}, eprint={2603.28052}, archivePrefix={arXiv}
+}
+@misc{yang2026skillopt,
+  title={SkillOpt: Executive Strategy for Self-Evolving Agent Skills},
+  author={Yang, Yifan and others},
+  year={2026}, eprint={2605.23904}, archivePrefix={arXiv}
+}
+@misc{chen2026harnessx,
+  title={HarnessX: A Composable, Adaptive, and Evolvable Agent Harness Foundry},
+  author={Chen, Tingyang and Lu, Shuo and Zhao, Kang and Meng, Weicheng and Teng, Hanlin and Li, Tianhao and Li, Chao and Liu, Xule and Liang, Jian and Zhang, Zhizhong and Xie, Yuan and Qu, Heng and Shao, Kun and Luan, Jian},
+  year={2026}, eprint={2606.14249}, archivePrefix={arXiv}
+}
+@misc{xu2026lifeharness,
+  title={Adapting the Interface, Not the Model: Runtime Harness Adaptation for Deterministic LLM Agents},
+  author={Xu, Tianshi and Wen, Huifeng and Li, Meng},
+  year={2026}, eprint={2605.22166}, archivePrefix={arXiv}
+}
+@misc{zhang2025ace,
+  title={Agentic Context Engineering: Evolving Contexts for Self-Improving Language Models},
+  author={Zhang, Qizheng and Hu, Changran and Upasani, Shubhangi and others},
+  year={2025}, eprint={2510.04618}, archivePrefix={arXiv}
+}
+@misc{yan2026arlsystems,
+  title={Next-Generation Agentic Reinforcement Learning Systems Enable Self-Evolving Agents},
+  author={Yan, Ran and Fu, Wei and Li, Jiale and Xu, Shusheng and Mei, Zhiyu and Gao, Jiaxuan and Zhang, Jiarui and Shen, Xujie and Dai, Hao and He, Chuyi and Pu, Zhen and Mei, Jun and Lin, Zhiyao and Wang, Haitao and Ding, Zhiqiang and Zhang, Jiawei and Wang, Huaijie and Xu, Ruida and Jiang, Youhe and Wu, Yi and Yang, Tongkai and Yuan, Binhang},
+  year={2026}, eprint={2607.01120}, archivePrefix={arXiv}
+}
+
+% ============================================================
+% Self-rewriting agents / open-ended archives (archive ancestors)
+% ============================================================
+@inproceedings{zhang2026dgm,
+  title={Darwin G\"odel Machine: Open-Ended Evolution of Self-Improving Agents},
+  author={Zhang, Jenny and Hu, Shengran and Lu, Cong and Lange, Robert and Clune, Jeff},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2026}, note={arXiv:2505.22954}
+}
+@misc{robeyns2025sica,
+  title={A Self-Improving Coding Agent},
+  author={Robeyns, Maxime and Szummer, Martin and Aitchison, Laurence},
+  year={2025}, eprint={2504.15228}, archivePrefix={arXiv}
+}
+@inproceedings{hu2025adas,
+  title={Automated Design of Agentic Systems},
+  author={Hu, Shengran and Lu, Cong and Clune, Jeff},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2025}, eprint={2408.08435}, archivePrefix={arXiv}
+}
+
+% ============================================================
+% Search algorithms / prompt & workflow optimization
+% ============================================================
+@inproceedings{agrawal2026gepa,
+  title={GEPA: Reflective Prompt Evolution Can Outperform Reinforcement Learning},
+  author={Agrawal, Lakshya A. and Tan, Shangyin and Soylu, Dilara and Ziems, Noah and Khare, Rishi and Opsahl-Ong, Krista and Singhvi, Arnav and Shandilya, Herumb and Ryan, Michael J. and Jiang, Meng and Potts, Christopher and Sen, Koushik and Dimakis, Alexandros G. and Stoica, Ion and Klein, Dan and Zaharia, Matei and Khattab, Omar},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2026}, eprint={2507.19457}, archivePrefix={arXiv}
+}
+@inproceedings{zhang2025aflow,
+  title={AFlow: Automating Agentic Workflow Generation},
+  author={Zhang, Jiayi and Xiang, Jinyu and Yu, Zhaoyang and Teng, Fengwei and Chen, Xionghui and Chen, Jiaqi and Zhuge, Mingchen and Cheng, Xin and Hong, Sirui and Wang, Jinlin and Zheng, Bingnan and Liu, Bang and Luo, Yuyu and Wu, Chenglin},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2025}, eprint={2410.10762}, archivePrefix={arXiv}
+}
+@misc{lu2026empiricalmcts,
+  title={Empirical-MCTS: Continuous Agent Evolution via Dual-Experience Monte Carlo Tree Search},
+  author={Lu, Hao and Huang, Haoyuan and Zhou, Yulin and Li, Chen and Zhu, Ningxin},
+  year={2026}, eprint={2602.04248}, archivePrefix={arXiv}
+}
+@inproceedings{zhou2023ape,
+  title={Large Language Models Are Human-Level Prompt Engineers},
+  author={Zhou, Yongchao and Muresanu, Andrei Ioan and Han, Ziwen and Paster, Keiran and Pitis, Silviu and Chan, Harris and Ba, Jimmy},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2023}, eprint={2211.01910}, archivePrefix={arXiv}
+}
+@inproceedings{yang2024opro,
+  title={Large Language Models as Optimizers},
+  author={Yang, Chengrun and Wang, Xuezhi and Lu, Yifeng and Liu, Hanxiao and Le, Quoc V. and Zhou, Denny and Chen, Xinyun},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2024}, eprint={2309.03409}, archivePrefix={arXiv}
+}
+@article{fernando2023promptbreeder,
+  title={Promptbreeder: Self-Referential Self-Improvement Via Prompt Evolution},
+  author={Fernando, Chrisantha and Banarse, Dylan and Michalewski, Henryk and Osindero, Simon and Rockt\"aschel, Tim},
+  journal={arXiv preprint arXiv:2309.16797}, year={2023}
+}
+@inproceedings{khattab2024dspy,
+  title={DSPy: Compiling Declarative Language Model Calls into Self-Improving Pipelines},
+  author={Khattab, Omar and Singhvi, Arnav and Maheshwari, Paridhi and Zhang, Zhiyuan and Santhanam, Keshav and Vardhamanan, Sri and Haq, Saiful and Sharma, Ashutosh and Joshi, Thomas T. and Moazam, Hanna and Miller, Heather and Zaharia, Matei and Potts, Christopher},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2024}, eprint={2310.03714}, archivePrefix={arXiv}
+}
+@article{romeraparedes2024funsearch,
+  title={Mathematical discoveries from program search with large language models},
+  author={Romera-Paredes, Bernardino and Barekatain, Mohammadamin and Novikov, Alexander and Balog, Matej and Kumar, M. Pawan and Dupont, Emilien and Ruiz, Francisco J. R. and Ellenberg, Jordan and Wang, Pengming and Fawzi, Omar and Kohli, Pushmeet and Fawzi, Alhussein},
+  journal={Nature}, volume={625}, number={7995}, pages={468--475}, year={2024}
+}
+
+% ============================================================
+% Quality-Diversity / MAP-Elites (foundations + LLM)
+% ============================================================
+@article{mouret2015illuminating,
+  title={Illuminating search spaces by mapping elites},
+  author={Mouret, Jean-Baptiste and Clune, Jeff},
+  journal={arXiv preprint arXiv:1504.04909}, year={2015}
+}
+@article{cully2018unifying,
+  title={Quality and Diversity Optimization: A Unifying Modular Framework},
+  author={Cully, Antoine and Demiris, Yiannis},
+  journal={IEEE Transactions on Evolutionary Computation},
+  volume={22}, number={2}, pages={245--259}, year={2018}
+}
+@inproceedings{santos2025diverse,
+  title={Diverse Prompts: Illuminating the Prompt Space of Large Language Models with MAP-Elites},
+  author={Santos, Gabriel Machado and Julia, Rita Maria da Silva and do Nascimento, Marcelo Zanchetta},
+  booktitle={IEEE Congress on Evolutionary Computation (CEC)}, year={2025}, eprint={2504.14367}, archivePrefix={arXiv}
+}
+@article{guo2026qdllm,
+  title={Parameter-Efficient Neuroevolution for Diverse LLM Generation: Quality-Diversity Optimization via Prompt Embedding Evolution},
+  author={Guo, Dongxin and Wu, Jikun and Yiu, Siu Ming},
+  journal={arXiv preprint arXiv:2605.09781}, year={2026}
+}
+
+% ============================================================
+% Diagnosis / failure attribution / reflection quality
+% ============================================================
+@article{lin2026harnessbenefit,
+  title={Harness Updating Is Not Harness Benefit: Disentangling Evolution Capabilities in Self-Evolving LLM Agents},
+  author={Lin, Minhua and Wu, Juncheng and Wang, Zijun and Shi, Zhan and Sang, Yisi and He, Bing and Liu, Zewen and Wei, Tianxin and Wu, Zongyu and Zhang, Zhiwei and Wang, Dakuo and Zhang, Xiang and Dumoulin, Benoit and Xie, Cihang and Zhou, Yuyin and Wang, Suhang and Lu, Hanqing},
+  journal={arXiv preprint arXiv:2605.30621}, year={2026}
+}
+@article{huang2026benchtrace,
+  title={BenchTrace: A Benchmark for Testing Reflection Ability and Controlled Evolution in LLM Agents},
+  author={Huang, Jiahao and Cheng, Fei and Jiang, Junfeng and Yu, Zefan and Aizawa, Akiko},
+  journal={arXiv preprint arXiv:2605.29225}, year={2026}
+}
+@article{li2026decomposing,
+  title={Decomposing LLM Self-Correction: The Accuracy-Correction Paradox and Error Depth Hypothesis},
+  author={Li, Yin}, journal={arXiv preprint arXiv:2601.00828}, year={2026}
+}
+@article{zhu2025agentdebug,
+  title={Where LLM Agents Fail and How They can Learn From Failures},
+  author={Zhu, Kunlun and Liu, Zijia and Li, Bingxuan and Tian, Muxin and Yang, Yingxuan and Zhang, Jiaxun and Han, Pengrui and Xie, Qipeng and Cui, Fuyang and Zhang, Weijia and Ma, Xiaoteng and Yu, Xiaodong and Ramesh, Gowtham and Wu, Jialian and Liu, Zicheng and Lu, Pan and Zou, James and You, Jiaxuan},
+  journal={arXiv preprint arXiv:2509.25370}, year={2025}
+}
+@inproceedings{zhang2025whowhen,
+  title={Which Agent Causes Task Failures and When? On Automated Failure Attribution of LLM Multi-Agent Systems},
+  author={Zhang, Shaokun and Yin, Ming and Zhang, Jieyu and Liu, Jiale and Han, Zhiguang and Zhang, Jingyang and Li, Beibin and Wang, Chi and Wang, Huazheng and Chen, Yiran and Wu, Qingyun},
+  booktitle={International Conference on Machine Learning (ICML)},
+  year={2025}, eprint={2505.00212}, archivePrefix={arXiv}
+}
+@inproceedings{chen2026elephant,
+  title={Seeing the Whole Elephant: A Benchmark for Failure Attribution in LLM-based Multi-Agent Systems},
+  author={Chen, Mengzhuo and Wang, Junjie and Mu, Fangwen and Wang, Yawen and Liu, Zhe and Feng, Huanxiang and Wang, Qing},
+  booktitle={Annual Meeting of the Association for Computational Linguistics (ACL)},
+  year={2026}, eprint={2604.22708}, archivePrefix={arXiv}
+}
+@article{in2026mpbench,
+  title={Rethinking Failure Attribution in Multi-Agent Systems: A Multi-Perspective Benchmark and Evaluation},
+  author={In, Yeonjun and Tanjim, Mehrab and Subramanian, Jayakumar and Kim, Sungchul and Bhattacharya, Uttaran and Kim, Wonjoong and Park, Sangwu and Sarkhel, Somdeb and Park, Chanyoung},
+  journal={arXiv preprint arXiv:2603.25001}, year={2026}
+}
+
+% ============================================================
+% Sampling efficiency (anchor + borrowing support)
+% ============================================================
+@article{xiong2025minimalist,
+  title={A Minimalist Approach to LLM Reasoning: from Rejection Sampling to Reinforce},
+  author={Xiong, Wei and Yao, Jiarui and Xu, Yuhui and Pang, Bo and Wang, Lei and Sahoo, Doyen and Li, Junnan and Jiang, Nan and Zhang, Tong and Xiong, Caiming and Dong, Hanze},
+  journal={arXiv preprint arXiv:2504.11343}, year={2025}
+}
+@article{chen2025sec,
+  title={Self-Evolving Curriculum for LLM Reasoning},
+  author={Chen, Xiaoyin and Lu, Jiarui and Kim, Minsu and Zhang, Dinghuai and Tang, Jian and Pich\'e, Alexandre and Gontier, Nicolas and Bengio, Yoshua and Kamalloo, Ehsan},
+  journal={arXiv preprint arXiv:2505.14970}, year={2025}
+}
+
+% ============================================================
+% Generalization / overfitting / eval rigor
+% ============================================================
+@article{hambardzumyan2026aira2,
+  title={AIRA\_2: Overcoming Bottlenecks in AI Research Agents},
+  author={Hambardzumyan, Karen and Baldwin, Nicolas and Toledo, Edan and Hazra, Rishi and Kuchnik, Michael and Al Omari, Bassel and others},
+  journal={arXiv preprint arXiv:2603.26499}, year={2026}
+}
+@article{ong2026shor,
+  title={Towards Direct Evaluation of Harness Optimizers via Priority Ranking},
+  author={Ong, Kai Tzu-iunn and Kang, Minseok and Choi, Dongwook and Cho, Junhee and Kim, Seungju and Lim, Seungwon and Jang, Geunha and Oh, Minwoo and Jeong, Bogyung and Kim, Sunghwan and Kwon, Taeyoon and Yeo, Jinyoung},
+  journal={arXiv preprint arXiv:2605.22505}, year={2026}
+}
+@article{chen2026evotrainer,
+  title={EvoTrainer: Co-Evolving LLM Policies and Training Harnesses for Autonomous Agentic Reinforcement Learning},
+  author={Chen, Guhong and Shi, Yingcheng and Li, Yongbin and Li, Binhua and Xu, Xander and Wei, Hu and Ni, Shiwen and Yang, Min and Ye, Jieping},
+  journal={arXiv preprint arXiv:2606.03108}, year={2026}
+}
+@article{abdelnabi2026measuring,
+  title={Measuring Security Without Fooling Ourselves: Why Benchmarking Agents Is Hard},
+  author={Abdelnabi, Sahar and Hicks, Chris and Rieck, Konrad and Sadeghi, Ahmad-Reza},
+  journal={arXiv preprint arXiv:2605.22568}, year={2026}
+}
+@article{ishida2026capbencher,
+  title={CapBencher: Give Your LLM Benchmark a Built-in Alarm for Test-Set Overfitting},
+  author={Ishida, Takashi and Lodkaew, Thanawat and Yamane, Ikko},
+  journal={arXiv preprint arXiv:2505.18102}, year={2025}
+}
+
+% ============================================================
+% Continual accumulation / memory (future-work cluster)
+% ============================================================
+@article{liu2026evolvemem,
+  title={EvolveMem: Self-Evolving Memory Architecture via AutoResearch for LLM Agents},
+  author={Liu, Jiaqi and Ye, Xinyu and Xia, Peng and Zheng, Zeyu and Xie, Cihang and Ding, Mingyu and Yao, Huaxiu},
+  journal={arXiv preprint arXiv:2605.13941}, year={2026}
+}
+@inproceedings{ouyang2026reasoningbank,
+  title={ReasoningBank: Scaling Agent Self-Evolving with Reasoning Memory},
+  author={Ouyang, Siru and Yan, Jun and Hsu, I-Hung and Chen, Yanfei and Jiang, Ke and Wang, Zifeng and Han, Rujun and Le, Long T. and Daruki, Samira and Tang, Xiangru and Tirumalashetty, Vishy and Lee, George and Rofouei, Mahsan and Lin, Hangfei and Han, Jiawei and Lee, Chen-Yu and Pfister, Tomas},
+  booktitle={International Conference on Learning Representations (ICLR)}, year={2026}, note={arXiv:2509.25140}
+}
+@article{yu2026molem,
+  title={Dynamic Mixture of Latent Memories for Self-Evolving Agents},
+  author={Yu, Dianzhi and Zhang, Vireo and Wang, Hongru and Chen, Yanyu and Hu, Minda and Xu, Wanghan and Chen, Siki and Torr, Philip and Yin, Zhenfei and King, Irwin},
+  journal={arXiv preprint arXiv:2605.21951}, year={2026}
+}
+@article{zhang2026latentevolve,
+  title={LatentEvolve: Self-Evolving Test-Time Scaling in Latent Space},
+  author={Zhang, Guibin and Meng, Fanci and Wan, Guancheng and Li, Zherui and Wang, Kun and Yin, Zhenfei and Bai, Lei and Yan, Shuicheng},
+  journal={arXiv preprint arXiv:2509.24771}, year={2025}
+}
+% [removed 2026-07-02] anon2026anchor: arXiv:2606.06114 points to a different paper; no matching ANCHOR paper found; was uncited.
+
+% ============================================================
+% Evaluation benchmarks (our domains)
+% ============================================================
+@inproceedings{trivedi2024appworld,
+  title={{AppWorld}: A Controllable World of Apps and People for Benchmarking Interactive Coding Agents},
+  author={Trivedi, Harsh and Khot, Tushar and Hartmann, Mareike and Manku, Ruskin and Dong, Vinty and Li, Edward and Gupta, Shashank and Sabharwal, Ashish and Balasubramanian, Niranjan},
+  booktitle={Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (ACL)}, year={2024}
+}
+@article{merrill2026terminalbench,
+  title={{Terminal-Bench}: Benchmarking Agents on Hard, Realistic Tasks in Command Line Interfaces},
+  author={Merrill, Mike A. and Shaw, Alexander G. and others},
+  journal={arXiv preprint arXiv:2601.11868}, year={2026}
+}
+@article{gao2026evoagentbench,
+  title={{EvoAgentBench}: Benchmarking Agent Self-Evolution via Ability Transfer},
+  author={Gao, Xingze and Hu, Chuanrui and Chen, Hongda and Yao, Pengfei and Wang, Zhao and Bai, Yi and Wu, Zhengwei and Han, Yunyun and Cong, Xiaofeng and Gui, Jie and Deng, Yafeng and Li, Teng},
+  journal={arXiv preprint arXiv:2607.05202}, year={2026}
+}
+
+@inproceedings{polo2024tinybenchmarks,
+  title={tiny{B}enchmarks: evaluating {LLM}s with fewer examples},
+  author={Maia Polo, Felipe and Weber, Lucas and Choshen, Leshem and Sun, Yuekai and Guo, Gui and Yurochkin, Mikhail},
+  booktitle={International Conference on Machine Learning (ICML)},
+  year={2024}, note={arXiv:2402.14992}
+}
+@inproceedings{perlitz2024efficient,
+  title={Efficient Benchmarking (of Language Models)},
+  author={Perlitz, Yotam and Bandel, Elron and Gera, Ariel and Arviv, Ofir and Ein-Dor, Liat and Shnarch, Eyal and Slonim, Noam and Shmueli-Scheuer, Michal and Choshen, Leshem},
+  booktitle={North American Chapter of the Association for Computational Linguistics (NAACL)},
+  year={2024}, note={arXiv:2308.11696}
+}
+
+@article{rubin1976inference,
+  title={Inference and missing data},
+  author={Rubin, Donald B.},
+  journal={Biometrika}, volume={63}, number={3}, pages={581--592}, year={1976}
+}
+
+@inproceedings{zhang2024codeagent,
+  title={Codeagent: Enhancing code generation with tool-integrated agent systems for real-world repo-level coding challenges},
+  author={Zhang, Kechi and Li, Jia and Li, Ge and Shi, Xianjie and Jin, Zhi},
+  booktitle={Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)},
+  pages={13643--13658},
+  year={2024}
+}
+
+@inproceedings{yao2023react,
+  title={ReAct: Synergizing Reasoning and Acting in Language Models},
+  author={Yao, Shunyu and Zhao, Jeffrey and Yu, Dian and Du, Nan and Shafran, Izhak and Narasimhan, Karthik and Cao, Yuan},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2023}
+}
+
+@inproceedings{he2024webvoyager,
+  title={Webvoyager: Building an end-to-end web agent with large multimodal models},
+  author={He, Hongliang and Yao, Wenlin and Ma, Kaixin and Yu, Wenhao and Dai, Yong and Zhang, Hongming and Lan, Zhenzhong and Yu, Dong},
+  booktitle={Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)},
+  pages={6864--6890},
+  year={2024}
+}
+
+@misc{ren2026selfimprovementsmodernagenticsystems,
+      title={Self-Improvements in Modern Agentic Systems: A Survey}, 
+      author={Zhe Ren and Yimeng Chen and Dandan Guo and Guowei Rong and Tonghui Li and R. B. Xiong and Qingfeng Lan and Wenyi Wang and Li Nanbo and Yibo Yang and Mingchen Zhuge and Jürgen Schmidhuber},
+      year={2026},
+      eprint={2607.13104},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2607.13104}, 
+}
+
+@inproceedings{hu-etal-2026-evermemos,
+    title = "{E}ver{M}em{OS}: A Self-Organizing Memory Operating System for Structured Long-Horizon Reasoning",
+    author = "Hu, Chuanrui  and
+      Gao, Xingze  and
+      Zhou, Zuyi  and
+      Xu, Dannong  and
+      Bai, Yi  and
+      Li, Xintong  and
+      Zhang, Hui  and
+      Li, Tong  and
+      Zhang, Chong  and
+      Bing, Lidong  and
+      Deng, Yafeng",
+    booktitle = "Proceedings of the 64th Annual Meeting of the {A}ssociation for {C}omputational {L}inguistics (Volume 1: Long Papers)",
+    month = jul,
+    year = "2026",
+    publisher = "Association for Computational Linguistics",
+    doi = "10.18653/v1/2026.acl-long.2125",
+    pages = "45836--45853"
+}
+
+@inproceedings{su-etal-2026-u,
+    title = "{U}-Fold: Dynamic Intent-Aware Context Folding for User-Centric Agents",
+    author = "Su, Jin  and
+      Fang, Runnan  and
+      Li, Yeqiu  and
+      Wang, Xiaobin  and
+      Cai, Shihao  and
+      Xie, Pengjun  and
+      Zhang, Ningyu  and
+      Yuan, Fajie",
+    booktitle = "Findings of the {A}ssociation for {C}omputational {L}inguistics: {ACL} 2026",
+    month = jul,
+    year = "2026",
+    url = "https://aclanthology.org/2026.findings-acl.897/",
+    doi = "10.18653/v1/2026.findings-acl.897",
+    pages = "18043--18057"
+}

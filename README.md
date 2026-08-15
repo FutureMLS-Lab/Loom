@@ -72,6 +72,25 @@ stall are nudged back to work; you are only interrupted at the two gates.
 Needs `latexmk` + TeX Live. The agents' methodology lives in
 `loom/skills/ar/` — edit it to change how papers get written.
 
+## Rebuttal Factory
+
+`/rebuttal-factory` — the same discipline pointed at the reviews you received:
+
+```
+Studio: CFP URL ─▶ policy draft ─▶ your gate
+Paper:  import package ─▶ concern matrix ─▶ responses ─▶ validation ─▶ your gate
+        ─▶ delivery agent ─▶ strict preflight ─▶ three-model figure check ─▶ your gate ─▶ bundle
+```
+
+A **conference studio** turns the venue's own author guide into a frozen,
+human-approved policy; every paper under it inherits the rules. A live agent
+atomizes each review into a concern matrix and drafts evidence-bounded
+point-by-point responses; deterministic validation, a strict rebuild-and-
+preflight harness (full body pages, anonymity, no placeholder values), and a
+unanimous three-model figure check stand between the drafts and a byte-exact
+`submission-bundle.zip`. Approvals bind to content hashes — change a file and
+the approval dies. Uploading to OpenReview stays manual, by design.
+
 ## OpenClaw notifications
 
 Flip **Notify** on a task and Loom pings you (e.g. in Slack, via an OpenClaw
@@ -101,6 +120,10 @@ loom web --project /path --openclaw \
 - **[docs/REFERENCE.md](docs/REFERENCE.md)** — the long version: full task
   flow, every UI control, task types, AR pipeline internals, OpenClaw setup,
   storage layout, HTTP API.
+- **[docs/research-factory/arch.md](docs/research-factory/arch.md)** and
+  **[docs/rebuttal-factory/arch.md](docs/rebuttal-factory/arch.md)** — each
+  factory's full pipeline flowchart and module map, with its debt ledger
+  in the sibling `todos.md`.
 - **[docs/LOOM_CODEBASE_ARCHITECTURE.md](docs/LOOM_CODEBASE_ARCHITECTURE.md)**
   and **[docs/FIGURE_SKILL_FLOW.md](docs/FIGURE_SKILL_FLOW.md)** — how the
   codebase and the figure-skill pipeline are put together.

@@ -634,8 +634,8 @@ def test_normalize_and_label_agent() -> None:
     assert agent_label("nonsense") == "Agent"
 
 
-def test_cursor_defaults_to_one_million_context_max_model(tmp_path: Path) -> None:
-    expected = "gpt-5.6-sol-max"
+def test_cursor_defaults_to_max_fast_model(tmp_path: Path) -> None:
+    expected = "gpt-5.6-sol-max-fast"
     assert rud_task.agent_default_model("cursor") == expected
     meta = create_task(
         tmp_path,
@@ -651,50 +651,61 @@ def test_cursor_defaults_to_one_million_context_max_model(tmp_path: Path) -> Non
 def test_build_agent_command_cursor() -> None:
     from loom.rud_task import agent_default_model, build_agent_command
 
-    assert build_agent_command("cursor") == ["agent", "-f"]
+    default_cmd = ["agent", "-f", "--model", "gpt-5.6-sol-max-fast"]
+    assert build_agent_command("cursor") == default_cmd
     assert build_agent_command(
         "cursor", model=agent_default_model("cursor")
-    ) == ["agent", "-f"]
+    ) == default_cmd
     assert build_agent_command("cursor", model="m1") == ["agent", "-f", "--model", "m1"]
     assert build_agent_command("cursor", resume_session_id="abc-123") == [
         "agent",
         "-f",
+        "--model",
+        "gpt-5.6-sol-max-fast",
         "--resume",
         "abc-123",
     ]
 
 
-def test_ensure_cursor_default_model_config_sets_1m_max(tmp_path: Path) -> None:
-    import json as _json
-
-    config_dir = tmp_path / ".cursor"
-    config_dir.mkdir()
-    config_path = config_dir / "cli-config.json"
-    config_path.write_text(
-        _json.dumps(
-            {
-                "version": 1,
-                "authInfo": {"email": "kept@example.com"},
-                "modelParameters": {
-                    "gpt-5.6-sol": [{"id": "context", "value": "272k"}]
-                },
-            }
+def test_cursor_models_prefer_available_fast_sibling(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        rud_task,
+        "_cursor_model_options",
+        lambda: (
+            {"id": "cursor-grok-4.5-high", "label": ""},
+            {"id": "cursor-grok-4.5-high-fast", "label": ""},
+            {"id": "gpt-5.6-sol-max-fast", "label": ""},
+            {"id": "claude-fable-5-thinking-max", "label": ""},
+        ),
+    )
+    assert (
+        rud_task.prefer_cursor_fast_model("cursor-grok-4.5-high")
+        == "cursor-grok-4.5-high-fast"
+    )
+    assert rud_task.build_agent_command(
+        "cursor",
+        model="cursor-grok-4.5-high",
+    ) == ["agent", "-f", "--model", "cursor-grok-4.5-high-fast"]
+    assert (
+        rud_task.prefer_cursor_fast_model("claude-fable-5-thinking-max")
+        == "claude-fable-5-thinking-max"
+    )
+    assert (
+        rud_task.prefer_cursor_fast_model(
+            "gpt-5.6-sol[context=1m,reasoning=max,fast=false]"
         )
+        == "gpt-5.6-sol[context=1m,reasoning=max,fast=true]"
+    )
+    assert (
+        rud_task.prefer_cursor_fast_model(
+            "claude-fable-5[thinking=true,effort=max]"
+        )
+        == "claude-fable-5[thinking=true,effort=max]"
     )
 
-    ok, error = rud_task.ensure_cursor_default_model_config(tmp_path)
 
-    assert ok is True
-    assert error == ""
-    updated = _json.loads(config_path.read_text())
-    assert updated["authInfo"] == {"email": "kept@example.com"}
-    assert updated["model"]["displayName"] == "GPT-5.6 Sol 1M Max"
-    assert updated["maxMode"] is True
-    assert updated["selectedModel"]["parameters"] == [
-        {"id": "context", "value": "1m"},
-        {"id": "reasoning", "value": "max"},
-        {"id": "fast", "value": "false"},
-    ]
 
 
 def test_build_agent_command_claude() -> None:
@@ -893,14 +904,15 @@ def test_read_meta_upgrades_legacy_default_model(tmp_path: Path) -> None:
     assert read_meta(tmp_path, meta.slug).interview_model == "claude-fable-5"
 
 
-def test_read_meta_repairs_invalid_parameterized_cursor_default(tmp_path: Path) -> None:
-    """Repair the briefly shipped model ID that Cursor CLI rejects."""
+def test_read_meta_upgrades_legacy_cursor_defaults_to_fast(tmp_path: Path) -> None:
+    """Old default selections migrate to the current Fast default."""
     import json as _json
 
     meta = create_task(tmp_path, "bad cursor default", "g", skills_path=None, auto_worktree=False)
     tj = task_root(tmp_path, meta.slug) / "task.json"
     data = _json.loads(tj.read_text())
     data["agent"] = "cursor"
-    data["interview_model"] = "gpt-5.6-sol-max[context=1m]"
-    tj.write_text(_json.dumps(data, indent=2))
-    assert read_meta(tmp_path, meta.slug).interview_model == "gpt-5.6-sol-max"
+    for legacy in ("gpt-5.6-sol-max", "gpt-5.6-sol-max[context=1m]"):
+        data["interview_model"] = legacy
+        tj.write_text(_json.dumps(data, indent=2))
+        assert read_meta(tmp_path, meta.slug).interview_model == "gpt-5.6-sol-max-fast"

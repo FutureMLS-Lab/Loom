@@ -51,8 +51,7 @@ AGENT_CURSOR = "cursor"
 AGENT_CLAUDE = "claude"
 AGENT_CODEX = "codex"
 SUPPORTED_AGENTS = frozenset({AGENT_CURSOR, AGENT_CLAUDE, AGENT_CODEX})
-CURSOR_DEFAULT_MODEL = "gpt-5.6-sol-max"
-CURSOR_DEFAULT_MODEL_FAMILY = "gpt-5.6-sol"
+CURSOR_DEFAULT_MODEL = "gpt-5.6-sol-max-fast"
 
 # Models currently available to this installation. These feed the web pickers;
 # the fields remain editable, so an API/CLI model added later can be typed
@@ -82,10 +81,10 @@ _CURSOR_MODEL_TTL_SECONDS = 900.0
 _CURSOR_FALLBACK_MODELS = (
     CURSOR_DEFAULT_MODEL,
     "auto",
-    "gpt-5.6-sol-xhigh",
+    "gpt-5.6-sol-xhigh-fast",
     "claude-fable-5-thinking-xhigh",
-    "claude-opus-4-8-thinking-high",
-    "composer-2.5",
+    "claude-opus-4-8-thinking-high-fast",
+    "composer-2.5-fast",
 )
 
 
@@ -133,6 +132,33 @@ def _cursor_model_options() -> tuple[dict[str, str], ...]:
     return remember(tuple(models) if models else fallback)
 
 
+def prefer_cursor_fast_model(model: str) -> str:
+    """Use a Cursor model's Fast sibling whenever this account exposes one."""
+    selected = str(model or "").strip()
+    if not selected:
+        return CURSOR_DEFAULT_MODEL
+    if selected == "auto" or selected.endswith("-fast"):
+        return selected
+    available = {item["id"] for item in _cursor_model_options()}
+    if "[" in selected and selected.endswith("]"):
+        family = selected.split("[", 1)[0]
+        supports_fast = any(
+            item == f"{family}-fast"
+            or (item.startswith(f"{family}-") and item.endswith("-fast"))
+            for item in available
+        )
+        if not supports_fast:
+            return selected
+        if re.search(
+            r"(?i)(?:^|,)\s*fast=(?:true|false)(?:\s*,|$)",
+            selected[selected.index("[") + 1 : -1],
+        ):
+            return re.sub(r"(?i)fast=(?:true|false)", "fast=true", selected)
+        return selected[:-1] + ",fast=true]"
+    fast_model = f"{selected}-fast"
+    return fast_model if fast_model in available else selected
+
+
 def normalize_agent(name: str | None) -> str:
     """Return a valid agent name, defaulting to Cursor Agent."""
     s = (name or "").strip().lower()
@@ -159,66 +185,6 @@ def agent_default_model(name: str) -> str:
     }.get(normalize_agent(name), "")
 
 
-def ensure_cursor_default_model_config(home: Path | None = None) -> tuple[bool, str]:
-    """Persist Cursor's 1M/Max parameters before a default-model launch.
-
-    Cursor CLI currently treats ``--model gpt-5.6-sol-max`` as a 272K request,
-    despite advertising that slug as 1M. Omitting ``--model`` preserves the
-    parameterized selection in ``cli-config.json``, so Loom writes that
-    selection atomically and then starts the default Agent without a model flag.
-    """
-    config_path = (home or Path.home()) / ".cursor" / "cli-config.json"
-    try:
-        if config_path.is_file():
-            data = json.loads(config_path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                return False, "Cursor CLI config is not a JSON object"
-            mode = config_path.stat().st_mode & 0o777
-        else:
-            data = {"version": 1}
-            mode = 0o600
-
-        parameters = [
-            {"id": "context", "value": "1m"},
-            {"id": "reasoning", "value": "max"},
-            {"id": "fast", "value": "false"},
-        ]
-        model = data.get("model")
-        if not isinstance(model, dict):
-            model = {}
-        data["model"] = {
-            **model,
-            "modelId": CURSOR_DEFAULT_MODEL_FAMILY,
-            "displayModelId": CURSOR_DEFAULT_MODEL_FAMILY,
-            "displayName": "GPT-5.6 Sol 1M Max",
-            "displayNameShort": "GPT-5.6 Sol 1M Max",
-            "maxMode": True,
-        }
-        model_parameters = data.get("modelParameters")
-        if not isinstance(model_parameters, dict):
-            model_parameters = {}
-        model_parameters[CURSOR_DEFAULT_MODEL_FAMILY] = parameters
-        data["modelParameters"] = model_parameters
-        data["selectedModel"] = {
-            "modelId": CURSOR_DEFAULT_MODEL_FAMILY,
-            "parameters": parameters,
-        }
-        data["hasChangedDefaultModel"] = True
-        data["maxMode"] = True
-
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = config_path.with_name(f".{config_path.name}.{os.getpid()}.tmp")
-        try:
-            tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-            os.chmod(tmp, mode)
-            tmp.replace(config_path)
-        finally:
-            tmp.unlink(missing_ok=True)
-    except (OSError, json.JSONDecodeError) as exc:
-        return False, str(exc)
-    return True, ""
-
-
 def agent_model_options(name: str) -> tuple[dict[str, str], ...]:
     """Selectable models as ``{"id", "label"}``; label may be empty."""
     agent = normalize_agent(name)
@@ -232,7 +198,10 @@ def agent_model_options(name: str) -> tuple[dict[str, str], ...]:
 # any UI - so they are vestigial, never an intentional per-task choice. Treat
 # them as "use the current default" so old tasks start/resume on the new model.
 _LEGACY_DEFAULT_MODELS = {"claude-sonnet-4-6", "claude-opus-4-8"}
-_INVALID_CURSOR_DEFAULT_MODELS = {"gpt-5.6-sol-max[context=1m]"}
+_INVALID_CURSOR_DEFAULT_MODELS = {
+    "gpt-5.6-sol-max",
+    "gpt-5.6-sol-max[context=1m]",
+}
 
 
 def _upgrade_legacy_model(model: str, agent: str = AGENT_CLAUDE) -> str:
@@ -258,8 +227,8 @@ def build_agent_command(
     agent = normalize_agent(agent)
     if agent == AGENT_CURSOR:
         cmd = ["agent", "-f"]
-        selected_model = model.strip()
-        if selected_model and selected_model != CURSOR_DEFAULT_MODEL:
+        selected_model = prefer_cursor_fast_model(model)
+        if selected_model:
             cmd += ["--model", selected_model]
         if resume_session_id:
             cmd += ["--resume", resume_session_id]
@@ -458,12 +427,6 @@ def ensure_unique_slug(project_root: Path, base: str) -> str:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def load_default_skills(skills_path: Path) -> str:
-    if not skills_path.is_file():
-        return ""
-    return skills_path.read_text(encoding="utf-8", errors="replace")
 
 
 # A task can use SEVERAL skills files together: meta.skills_path holds one or

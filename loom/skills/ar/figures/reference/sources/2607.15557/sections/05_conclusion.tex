@@ -1,0 +1,31 @@
+% =============================================================================
+% §5 Conclusion (~0.3 page)
+% =============================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+SkillCorpus curates $\sim$$821{,}000$ crawled community skill files
+into a corpus of $96{,}401$ skills, scored along utility,
+robustness, and safety and matched to tasks by a fine-tuned
+retrieval-and-selection stack.  Across our cross-benchmark,
+cross-harness, multi-backbone evaluation
+(\S\ref{sec:experiments}), integrating the corpus yields
+consistent positive gains on all three benchmarks.  They
+are large on SkillsBench and modest on GDPVal and QwenClawBench,
+strongest on the Raven harness, with per-domain effects that
+remain heterogeneous.  Where coverage is thin, growing the corpus
+by skill generation is the natural next step.  The 16-class
+taxonomy steers benchmark-aware retrieval.  The composite quality score
+serves curation and ranking rather than per-task prediction, and
+its safety facet is the one component that both gates unsafe
+skills and carries a suggestive per-task signal.  
+% We intend SkillCorpus to serve as both an open resource and a reusable framework for community skill ecosystems.
+We release SkillCorpus as an open, reusable framework for community skill ecosystems; to our knowledge, it is the first end-to-end account of when a curated community corpus improves real agent tasks, and where it does not.
+\ifarxiv\else
+Our evaluation prioritises breadth over depth, so on the
+high-baseline LLM-judged benchmarks the positive effect is
+established at the pooled level rather than cell by cell.  The
+English-dominant corpus, the two-harness scope, and the 2026-Q2
+snapshot bound external validity, leaving broader languages,
+harnesses, and human-validated quality labels to future work.
+\fi

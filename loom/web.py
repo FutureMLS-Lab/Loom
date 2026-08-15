@@ -42,6 +42,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from loom import agent_hooks
 from loom import ar_task as ar
+from loom import rebuttal_delivery as delivery
+from loom import rebuttal_task as rebuttal
 from loom.openclaw import OpenClawClient, OpenClawConfig, openclaw_status
 from loom.paths import (
     AR_ROOT_ENV,
@@ -69,7 +71,6 @@ from loom.rud_task import (
     create_task,
     delete_task,
     detect_and_persist_worktree,
-    ensure_cursor_default_model_config,
     join_skills_paths,
     list_session_files,
     list_task_markdown_files,
@@ -82,6 +83,7 @@ from loom.rud_task import (
     normalize_agent,
     path_under_task,
     prepare_task_worktree_from,
+    prefer_cursor_fast_model,
     push_worktree_branch,
     read_kernel_interview,
     read_meta,
@@ -1130,10 +1132,6 @@ def _ensure_kernel_task_layout(root: Path, slug: str) -> Path:
                 shutil.copy2(old, new)
                 old.unlink(missing_ok=True)
     return base
-
-
-def _kernel_record_path(root: Path, slug: str, run_uid: str) -> Path:
-    return _kernel_task_run_dir(root, slug, run_uid) / "run.json"
 
 
 def _kernel_write_record(root: Path, rec: dict[str, Any]) -> None:
@@ -2942,13 +2940,11 @@ class ClaudeRegistry:
 
         agent = normalize_agent(meta.agent)
         selected_model = meta.interview_model or agent_default_model(agent)
-        if agent == AGENT_CURSOR and selected_model == CURSOR_DEFAULT_MODEL:
-            configured, config_error = ensure_cursor_default_model_config()
-            if not configured:
-                return {
-                    "ok": False,
-                    "error": f"Could not configure Cursor 1M Max default: {config_error}",
-                }
+        if agent == AGENT_CURSOR:
+            fast_model = prefer_cursor_fast_model(selected_model)
+            if fast_model != selected_model:
+                update_meta(project_root, slug, interview_model=fast_model)
+            selected_model = fast_model
 
         def watch_cursor_ready() -> None:
             if agent == AGENT_CURSOR:
@@ -3378,29 +3374,6 @@ class ClaudeRegistry:
                     add_claude_session(project_root, slug, sid)
                     return
             time.sleep(2)
-
-    def _paste_prompt_and_watch_session(
-        self,
-        project_root: Path,
-        slug: str,
-        target: str,
-        cwd: Path,
-        agent: str,
-        existing_ids: set[str],
-        default_skills: Path | None = None,
-    ) -> None:
-        # Give the CLI a short chance to paint its input prompt, but do not
-        # wait 90s: if the readiness heuristic misses a newer Claude/Codex UI
-        # the paste should still happen quickly.
-        time.sleep(2)
-        self._wait_for_claude_ready(target, timeout=12.0)
-        result = self._paste_prompt_to_target(project_root, slug, target, default_skills=default_skills)
-        if not result.get("ok"):
-            print(
-                f"[web] paste prompt failed slug={slug}: {result.get('error', 'unknown error')}",
-                flush=True,
-            )
-        self._watch_for_session_id(project_root, slug, cwd, agent, existing_ids)
 
     def _paste_prompt_to_target(
         self,
@@ -4104,7 +4077,682 @@ def _ar_search_suggest_job(root: Path, slug: str, model: str) -> None:
     print(f"[ar] {slug}: suggested {len(terms)} arXiv search term(s)", flush=True)
 
 
-def _ar_ideas_job(root: Path, slug: str, count: int, model: str) -> None:
+def _rebuttal_logger(project_id: str):
+    def log(message: str) -> None:
+        state = rebuttal.read_state(project_id)
+        if not state:
+            return
+        rebuttal.append_log(state, str(message))
+        rebuttal.write_state(project_id, state)
+
+    return log
+
+
+def _rebuttal_policy_job(studio_id: str, model: str) -> None:
+    def log(message: str) -> None:
+        state = rebuttal.read_studio(studio_id)
+        if not state:
+            return
+        rebuttal.append_log(state, str(message))
+        rebuttal.write_studio(studio_id, state)
+
+    result = rebuttal.discover_studio_policy(
+        studio_id,
+        model=model,
+        on_line=log,
+    )
+    state = rebuttal.read_studio(studio_id)
+    if not state:
+        return
+    state["active_job"] = ""
+    state["cost_usd"] = round(
+        float(state.get("cost_usd") or 0.0) + float(result.get("cost") or 0.0),
+        4,
+    )
+    if result.get("ok"):
+        state["policy"] = result.get("policy") or {}
+        state["policy_evidence"] = result.get("policy_evidence") or {}
+        state["strategy"] = result.get("strategy") or {}
+        state["unknowns"] = result.get("unknowns") or []
+        state["sources"] = result.get("sources") or []
+        state["stage"] = rebuttal.STUDIO_STAGE_AWAIT_POLICY_REVIEW
+        state["policy_approved_at"] = ""
+        state["error"] = ""
+        rebuttal.append_log(
+            state,
+            f"policy draft ready from {len(state['sources'])} source(s)",
+        )
+    else:
+        if isinstance(result.get("sources"), list):
+            state["sources"] = result["sources"]
+        state["stage"] = rebuttal.STUDIO_STAGE_POLICY_INPUT
+        state["error"] = str(result.get("error") or "policy discovery failed")
+        rebuttal.append_log(state, f"policy discovery failed: {state['error']}")
+    rebuttal.write_studio(studio_id, state)
+
+
+def _rebuttal_session_name(project_id: str) -> str:
+    return _sanitize_session_name(
+        f"loom-rebuttal-{project_id}",
+        "loom-rebuttal",
+    )
+
+
+def _tmux_session_exists(session_name: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", session_name],
+            capture_output=True,
+            text=True,
+            env=tmux_subprocess_env(),
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _rebuttal_watch_agent(project_id: str) -> None:
+    while True:
+        state = rebuttal.read_state(project_id)
+        if not state or state.get("agent_status") != "running":
+            return
+        source = Path(str(state.get("source_path") or ""))
+        marker = rebuttal.output_root(source) / rebuttal.AGENT_COMPLETE_FILE
+        if marker.is_file():
+            result = rebuttal.ingest_agent_outputs(project_id)
+            state = rebuttal.read_state(project_id)
+            if result.get("ok"):
+                state["reviewers"] = result.get("reviewers") or []
+                state["responses"] = result.get("responses") or {}
+                state["validation"] = {}
+                state["approved_at"] = ""
+                state["content_approval"] = {}
+                rebuttal.invalidate_delivery(
+                    state,
+                    "response-drafting agent produced new content",
+                )
+                state["stage"] = rebuttal.STAGE_RESPONSES
+                state["agent_status"] = "complete"
+                state["agent_summary"] = result.get("summary") or ""
+                state["error"] = ""
+                rebuttal.append_log(
+                    state,
+                    f"tmux agent completed {len(state['responses'])} response draft(s)",
+                )
+            else:
+                state["agent_status"] = "error"
+                state["error"] = str(
+                    result.get("error") or "could not ingest agent outputs"
+                )
+                rebuttal.append_log(
+                    state,
+                    f"tmux agent output failed validation: {state['error']}",
+                )
+            rebuttal.write_state(project_id, state)
+            return
+
+        target = str(state.get("tmux_target") or "")
+        session = _session_name_from_tmux_target(target)
+        if not target or not _tmux_session_exists(session):
+            state["agent_status"] = "error"
+            state["error"] = "rebuttal agent tmux session disappeared"
+            rebuttal.append_log(state, state["error"])
+            rebuttal.write_state(project_id, state)
+            return
+        captured, pane_text = capture_pane(target, 80)
+        if captured and "Agent exited (" in pane_text:
+            state["agent_status"] = "error"
+            state["error"] = (
+                "rebuttal agent exited before writing agent-complete.json"
+            )
+            rebuttal.append_log(state, state["error"])
+            rebuttal.write_state(project_id, state)
+            return
+        time.sleep(2)
+
+
+def _rebuttal_start_agent(
+    project_id: str,
+    model: str,
+    registry: "ClaudeRegistry",
+) -> dict[str, Any]:
+    state = rebuttal.read_state(project_id)
+    if not state:
+        return {"ok": False, "error": "rebuttal project not found"}
+    if not (state.get("manifest") or {}).get("ready"):
+        return {
+            "ok": False,
+            "error": "package needs one paper PDF and at least one review PDF",
+        }
+    current_target = str(state.get("tmux_target") or "")
+    if (
+        state.get("agent_status") == "running"
+        and current_target
+        and _tmux_session_exists(_session_name_from_tmux_target(current_target))
+    ):
+        return {"ok": True, "running": True, "target": current_target}
+
+    source = Path(str(state.get("source_path") or "")).resolve()
+    try:
+        instructions = rebuttal.prepare_agent_instructions(project_id)
+    except (ValueError, OSError) as exc:
+        return {"ok": False, "error": str(exc)}
+    session = _rebuttal_session_name(project_id)
+    target = f"{session}:0.0"
+    env = tmux_subprocess_env()
+    if not _tmux_session_exists(session):
+        try:
+            created = subprocess.run(
+                [
+                    "tmux",
+                    "new-session",
+                    "-d",
+                    "-s",
+                    session,
+                    "-x",
+                    "240",
+                    "-y",
+                    "64",
+                    "-c",
+                    str(source),
+                    "-e",
+                    f"LOOM_REBUTTAL_ID={project_id}",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=8,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"ok": False, "error": str(exc)}
+        if created.returncode != 0:
+            return {
+                "ok": False,
+                "error": (
+                    created.stderr
+                    or created.stdout
+                    or "could not create rebuttal tmux session"
+                ).strip(),
+            }
+    selected_model = prefer_cursor_fast_model(model or CURSOR_DEFAULT_MODEL)
+    command = build_agent_command(
+        AGENT_CURSOR,
+        model=selected_model,
+    )
+    ok, error = registry._launch_agent_in_pane(target, source, command)
+    if not ok:
+        return {"ok": False, "error": error}
+    registry.wait_until_ready(target, timeout=45.0)
+    prompt = (
+        f"Read `{instructions}` completely and execute it now. "
+        "Work autonomously through concern extraction and every reviewer response. "
+        "Use the specified completion marker only after all required files are ready."
+    )
+    ok, error = send_pane_text(target, prompt, submit=True)
+    if not ok:
+        return {"ok": False, "error": error}
+    state = rebuttal.read_state(project_id)
+    state["tmux_target"] = target
+    state["agent_status"] = "running"
+    state["agent_model"] = selected_model
+    state["agent_started_at"] = _iso_now()
+    state["agent_summary"] = ""
+    state["active_job"] = ""
+    state["error"] = ""
+    rebuttal.append_log(state, f"started live rebuttal agent in {target}")
+    rebuttal.write_state(project_id, state)
+    threading.Thread(
+        target=_rebuttal_watch_agent,
+        args=(project_id,),
+        name=f"loom-rebuttal-watch-{project_id}",
+        daemon=True,
+    ).start()
+    return {"ok": True, "running": True, "target": target}
+
+
+def _rebuttal_stop_agent(project_id: str) -> dict[str, Any]:
+    state = rebuttal.read_state(project_id)
+    if not state:
+        return {"ok": False, "error": "rebuttal project not found"}
+    target = str(state.get("tmux_target") or "")
+    session = _session_name_from_tmux_target(target)
+    if session:
+        try:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session],
+                capture_output=True,
+                text=True,
+                env=tmux_subprocess_env(),
+                timeout=8,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    state["agent_status"] = "stopped"
+    state["tmux_target"] = ""
+    state["error"] = ""
+    rebuttal.append_log(state, "stopped live rebuttal agent")
+    rebuttal.write_state(project_id, state)
+    return {"ok": True, "running": False}
+
+
+def _rebuttal_resume_agent_watchers() -> int:
+    resumed = 0
+    for item in rebuttal.list_projects():
+        project_id = str(item.get("id") or "")
+        state = rebuttal.read_state(project_id)
+        target = str(state.get("tmux_target") or "")
+        if (
+            state.get("agent_status") == "running"
+            and target
+            and _tmux_session_exists(_session_name_from_tmux_target(target))
+        ):
+            threading.Thread(
+                target=_rebuttal_watch_agent,
+                args=(project_id,),
+                name=f"loom-rebuttal-watch-{project_id}",
+                daemon=True,
+            ).start()
+            resumed += 1
+    return resumed
+
+
+def _rebuttal_delivery_session_name(project_id: str) -> str:
+    return _sanitize_session_name(
+        f"loom-rebuttal-delivery-{project_id}",
+        "loom-rebuttal-delivery",
+    )
+
+
+def _rebuttal_verify_figures_job(project_id: str) -> None:
+    """Run the three-model figure panel; it writes the verdict state itself."""
+    log = _rebuttal_logger(project_id)
+    try:
+        result = delivery.verify_delivery_figures(project_id, on_line=log)
+    except Exception as exc:  # noqa: BLE001 - job boundary
+        result = {"ok": False, "error": str(exc)}
+    if "report" in result:
+        # The panel ran to a verdict; verify_delivery_figures already moved the
+        # stage/phase and stored the per-model reports.
+        return
+    latest = rebuttal.read_state(project_id)
+    current = dict(latest.get("delivery") or {})
+    if current.get("phase") == "figure_verification_running":
+        # The panel could not run at all (missing PDF, model catalog failure):
+        # fall back to the pre-run phase so the button comes back.
+        current["phase"] = "awaiting_final_approval"
+        latest["delivery"] = current
+        latest["error"] = str(result.get("error") or "figure verification failed to run")
+        rebuttal.append_log(
+            latest, f"figure verification failed to run: {latest['error']}"
+        )
+        rebuttal.write_state(project_id, latest)
+
+
+def _rebuttal_watch_delivery_agent(project_id: str) -> None:
+    while True:
+        state = rebuttal.read_state(project_id)
+        current = (
+            state.get("delivery")
+            if isinstance(state.get("delivery"), dict)
+            else {}
+        )
+        if not state or current.get("agent_status") not in (
+            "running",
+            "validating",
+        ):
+            return
+        marker = Path(str(current.get("marker_path") or ""))
+        if marker.is_file():
+            current = dict(current)
+            current["phase"] = "validating"
+            current["agent_status"] = "validating"
+            state["delivery"] = current
+            state["stage"] = rebuttal.STAGE_DELIVERY_VALIDATING
+            state["error"] = ""
+            rebuttal.append_log(
+                state,
+                "delivery agent completed source handoff; running strict preflight",
+            )
+            rebuttal.write_state(project_id, state)
+            result = delivery.ingest_delivery_completion(project_id)
+            if not result.get("ok"):
+                latest = rebuttal.read_state(project_id)
+                current = dict(latest.get("delivery") or {})
+                if latest.get("stage") == rebuttal.STAGE_DELIVERY_VALIDATING:
+                    current["phase"] = "blocked"
+                    current["agent_status"] = "error"
+                    latest["delivery"] = current
+                    latest["stage"] = rebuttal.STAGE_DELIVERY_BLOCKED
+                    latest["error"] = str(
+                        result.get("error") or "delivery preflight failed"
+                    )
+                    rebuttal.append_log(latest, latest["error"])
+                    rebuttal.write_state(project_id, latest)
+                return
+            # Preflight passed. Final approval requires a unanimous figure
+            # verdict bound to this exact PDF, so start the panel now instead
+            # of waiting for someone to trigger it by script.
+            latest = rebuttal.read_state(project_id)
+            if latest.get("stage") == rebuttal.STAGE_AWAIT_DELIVERY_APPROVAL:
+                current = dict(latest.get("delivery") or {})
+                current["phase"] = "figure_verification_running"
+                latest["delivery"] = current
+                rebuttal.append_log(
+                    latest, "starting the three-model figure verification"
+                )
+                rebuttal.write_state(project_id, latest)
+                threading.Thread(
+                    target=_rebuttal_verify_figures_job,
+                    args=(project_id,),
+                    name=f"loom-rebuttal-figures-{project_id}",
+                    daemon=True,
+                ).start()
+            return
+
+        target = str(current.get("tmux_target") or "")
+        session = _session_name_from_tmux_target(target)
+        if not target or not _tmux_session_exists(session):
+            current = dict(current)
+            current["agent_status"] = "error"
+            current["phase"] = "blocked"
+            state["delivery"] = current
+            state["stage"] = rebuttal.STAGE_DELIVERY_BLOCKED
+            state["error"] = "delivery agent tmux session disappeared"
+            rebuttal.append_log(state, state["error"])
+            rebuttal.write_state(project_id, state)
+            return
+        captured, pane_text = capture_pane(target, 80)
+        if captured and "Agent exited (" in pane_text:
+            current = dict(current)
+            current["agent_status"] = "error"
+            current["phase"] = "blocked"
+            state["delivery"] = current
+            state["stage"] = rebuttal.STAGE_DELIVERY_BLOCKED
+            state["error"] = (
+                "delivery agent exited before writing delivery-complete.json"
+            )
+            rebuttal.append_log(state, state["error"])
+            rebuttal.write_state(project_id, state)
+            return
+        time.sleep(2)
+
+
+def _rebuttal_start_delivery_agent(
+    project_id: str,
+    model: str,
+    registry: "ClaudeRegistry",
+    *,
+    rerun: bool = False,
+    feedback: str = "",
+) -> dict[str, Any]:
+    state = rebuttal.read_state(project_id)
+    if not state:
+        return {"ok": False, "error": "rebuttal project not found"}
+    if state.get("agent_status") == "running":
+        return {
+            "ok": False,
+            "error": "finish or stop the response-drafting agent first",
+        }
+    current = (
+        state.get("delivery")
+        if isinstance(state.get("delivery"), dict)
+        else {}
+    )
+    current_target = str(current.get("tmux_target") or "")
+    if (
+        current.get("agent_status") == "running"
+        and current_target
+        and _tmux_session_exists(
+            _session_name_from_tmux_target(current_target)
+        )
+    ):
+        return {"ok": True, "running": True, "target": current_target}
+    feedback_parts = [feedback.strip()] if feedback.strip() else []
+    if rerun:
+        validation = (
+            current.get("validation")
+            if isinstance(current.get("validation"), dict)
+            else {}
+        )
+        errors_block = "\n".join(
+            f"- {error}" for error in (validation.get("errors") or [])
+        )
+        if errors_block:
+            feedback_parts.append(errors_block)
+    feedback = "\n\n".join(feedback_parts)
+    try:
+        prepared = delivery.prepare_delivery_attempt(
+            project_id,
+            feedback=feedback,
+        )
+    except (ValueError, OSError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+    def launch_failed(message: str) -> dict[str, Any]:
+        session_name = _rebuttal_delivery_session_name(project_id)
+        if _tmux_session_exists(session_name):
+            try:
+                subprocess.run(
+                    ["tmux", "kill-session", "-t", session_name],
+                    capture_output=True,
+                    text=True,
+                    env=tmux_subprocess_env(),
+                    timeout=8,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        failed_state = rebuttal.read_state(project_id)
+        failed_delivery = dict(failed_state.get("delivery") or {})
+        failed_delivery["phase"] = "blocked"
+        failed_delivery["agent_status"] = "error"
+        failed_state["delivery"] = failed_delivery
+        failed_state["stage"] = rebuttal.STAGE_DELIVERY_BLOCKED
+        failed_state["error"] = message
+        rebuttal.append_log(
+            failed_state,
+            f"delivery agent launch failed: {message}",
+        )
+        rebuttal.write_state(project_id, failed_state)
+        return {"ok": False, "error": message}
+
+    session = _rebuttal_delivery_session_name(project_id)
+    target = f"{session}:0.0"
+    env = tmux_subprocess_env()
+    if _tmux_session_exists(session):
+        try:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=8,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
+        created = subprocess.run(
+            [
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                session,
+                "-x",
+                "240",
+                "-y",
+                "64",
+                "-c",
+                str(prepared["workspace"]),
+                "-e",
+                f"LOOM_REBUTTAL_DELIVERY_ID={project_id}",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=8,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return launch_failed(str(exc))
+    if created.returncode != 0:
+        return launch_failed(
+            (
+                created.stderr
+                or created.stdout
+                or "could not create delivery tmux session"
+            ).strip()
+        )
+    selected_model = prefer_cursor_fast_model(model or CURSOR_DEFAULT_MODEL)
+    command = build_agent_command(AGENT_CURSOR, model=selected_model)
+    ok, error = registry._launch_agent_in_pane(
+        target,
+        Path(prepared["workspace"]),
+        command,
+    )
+    if not ok:
+        return launch_failed(error)
+    registry.wait_until_ready(target, timeout=45.0)
+    prompt = (
+        f"Read `{prepared['instructions']}` completely and execute it now. "
+        "Produce the synchronized WACV revised-paper and one-page rebuttal "
+        "sources in this isolated attempt. Write the run-scoped completion "
+        "marker only after every required source and revision-map file is ready."
+    )
+    ok, error = send_pane_text(target, prompt, submit=True)
+    if not ok:
+        return launch_failed(error)
+
+    state = rebuttal.read_state(project_id)
+    current = dict(state.get("delivery") or {})
+    current.update(
+        phase="agent_running",
+        agent_status="running",
+        agent_model=selected_model,
+        agent_started_at=_iso_now(),
+        tmux_target=target,
+    )
+    state["delivery"] = current
+    state["stage"] = rebuttal.STAGE_DELIVERY_AGENT
+    state["error"] = ""
+    rebuttal.append_log(
+        state,
+        f"started delivery agent for attempt {current.get('run_id')} in {target}",
+    )
+    rebuttal.write_state(project_id, state)
+    threading.Thread(
+        target=_rebuttal_watch_delivery_agent,
+        args=(project_id,),
+        name=f"loom-rebuttal-delivery-watch-{project_id}",
+        daemon=True,
+    ).start()
+    return {
+        "ok": True,
+        "running": True,
+        "target": target,
+        "run_id": current.get("run_id"),
+    }
+
+
+def _rebuttal_stop_delivery_agent(project_id: str) -> dict[str, Any]:
+    state = rebuttal.read_state(project_id)
+    if not state:
+        return {"ok": False, "error": "rebuttal project not found"}
+    current = dict(state.get("delivery") or {})
+    target = str(current.get("tmux_target") or "")
+    session = _session_name_from_tmux_target(target)
+    if session:
+        try:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session],
+                capture_output=True,
+                text=True,
+                env=tmux_subprocess_env(),
+                timeout=8,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    current["agent_status"] = "stopped"
+    current["phase"] = "blocked"
+    current["tmux_target"] = ""
+    state["delivery"] = current
+    state["stage"] = rebuttal.STAGE_DELIVERY_BLOCKED
+    state["error"] = "delivery agent was stopped"
+    rebuttal.append_log(state, state["error"])
+    rebuttal.write_state(project_id, state)
+    return {"ok": True, "running": False}
+
+
+def _rebuttal_resume_delivery_watchers() -> int:
+    resumed = 0
+    for item in rebuttal.list_projects():
+        project_id = str(item.get("id") or "")
+        state = rebuttal.read_state(project_id)
+        current = (
+            state.get("delivery")
+            if isinstance(state.get("delivery"), dict)
+            else {}
+        )
+        target = str(current.get("tmux_target") or "")
+        marker = Path(str(current.get("marker_path") or ""))
+        alive = bool(
+            target
+            and _tmux_session_exists(_session_name_from_tmux_target(target))
+        )
+        if current.get("agent_status") in ("running", "validating") and (
+            alive or marker.is_file()
+        ):
+            threading.Thread(
+                target=_rebuttal_watch_delivery_agent,
+                args=(project_id,),
+                name=f"loom-rebuttal-delivery-watch-{project_id}",
+                daemon=True,
+            ).start()
+            resumed += 1
+        elif current.get("agent_status") in ("running", "validating"):
+            current = dict(current)
+            current["agent_status"] = "error"
+            current["phase"] = "blocked"
+            state["delivery"] = current
+            state["stage"] = rebuttal.STAGE_DELIVERY_BLOCKED
+            state["error"] = "delivery agent did not survive the Loom restart"
+            rebuttal.append_log(state, state["error"])
+            rebuttal.write_state(project_id, state)
+    return resumed
+
+
+def _ar_venue_job(root: Path, slug: str, model: str) -> None:
+    """Deep-research the venue's last completed cycle, then persist the report."""
+    state = ar.read_ar_state(root, slug)
+    log = _ar_logger(root, slug, ar.JOB_VENUE)
+    res = ar.research_venue_cycle(state, model=model, on_line=log)
+    if res.get("ok"):
+        ar.update_ar_state(
+            root,
+            slug,
+            venue_report=res.get("report") or {},
+            venue_status="done",
+            venue_error="",
+            venue_updated_at=_iso_now(),
+            cost_usd=round(
+                float(state.get("cost_usd") or 0.0) + float(res.get("cost") or 0.0), 4
+            ),
+        )
+        print(f"[ar] {slug}: venue-cycle report ready", flush=True)
+    else:
+        log(f"failed: {res.get('error')}")
+        ar.update_ar_state(
+            root, slug, venue_status="error", venue_error=str(res.get("error") or "")
+        )
+        print(f"[ar] {slug}: venue research failed - {res.get('error')}", flush=True)
+
+
+def _ar_ideas_job(
+    root: Path,
+    slug: str,
+    count: int,
+    model: str,
+    source: str = ar.IDEA_SOURCE_PAPERS,
+) -> None:
     state = ar.read_ar_state(root, slug)
     log = _ar_logger(root, slug, ar.JOB_IDEAS)
     res = ar.propose_ideas(
@@ -4112,6 +4760,7 @@ def _ar_ideas_job(root: Path, slug: str, count: int, model: str) -> None:
         ar.ar_skill_text(ar.SKILL_STUDIO),
         count=count,
         model=model,
+        source=source,
         on_line=log,
     )
     if not res.get("ok"):
@@ -5044,7 +5693,14 @@ class ARLoopManager:
                 except Exception:  # noqa: BLE001
                     continue
                 changes: dict[str, Any] = {}
-                for job in ("search_suggest", "papers", "ideas", "review"):
+                for job in (
+                    "search_suggest",
+                    "papers",
+                    "ideas",
+                    "review",
+                    "venue",
+                    "link",
+                ):
                     if str(state.get(f"{job}_status") or "") == "running":
                         changes[f"{job}_status"] = "error"
                         changes[f"{job}_error"] = (
@@ -5255,6 +5911,7 @@ def make_handler(
                         ar.JOB_PAPERS,
                         ar.JOB_IDEAS,
                         ar.JOB_REVIEW,
+                        ar.JOB_VENUE,
                     )
                 },
             }
@@ -5415,7 +6072,7 @@ def make_handler(
                     return {"ok": True, "status": "running"}, 202
                 busy = [
                     name
-                    for name in ("papers", "ideas", "link")
+                    for name in ("papers", "ideas", "link", "venue")
                     if str(state.get(f"{name}_status")) == "running"
                 ]
                 if busy:
@@ -5468,6 +6125,28 @@ def make_handler(
                 _ar_run_async(_ar_mine_job, root, slug, limit, venue_only)
                 return {"ok": True, "status": "running"}, 202
 
+            if action == "venue":
+                state, err = self._ar_require_state(root, slug, ar.ROLE_STUDIO)
+                if state is None:
+                    return {"ok": False, "error": err}, 400
+                if str(state.get("venue_status")) == "running":
+                    return {"ok": True, "status": "running"}, 202
+                busy = [
+                    name
+                    for name in ("search_suggest", "papers", "ideas", "link")
+                    if str(state.get(f"{name}_status")) == "running"
+                ]
+                if busy:
+                    return {
+                        "ok": False,
+                        "error": f"another Studio job is running: {busy[0]}",
+                    }, 409
+                meta = read_meta(root, slug)
+                model = str(body.get("model", "")).strip() or _ar_headless_model(meta)
+                ar.update_ar_state(root, slug, venue_status="running", venue_error="")
+                _ar_run_async(_ar_venue_job, root, slug, model)
+                return {"ok": True, "status": "running"}, 202
+
             if action == "ideas":
                 state, err = self._ar_require_state(root, slug, ar.ROLE_STUDIO)
                 if state is None:
@@ -5487,11 +6166,21 @@ def make_handler(
                     return self._ar_payload(root, project_id, slug), 200
                 if str(state.get("ideas_status")) == "running":
                     return {"ok": True, "status": "running"}, 202
+                if str(state.get("venue_status")) == "running":
+                    return {"ok": False, "error": "venue research is still running"}, 409
+                source = str(body.get("source", "")).strip() or ar.IDEA_SOURCE_PAPERS
+                if source not in (ar.IDEA_SOURCE_PAPERS, ar.IDEA_SOURCE_VENUE):
+                    return {"ok": False, "error": "unknown idea source"}, 400
+                if source == ar.IDEA_SOURCE_VENUE and not state.get("venue_report"):
+                    return {
+                        "ok": False,
+                        "error": "run the venue-cycle research first",
+                    }, 400
                 count = max(1, min(12, int(body.get("count", 6) or 6)))
                 meta = read_meta(root, slug)
                 model = str(body.get("model", "")).strip() or _ar_headless_model(meta)
                 ar.update_ar_state(root, slug, ideas_status="running", ideas_error="")
-                _ar_run_async(_ar_ideas_job, root, slug, count, model)
+                _ar_run_async(_ar_ideas_job, root, slug, count, model, source)
                 return {"ok": True, "status": "running"}, 202
 
             if action == "link":
@@ -5756,11 +6445,22 @@ def make_handler(
             parsed = urlparse(self.path)
             path = parsed.path
 
-            # The Research Factory is a second entry document over the same
-            # API: a dedicated view of the AR fleet, rather than AR squeezed
-            # into a task panel beside everything else Loom does.
-            if path in ("/", "/index.html", "/factory", "/factory.html"):
-                name = "factory.html" if path.startswith("/factory") else "index.html"
+            # Dedicated entry documents share the same authenticated API and
+            # static assets while presenting one focused workflow.
+            if path in (
+                "/",
+                "/index.html",
+                "/factory",
+                "/factory.html",
+                "/rebuttal-factory",
+                "/rebuttal-factory.html",
+            ):
+                if path.startswith("/rebuttal-factory"):
+                    name = "rebuttal_factory.html"
+                elif path.startswith("/factory"):
+                    name = "factory.html"
+                else:
+                    name = "index.html"
                 idx = static_root / name
                 if not idx.is_file():
                     st, b, h = _text_bytes(f"missing {name}", 500)
@@ -5974,6 +6674,128 @@ def make_handler(
                 finally:
                     terminal_streams.unregister(stream_id, master)
                     self._kill_pty(proc, master)
+                return
+
+            if path == "/api/rebuttal/catalog":
+                st, b, h = _json_bytes(
+                    {
+                        "ok": True,
+                        "default_policy": rebuttal.DEFAULT_POLICY,
+                        "stages": [
+                            rebuttal.STAGE_INTAKE,
+                            rebuttal.STAGE_CONCERNS,
+                            rebuttal.STAGE_RESPONSES,
+                            rebuttal.STAGE_VALIDATED,
+                            rebuttal.STAGE_APPROVED,
+                        ],
+                        "studio_stages": [
+                            rebuttal.STUDIO_STAGE_POLICY_INPUT,
+                            rebuttal.STUDIO_STAGE_POLICY_DRAFT,
+                            rebuttal.STUDIO_STAGE_AWAIT_POLICY_REVIEW,
+                            rebuttal.STUDIO_STAGE_ACTIVE,
+                            rebuttal.STUDIO_STAGE_CLOSED,
+                        ],
+                    }
+                )
+                self._send(st, b, h)
+                return
+
+            if path == "/api/rebuttal/studios":
+                st, b, h = _json_bytes(
+                    {"ok": True, "studios": rebuttal.list_studios()}
+                )
+                self._send(st, b, h)
+                return
+
+            m_rebuttal_studio_get = re.match(
+                r"^/api/rebuttal/studios/([a-z0-9][a-z0-9-]{0,79})$",
+                path,
+            )
+            if m_rebuttal_studio_get:
+                payload = rebuttal.studio_payload(
+                    m_rebuttal_studio_get.group(1)
+                )
+                if not payload:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "conference studio not found"},
+                        404,
+                    )
+                else:
+                    st, b, h = _json_bytes(payload)
+                self._send(st, b, h)
+                return
+
+            if path == "/api/rebuttal/projects":
+                st, b, h = _json_bytes(
+                    {"ok": True, "projects": rebuttal.list_projects()}
+                )
+                self._send(st, b, h)
+                return
+
+            m_rebuttal_delivery_artifact = re.match(
+                r"^/api/rebuttal/projects/([0-9a-f]{12})/delivery/"
+                r"(revised-paper|rebuttal|supplement|bundle|preflight|handoff)$",
+                path,
+            )
+            if m_rebuttal_delivery_artifact:
+                project_id = m_rebuttal_delivery_artifact.group(1)
+                wanted = m_rebuttal_delivery_artifact.group(2)
+                key = "revised_paper" if wanted == "revised-paper" else wanted
+                artifact = delivery.artifact_path(project_id, key)
+                if artifact is None:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "delivery artifact not found"},
+                        404,
+                    )
+                    self._send(st, b, h)
+                    return
+                try:
+                    body = artifact.read_bytes()
+                except OSError as exc:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": str(exc)},
+                        500,
+                    )
+                    self._send(st, b, h)
+                    return
+                content_type = {
+                    ".pdf": "application/pdf",
+                    ".zip": "application/zip",
+                    ".md": "text/markdown; charset=utf-8",
+                    ".json": "application/json; charset=utf-8",
+                }.get(artifact.suffix.lower(), "application/octet-stream")
+                disposition = (
+                    "attachment"
+                    if artifact.suffix.lower() == ".zip"
+                    else "inline"
+                )
+                self._send(
+                    200,
+                    body,
+                    [
+                        ("Content-Type", content_type),
+                        ("Content-Length", str(len(body))),
+                        (
+                            "Content-Disposition",
+                            f'{disposition}; filename="{artifact.name}"',
+                        ),
+                        ("Cache-Control", "no-store"),
+                        ("X-Content-Type-Options", "nosniff"),
+                    ],
+                )
+                return
+
+            m_rebuttal_get = re.match(r"^/api/rebuttal/projects/([0-9a-f]{12})$", path)
+            if m_rebuttal_get:
+                payload = rebuttal.project_payload(m_rebuttal_get.group(1))
+                if not payload:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "rebuttal project not found"},
+                        404,
+                    )
+                else:
+                    st, b, h = _json_bytes(payload)
+                self._send(st, b, h)
                 return
 
             if path == "/api/tasks":
@@ -6775,6 +7597,541 @@ def make_handler(
                 return
             path = parsed.path
             body = _read_json(self)
+
+            if path == "/api/rebuttal/studios":
+                try:
+                    payload = rebuttal.register_studio(
+                        str(body.get("conference") or ""),
+                        body.get("year"),
+                        str(body.get("cfp_url") or ""),
+                        policy_url=str(body.get("policy_url") or ""),
+                        title=str(body.get("title") or ""),
+                    )
+                except ValueError as exc:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": str(exc)},
+                        400,
+                    )
+                except OSError as exc:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": f"could not create studio: {exc}"},
+                        500,
+                    )
+                else:
+                    st, b, h = _json_bytes(payload, 201)
+                self._send(st, b, h)
+                return
+
+            m_rebuttal_studio_action = re.match(
+                r"^/api/rebuttal/studios/([a-z0-9][a-z0-9-]{0,79})/([a-z-]+)$",
+                path,
+            )
+            if m_rebuttal_studio_action:
+                studio_id = m_rebuttal_studio_action.group(1)
+                action = m_rebuttal_studio_action.group(2)
+                state = rebuttal.read_studio(studio_id)
+                if not state:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "conference studio not found"},
+                        404,
+                    )
+                    self._send(st, b, h)
+                    return
+                active = str(state.get("active_job") or "")
+
+                if action == "discover-policy":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": True, "status": "running", "job": active},
+                            202,
+                        )
+                    else:
+                        state["active_job"] = rebuttal.JOB_POLICY
+                        state["stage"] = rebuttal.STUDIO_STAGE_POLICY_DRAFT
+                        state["error"] = ""
+                        state["policy_approved_at"] = ""
+                        rebuttal.append_log(state, "started official policy discovery")
+                        rebuttal.write_studio(studio_id, state)
+                        model = (
+                            str(body.get("model") or "").strip()
+                            or _ar_headless_model(None)
+                        )
+                        _ar_run_async(_rebuttal_policy_job, studio_id, model)
+                        st, b, h = _json_bytes(
+                            {
+                                "ok": True,
+                                "status": "running",
+                                "job": rebuttal.JOB_POLICY,
+                            },
+                            202,
+                        )
+                    self._send(st, b, h)
+                    return
+
+                if action == "policy":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        try:
+                            payload = rebuttal.save_studio_policy(
+                                studio_id,
+                                body.get("policy")
+                                if isinstance(body.get("policy"), dict)
+                                else {},
+                                strategy=body.get("strategy")
+                                if isinstance(body.get("strategy"), dict)
+                                else None,
+                            )
+                        except (ValueError, OSError) as exc:
+                            st, b, h = _json_bytes(
+                                {"ok": False, "error": str(exc)},
+                                400,
+                            )
+                        else:
+                            st, b, h = _json_bytes(payload)
+                    self._send(st, b, h)
+                    return
+
+                if action == "approve-policy":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        try:
+                            payload = rebuttal.approve_studio_policy(studio_id)
+                        except (ValueError, OSError) as exc:
+                            st, b, h = _json_bytes(
+                                {"ok": False, "error": str(exc)},
+                                409,
+                            )
+                        else:
+                            st, b, h = _json_bytes(payload)
+                    self._send(st, b, h)
+                    return
+
+                if action == "add-paper":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        try:
+                            payload = rebuttal.register_paper_for_studio(
+                                studio_id,
+                                str(body.get("path") or ""),
+                                title=str(body.get("title") or ""),
+                            )
+                        except (ValueError, OSError) as exc:
+                            st, b, h = _json_bytes(
+                                {"ok": False, "error": str(exc)},
+                                400,
+                            )
+                        else:
+                            project_id = str(payload["project"].get("id") or "")
+                            auto_draft = bool(body.get("auto_draft", True))
+                            manifest_ready = bool(
+                                (payload["project"].get("manifest") or {}).get("ready")
+                            )
+                            if project_id and auto_draft and manifest_ready:
+                                model = (
+                                    str(body.get("model") or "").strip()
+                                    or CURSOR_DEFAULT_MODEL
+                                )
+                                started = _rebuttal_start_agent(
+                                    project_id,
+                                    model,
+                                    claude_registry,
+                                )
+                                if not started.get("ok"):
+                                    paper_state = rebuttal.read_state(project_id)
+                                    paper_state["agent_status"] = "error"
+                                    paper_state["error"] = str(
+                                        started.get("error")
+                                        or "could not start live rebuttal agent"
+                                    )
+                                    rebuttal.append_log(
+                                        paper_state,
+                                        f"live agent start failed: {paper_state['error']}",
+                                    )
+                                    rebuttal.write_state(project_id, paper_state)
+                                payload = rebuttal.project_payload(project_id)
+                                payload["agent_start"] = started
+                            st, b, h = _json_bytes(payload, 201)
+                    self._send(st, b, h)
+                    return
+
+                st, b, h = _json_bytes(
+                    {"ok": False, "error": f"unknown studio action: {action}"},
+                    404,
+                )
+                self._send(st, b, h)
+                return
+
+            if path == "/api/rebuttal/projects":
+                try:
+                    payload = rebuttal.register_project(
+                        str(body.get("path") or ""),
+                        title=str(body.get("title") or ""),
+                        policy=body.get("policy") if isinstance(body.get("policy"), dict) else None,
+                    )
+                except ValueError as exc:
+                    st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
+                except OSError as exc:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": f"could not import package: {exc}"},
+                        500,
+                    )
+                else:
+                    st, b, h = _json_bytes(payload, 201)
+                self._send(st, b, h)
+                return
+
+            m_rebuttal_action = re.match(
+                r"^/api/rebuttal/projects/([0-9a-f]{12})/([a-z-]+)$",
+                path,
+            )
+            if m_rebuttal_action:
+                project_id = m_rebuttal_action.group(1)
+                action = m_rebuttal_action.group(2)
+                state = rebuttal.read_state(project_id)
+                if not state:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "rebuttal project not found"},
+                        404,
+                    )
+                    self._send(st, b, h)
+                    return
+                active = str(state.get("active_job") or "")
+                delivery_state = (
+                    state.get("delivery")
+                    if isinstance(state.get("delivery"), dict)
+                    else {}
+                )
+                delivery_busy = delivery_state.get("agent_status") in (
+                    "running",
+                    "validating",
+                )
+                can_stop_delivery = (
+                    action == "stop-delivery"
+                    and delivery_state.get("agent_status") == "running"
+                )
+                if delivery_busy and not can_stop_delivery:
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": False,
+                            "error": (
+                                "delivery Agent or strict preflight is still running"
+                            ),
+                        },
+                        409,
+                    )
+                    self._send(st, b, h)
+                    return
+
+                if action == "start-agent":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        model = (
+                            str(body.get("model") or "").strip()
+                            or CURSOR_DEFAULT_MODEL
+                        )
+                        started = _rebuttal_start_agent(
+                            project_id,
+                            model,
+                            claude_registry,
+                        )
+                        if started.get("ok"):
+                            payload = rebuttal.project_payload(project_id)
+                            payload["agent_start"] = started
+                            st, b, h = _json_bytes(payload)
+                        else:
+                            st, b, h = _json_bytes(started, 500)
+                    self._send(st, b, h)
+                    return
+
+                if action == "stop-agent":
+                    result = _rebuttal_stop_agent(project_id)
+                    st, b, h = _json_bytes(
+                        rebuttal.project_payload(project_id)
+                        if result.get("ok")
+                        else result,
+                        200 if result.get("ok") else 500,
+                    )
+                    self._send(st, b, h)
+                    return
+
+                if action in ("start-delivery", "rerun-delivery"):
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        model = (
+                            str(body.get("model") or "").strip()
+                            or CURSOR_DEFAULT_MODEL
+                        )
+                        started = _rebuttal_start_delivery_agent(
+                            project_id,
+                            model,
+                            claude_registry,
+                            rerun=action == "rerun-delivery",
+                            feedback=str(body.get("feedback") or ""),
+                        )
+                        if started.get("ok"):
+                            payload = rebuttal.project_payload(project_id)
+                            payload["delivery_start"] = started
+                            st, b, h = _json_bytes(payload)
+                        else:
+                            st, b, h = _json_bytes(started, 409)
+                    self._send(st, b, h)
+                    return
+
+                if action == "stop-delivery":
+                    result = _rebuttal_stop_delivery_agent(project_id)
+                    st, b, h = _json_bytes(
+                        rebuttal.project_payload(project_id)
+                        if result.get("ok")
+                        else result,
+                        200 if result.get("ok") else 500,
+                    )
+                    self._send(st, b, h)
+                    return
+
+                if action == "verify-figures":
+                    phase = str(delivery_state.get("phase") or "")
+                    artifacts = (
+                        delivery_state.get("artifacts")
+                        if isinstance(delivery_state.get("artifacts"), dict)
+                        else {}
+                    )
+                    if phase == "figure_verification_running":
+                        st, b, h = _json_bytes({"ok": True, "status": "running"}, 202)
+                    elif not artifacts.get("revised_paper"):
+                        st, b, h = _json_bytes(
+                            {
+                                "ok": False,
+                                "error": "run the delivery preflight first",
+                            },
+                            409,
+                        )
+                    else:
+                        latest = rebuttal.read_state(project_id)
+                        current = dict(latest.get("delivery") or {})
+                        current["phase"] = "figure_verification_running"
+                        latest["delivery"] = current
+                        rebuttal.append_log(latest, "figure verification requested")
+                        rebuttal.write_state(project_id, latest)
+                        _ar_run_async(_rebuttal_verify_figures_job, project_id)
+                        st, b, h = _json_bytes({"ok": True, "status": "running"}, 202)
+                    self._send(st, b, h)
+                    return
+
+                if action == "approve-delivery":
+                    try:
+                        payload = delivery.approve_delivery(project_id)
+                    except ValueError as exc:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": str(exc)},
+                            409,
+                        )
+                    else:
+                        st, b, h = _json_bytes(payload)
+                    self._send(st, b, h)
+                    return
+
+                if action == "rescan":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        try:
+                            payload = rebuttal.register_project(
+                                str(state.get("source_path") or ""),
+                                title=str(state.get("title") or ""),
+                                policy=state.get("policy")
+                                if isinstance(state.get("policy"), dict)
+                                else None,
+                            )
+                            fresh = payload["project"]
+                            fresh["reviewers"] = []
+                            fresh["responses"] = {}
+                            fresh["validation"] = {}
+                            fresh["stage"] = rebuttal.STAGE_INTAKE
+                            fresh["approved_at"] = ""
+                            fresh["content_approval"] = {}
+                            rebuttal.invalidate_delivery(
+                                fresh,
+                                "source package was rescanned",
+                            )
+                            rebuttal.append_log(
+                                fresh,
+                                "cleared derived rebuttal artifacts after rescan",
+                            )
+                            rebuttal.write_state(project_id, fresh)
+                            st, b, h = _json_bytes(
+                                rebuttal.project_payload(project_id)
+                            )
+                        except (ValueError, OSError) as exc:
+                            st, b, h = _json_bytes(
+                                {"ok": False, "error": str(exc)},
+                                400,
+                            )
+                    self._send(st, b, h)
+                    return
+
+                if action == "policy":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        policy_input = dict(
+                            state.get("policy")
+                            if isinstance(state.get("policy"), dict)
+                            else {}
+                        )
+                        if isinstance(body.get("policy"), dict):
+                            policy_input.update(body["policy"])
+                        policy = rebuttal.normalize_policy(policy_input)
+                        state["policy"] = policy
+                        state["validation"] = {}
+                        state["content_approval"] = {}
+                        rebuttal.invalidate_delivery(
+                            state,
+                            "paper delivery policy changed",
+                        )
+                        if state.get("stage") in (
+                            rebuttal.STAGE_VALIDATED,
+                            rebuttal.STAGE_APPROVED,
+                            rebuttal.STAGE_DELIVERY_AGENT,
+                            rebuttal.STAGE_DELIVERY_VALIDATING,
+                            rebuttal.STAGE_DELIVERY_BLOCKED,
+                            rebuttal.STAGE_AWAIT_DELIVERY_APPROVAL,
+                            rebuttal.STAGE_BUNDLE_READY,
+                        ):
+                            state["stage"] = rebuttal.STAGE_RESPONSES
+                            state["approved_at"] = ""
+                        rebuttal.append_log(state, "updated venue rebuttal policy")
+                        rebuttal.write_state(project_id, state)
+                        st, b, h = _json_bytes(
+                            rebuttal.project_payload(project_id)
+                        )
+                    self._send(st, b, h)
+                    return
+
+                if action == "save-response":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        try:
+                            payload = rebuttal.save_response(
+                                project_id,
+                                str(body.get("reviewer_id") or ""),
+                                str(body.get("body") or ""),
+                            )
+                        except (ValueError, OSError) as exc:
+                            st, b, h = _json_bytes(
+                                {"ok": False, "error": str(exc)},
+                                400,
+                            )
+                        else:
+                            st, b, h = _json_bytes(payload)
+                    self._send(st, b, h)
+                    return
+
+                if action == "validate":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        report = rebuttal.validate_project(project_id)
+                        state = rebuttal.read_state(project_id)
+                        state["validation"] = report
+                        state["content_approval"] = {}
+                        rebuttal.invalidate_delivery(
+                            state,
+                            "response validation was rerun",
+                        )
+                        state["stage"] = (
+                            rebuttal.STAGE_VALIDATED
+                            if report.get("ready")
+                            else rebuttal.STAGE_RESPONSES
+                        )
+                        state["approved_at"] = ""
+                        rebuttal.append_log(
+                            state,
+                            "validation passed"
+                            if report.get("ready")
+                            else f"validation blocked by {len(report.get('errors') or [])} issue(s)",
+                        )
+                        rebuttal.write_state(project_id, state)
+                        st, b, h = _json_bytes(
+                            rebuttal.project_payload(project_id)
+                        )
+                    self._send(st, b, h)
+                    return
+
+                if action == "approve":
+                    if active:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": f"{active} is still running"},
+                            409,
+                        )
+                    else:
+                        try:
+                            payload = rebuttal.approve_project(project_id)
+                        except ValueError as exc:
+                            st, b, h = _json_bytes(
+                                {"ok": False, "error": str(exc)},
+                                409,
+                            )
+                        else:
+                            approved_state = rebuttal.read_state(project_id)
+                            delivery_policy = delivery.normalize_delivery_policy(
+                                approved_state,
+                                Path(str(approved_state.get("source_path") or "")),
+                            )
+                            if delivery_policy.get("enabled"):
+                                model = (
+                                    str(body.get("model") or "").strip()
+                                    or CURSOR_DEFAULT_MODEL
+                                )
+                                started = _rebuttal_start_delivery_agent(
+                                    project_id,
+                                    model,
+                                    claude_registry,
+                                )
+                                payload = rebuttal.project_payload(project_id)
+                                payload["delivery_start"] = started
+                            st, b, h = _json_bytes(payload)
+                    self._send(st, b, h)
+                    return
+
+                st, b, h = _json_bytes(
+                    {"ok": False, "error": f"unknown rebuttal action: {action}"},
+                    404,
+                )
+                self._send(st, b, h)
+                return
 
             if path == "/api/kernel/runs":
                 root, _pid = self._resolve_scope(parsed)
@@ -8270,6 +9627,96 @@ def make_handler(
             parsed = urlparse(self.path)
             path = parsed.path
 
+            m_rebuttal_studio_del = re.match(
+                r"^/api/rebuttal/studios/([a-z0-9][a-z0-9-]{0,79})$",
+                path,
+            )
+            if m_rebuttal_studio_del:
+                studio_id = m_rebuttal_studio_del.group(1)
+                state = rebuttal.read_studio(studio_id)
+                if not state:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "conference studio not found"},
+                        404,
+                    )
+                elif state.get("active_job"):
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": False,
+                            "error": f"{state['active_job']} is still running",
+                        },
+                        409,
+                    )
+                else:
+                    try:
+                        rebuttal.delete_studio(studio_id)
+                    except ValueError as exc:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": str(exc)},
+                            409,
+                        )
+                    else:
+                        st, b, h = _json_bytes(
+                            {
+                                "ok": True,
+                                "id": studio_id,
+                                "note": "policy artifacts were preserved",
+                            }
+                        )
+                self._send(st, b, h)
+                return
+
+            m_rebuttal_del = re.match(
+                r"^/api/rebuttal/projects/([0-9a-f]{12})$",
+                path,
+            )
+            if m_rebuttal_del:
+                project_id = m_rebuttal_del.group(1)
+                state = rebuttal.read_state(project_id)
+                if not state:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "rebuttal project not found"},
+                        404,
+                    )
+                elif state.get("active_job"):
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": False,
+                            "error": f"{state['active_job']} is still running",
+                        },
+                        409,
+                    )
+                elif state.get("agent_status") == "running":
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": False,
+                            "error": "stop the live rebuttal agent before forgetting the paper",
+                        },
+                        409,
+                    )
+                elif (
+                    isinstance(state.get("delivery"), dict)
+                    and state["delivery"].get("agent_status") == "running"
+                ):
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": False,
+                            "error": "stop the delivery agent before forgetting the paper",
+                        },
+                        409,
+                    )
+                else:
+                    rebuttal.delete_project(project_id)
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": True,
+                            "id": project_id,
+                            "note": "source materials and rebuttal-output were preserved",
+                        }
+                    )
+                self._send(st, b, h)
+                return
+
             m_krun_del = re.match(r"^/api/kernel/runs/([^/]+)$", path)
             if m_krun_del:
                 root, _pid = self._resolve_scope(parsed)
@@ -8500,6 +9947,24 @@ def serve(
     _ar_resumed = ar_manager.resume_running(_monitor_projects)
     if _ar_resumed:
         print(f"  Resumed {_ar_resumed} running AR paper loop(s)", flush=True)
+    _rebuttal_swept = rebuttal.sweep_interrupted_jobs()
+    if _rebuttal_swept:
+        print(
+            f"  Cleared {_rebuttal_swept} interrupted Rebuttal Factory job(s)",
+            flush=True,
+        )
+    _rebuttal_agents_resumed = _rebuttal_resume_agent_watchers()
+    if _rebuttal_agents_resumed:
+        print(
+            f"  Resumed {_rebuttal_agents_resumed} live Rebuttal Agent watcher(s)",
+            flush=True,
+        )
+    _rebuttal_delivery_resumed = _rebuttal_resume_delivery_watchers()
+    if _rebuttal_delivery_resumed:
+        print(
+            f"  Resumed {_rebuttal_delivery_resumed} delivery Agent watcher(s)",
+            flush=True,
+        )
     handler = make_handler(
         web_project_registry,
         project_root,
