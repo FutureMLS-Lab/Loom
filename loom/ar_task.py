@@ -549,6 +549,7 @@ def new_studio_state(
     venue: str = DEFAULT_VENUE,
     mode: str = MODE_AUTO,
     seed_idea: str = "",
+    venue_url: str = "",
     max_rounds: Any = DEFAULT_MAX_ROUNDS,
 ) -> dict[str, Any]:
     d = (direction or "").strip().lower()
@@ -583,6 +584,7 @@ def new_studio_state(
         "search_suggest_status": "idle",
         "search_suggest_error": "",
         "venue_report": {},
+        "venue_url": venue_url.strip(),
         "venue_status": "idle",
         "venue_error": "",
         "venue_updated_at": "",
@@ -1746,11 +1748,21 @@ def research_venue_cycle(
     """
     venue = str(venue_entry(str(state.get("venue") or DEFAULT_VENUE)).get("label"))
     direction = direction_label(state)
+    venue_url = str(state.get("venue_url") or "").strip()
+    start_block = (
+        (
+            f"START HERE: the operator supplied this venue page - {venue_url}\n"
+            "Crawl it and the pages it links (awards, accepted papers, program)\n"
+            "before falling back to your own web search for anything missing.\n\n"
+        )
+        if venue_url
+        else "Use your own web search. "
+    )
     prompt = f"""You are surveying the most recent COMPLETED cycle of {venue} so a
 research studio can propose ideas that fit what this venue actually rewards.
 The studio's research direction is: {direction}.
 
-Use your own web search. For the last completed edition of {venue}, find:
+{start_block}For the last completed edition of {venue}, find:
 1. the best paper / honorable mention winners;
 2. papers highlighted as orals or award candidates (up to 12);
 3. the hottest topics of that cycle - recurring themes across accepted papers,

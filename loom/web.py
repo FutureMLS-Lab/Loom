@@ -6168,9 +6168,21 @@ def make_handler(
                         "ok": False,
                         "error": f"another Studio job is running: {busy[0]}",
                     }, 409
+                venue_url = str(body.get("url", "")).strip()
+                if venue_url and not venue_url.startswith(("http://", "https://")):
+                    return {
+                        "ok": False,
+                        "error": "venue URL must be an http(s) address",
+                    }, 400
                 meta = read_meta(root, slug)
                 model = str(body.get("model", "")).strip() or _ar_headless_model(meta)
-                ar.update_ar_state(root, slug, venue_status="running", venue_error="")
+                changes: dict[str, Any] = {
+                    "venue_status": "running",
+                    "venue_error": "",
+                }
+                if venue_url:
+                    changes["venue_url"] = venue_url
+                ar.update_ar_state(root, slug, **changes)
                 _ar_run_async(_ar_venue_job, root, slug, model)
                 return {"ok": True, "status": "running"}, 202
 
@@ -8493,12 +8505,21 @@ def make_handler(
                 )
                 ar_state: dict[str, Any] | None = None
                 if kind == ar.KIND_AR:
+                    venue_url = str(body.get("ar_venue_url", "")).strip()
+                    if venue_url and not venue_url.startswith(("http://", "https://")):
+                        st, b, h = _json_bytes(
+                            {"error": "venue URL must be an http(s) address"},
+                            400,
+                        )
+                        self._send(st, b, h)
+                        return
                     ar_state = ar.new_studio_state(
                         direction=str(body.get("ar_direction", "")),
                         custom_direction=str(body.get("ar_custom_direction", "")),
                         venue=str(body.get("ar_venue", "")),
                         mode=str(body.get("ar_mode", "")),
                         seed_idea=str(body.get("ar_seed_idea", "")),
+                        venue_url=venue_url,
                         max_rounds=body.get("ar_max_rounds", ar.DEFAULT_MAX_ROUNDS),
                     )
                     # AR asks for the paper's content, not a goal to interview

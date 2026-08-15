@@ -60,6 +60,31 @@ def test_normalize_venue_report_bounds_and_drops_empty_titles() -> None:
     assert len(report["summary"]) == 2000
 
 
+def test_operator_venue_url_leads_the_research_prompt(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_run(prompt, model="", timeout=0, on_line=None):
+        captured["prompt"] = prompt
+        return {"ok": True, "text": _REPORT_JSON, "cost": 0.0}
+
+    monkeypatch.setattr(ar, "_run_headless", fake_run)
+
+    with_url = ar.new_studio_state(
+        direction="multimodal",
+        venue="wacv",
+        venue_url="https://wacv.example/awards ",
+    )
+    assert with_url["venue_url"] == "https://wacv.example/awards"
+    assert ar.research_venue_cycle(with_url)["ok"]
+    assert "START HERE" in captured["prompt"]
+    assert "https://wacv.example/awards" in captured["prompt"]
+
+    without_url = ar.new_studio_state(direction="multimodal", venue="wacv")
+    assert ar.research_venue_cycle(without_url)["ok"]
+    assert "START HERE" not in captured["prompt"]
+    assert "Use your own web search" in captured["prompt"]
+
+
 def test_research_venue_cycle_parses_fenced_report(monkeypatch) -> None:
     state = ar.new_studio_state(direction="multimodal", venue="wacv")
     monkeypatch.setattr(

@@ -1503,6 +1503,8 @@ function syncStudioModalMode() {
   el('new-direction').closest('div').hidden = venueMode;
   el('new-custom-direction').hidden = venueMode
     || el('new-direction').value !== 'custom';
+  el('new-venue-url-label').hidden = !venueMode;
+  el('new-venue-url').hidden = !venueMode;
 }
 document.querySelectorAll('input[name="new-mode"]').forEach((radio) => {
   radio.addEventListener('change', syncStudioModalMode);
@@ -1519,6 +1521,11 @@ el('btn-studio-create').addEventListener('click', async () => {
   // runs the studio in auto mode, but the first job is the venue deep
   // research, and ideas chain from its report instead of an arXiv haul.
   const venueKickoff = mode === 'venue';
+  const venueUrl = el('new-venue-url').value.trim();
+  if (venueKickoff && venueUrl && !/^https?:\/\//.test(venueUrl)) {
+    status.textContent = 'The venue page must be an http(s) URL.';
+    return;
+  }
   status.textContent = 'Creating…';
   try {
     const { meta } = await api('/api/tasks', {
@@ -1534,11 +1541,12 @@ el('btn-studio-create').addEventListener('click', async () => {
         ar_venue: el('new-venue').value,
         ar_mode: venueKickoff ? 'auto' : mode,
         ar_seed_idea: seed,
+        ar_venue_url: venueKickoff ? venueUrl : '',
         ar_max_rounds: Number(el('new-rounds').value || 10),
       }),
     });
     el('studio-modal').hidden = true;
-    el('new-title').value = ''; el('new-seed').value = '';
+    el('new-title').value = ''; el('new-seed').value = ''; el('new-venue-url').value = '';
     openStudio(meta.slug);
     if (venueKickoff) {
       const started = await act(meta.slug, 'venue', {}, 'Venue research');
