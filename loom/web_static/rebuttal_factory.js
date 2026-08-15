@@ -556,11 +556,13 @@ async function approveStudioPolicy() {
 async function addPaper() {
   const path = el('paper-import-path').value.trim();
   if (!path) {
-    el('paper-import-status').textContent = 'An absolute Paper materials path is required.';
+    el('paper-import-status').textContent = 'A materials path or an OpenReview forum link is required.';
     return;
   }
   setButton('btn-add-paper', false, 'importing');
-  el('paper-import-status').textContent = 'Scanning Paper package…';
+  el('paper-import-status').textContent = /^https?:\/\//i.test(path)
+    ? 'Fetching the forum — submission PDF and every official review…'
+    : 'Scanning Paper package…';
   const payload = await studioAct('add-paper', {
     path,
     title: el('paper-import-title').value.trim(),

@@ -334,6 +334,20 @@ def venue_entry(venue_id: str) -> dict[str, Any]:
     return VENUES[0]
 
 
+def venue_label(venue_id: str) -> str:
+    """The venue's display name, honouring venues we have no template for.
+
+    The Paper Factory only writes for templated venues, but the Review
+    Factory sits its panel in front of anything - a CVPR PDF must not be
+    reviewed under an ICLR letterhead just because the catalog fell back.
+    """
+    v = str(venue_id or "").strip()
+    for entry in VENUES:
+        if entry["id"] == v.lower():
+            return str(entry["label"])
+    return v.upper() if v else str(VENUES[0]["label"])
+
+
 def direction_label(state: dict[str, Any]) -> str:
     """Human-readable direction, preferring the user's custom text."""
     custom = str(state.get("custom_direction") or "").strip()
@@ -2405,7 +2419,7 @@ def _cursor_pdf_review_prompt(
     return (
         f"{skill_text}\n\n"
         "=== end reviewer instructions ===\n\n"
-        f"Venue: {venue_entry(venue).get('label')}\n"
+        f"Venue: {venue_label(venue)}\n"
         f"Review round: {round_n}\n\n"
         "You are one member of a three-model independent reviewer panel. Use the "
         "full reasoning budget configured by your model and think deeply before "

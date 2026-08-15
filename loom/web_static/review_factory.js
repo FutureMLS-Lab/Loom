@@ -197,11 +197,16 @@ el('btn-create').addEventListener('click', async () => {
   const path = el('new-path').value.trim();
   const status = el('create-status');
   if (!path) { status.textContent = 'A directory path is required.'; return; }
-  status.textContent = 'Registering…';
+  const isUrl = /^https?:\/\//i.test(path);
+  status.textContent = isUrl ? 'Fetching the paper…' : 'Registering…';
   try {
     await api('/api/review/projects', {
       method: 'POST',
-      body: JSON.stringify({ path, venue: el('new-venue').value }),
+      body: JSON.stringify(
+        isUrl
+          ? { url: path, venue: el('new-venue').value }
+          : { path, venue: el('new-venue').value },
+      ),
     });
     el('new-path').value = '';
     status.textContent = '';

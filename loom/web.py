@@ -45,6 +45,7 @@ from loom import ar_task as ar
 from loom import rebuttal_delivery as delivery
 from loom import rebuttal_task as rebuttal
 from loom import review_task as review
+from loom import paper_fetch
 from loom.openclaw import OpenClawClient, OpenClawConfig, openclaw_status
 from loom.paths import (
     AR_ROOT_ENV,
@@ -7794,10 +7795,22 @@ def make_handler(
                         )
                     else:
                         try:
+                            paper_source = str(body.get("path") or "").strip()
+                            paper_title = str(body.get("title") or "")
+                            if paper_source.startswith(("http://", "https://")):
+                                # An OpenReview forum link: pull the submission
+                                # PDF and every official review into a managed
+                                # package, then import that like any directory.
+                                fetched = paper_fetch.materialize_rebuttal_package(
+                                    paper_source,
+                                    Path.home() / ".loom" / "rebuttal-imports",
+                                )
+                                paper_source = str(fetched["dir"])
+                                paper_title = paper_title or str(fetched.get("title") or "")
                             payload = rebuttal.register_paper_for_studio(
                                 studio_id,
-                                str(body.get("path") or ""),
-                                title=str(body.get("title") or ""),
+                                paper_source,
+                                title=paper_title,
                             )
                         except (ValueError, OSError) as exc:
                             st, b, h = _json_bytes(
@@ -7847,12 +7860,20 @@ def make_handler(
 
             if path == "/api/review/projects":
                 try:
-                    payload = review.register_project(
-                        str(body.get("path") or ""),
-                        title=str(body.get("title") or ""),
-                        venue=str(body.get("venue") or ""),
-                        rubric_path=str(body.get("rubric_path") or ""),
-                    )
+                    url_value = str(body.get("url") or "").strip()
+                    if url_value:
+                        payload = review.import_from_url(
+                            url_value,
+                            title=str(body.get("title") or ""),
+                            venue=str(body.get("venue") or ""),
+                        )
+                    else:
+                        payload = review.register_project(
+                            str(body.get("path") or ""),
+                            title=str(body.get("title") or ""),
+                            venue=str(body.get("venue") or ""),
+                            rubric_path=str(body.get("rubric_path") or ""),
+                        )
                 except ValueError as exc:
                     st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
                 except OSError as exc:

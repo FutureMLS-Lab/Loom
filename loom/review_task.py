@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from loom import ar_task as ar
+from loom import paper_fetch
 
 REGISTRY_VERSION = 1
 OUTPUT_SUBDIR = "review-output"
@@ -192,6 +193,35 @@ def register_project(
         state["rubric_path"] = rubric or str(state.get("rubric_path") or "")
         state["updated_at"] = _now()
         _atomic_json(state_path(source), state)
+    return record
+
+
+def review_root() -> Path:
+    """Managed home for papers fetched by URL (local dirs register in place)."""
+    override = os.environ.get("LOOM_REVIEW_ROOT", "").strip()
+    return (
+        Path(override).expanduser()
+        if override
+        else Path.home() / ".loom" / "review-papers"
+    )
+
+
+def import_from_url(
+    url: str, *, title: str = "", venue: str = ""
+) -> dict[str, Any]:
+    """Fetch a paper off a public URL (arXiv, OpenReview, direct PDF) and
+    register the downloaded copy as a review project."""
+    clean = str(url or "").strip()
+    if not clean:
+        raise ValueError("a paper URL is required")
+    dest = review_root() / hashlib.sha256(clean.encode()).hexdigest()[:12]
+    fetched = paper_fetch.fetch_paper_pdf(clean, dest / "paper.pdf")
+    record = register_project(
+        str(dest),
+        title=title.strip() or str(fetched.get("title") or "").strip() or dest.name,
+        venue=venue,
+    )
+    update_state(str(record["id"]), source_url=clean)
     return record
 
 

@@ -89,3 +89,9 @@ def test_run_project_review_persists_the_report(registry, monkeypatch):
     assert json.loads((run_dir / "panel.json").read_text())["headline"] == "solid"
     listed = review.list_projects()
     assert listed[0]["rating"] == 6
+
+
+def test_venue_label_honours_untemplated_venues():
+    assert ar.venue_label("iclr") == "ICLR"
+    assert ar.venue_label("cvpr") == "CVPR"   # no template, still not ICLR letterhead
+    assert ar.venue_label("") == ar.venue_label(ar.DEFAULT_VENUE)
