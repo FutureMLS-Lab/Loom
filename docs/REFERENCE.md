@@ -270,6 +270,13 @@ Everything is plain JSON; scope with `?project=<id>` (or the
 | `POST` | `/api/tmux/send-literal` `{target, text}` | Send raw keystrokes/bytes (used by the terminal) |
 | `POST` | `/api/tmux/send-text` / `send-key` | Type text / send a named key into a pane |
 
+Review Factory endpoints: `GET/POST /api/review/projects` (list / register a
+directory holding a PDF), `GET /api/review/projects/<id>` (state + latest
+report), `POST /api/review/projects/<id>/run` (start the panel),
+`DELETE /api/review/projects/<id>` (unregister; reports stay on disk).
+Entry pages: `/factory` (portal), `/paper-factory`, `/review-factory`,
+`/rebuttal-factory`.
+
 AR tasks add `/api/ar/*` and `/api/tasks/<slug>/ar*` endpoints (overview,
 catalog, skills, mine/ideas/link/spawn, loop control, reviews, files, PDF).
 Kernel Lab adds `/api/kernel/*`. For backwards compatibility,

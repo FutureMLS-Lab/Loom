@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Review Factory</title>
+  <link rel="icon" type="image/png" href="/static/loom-logo.png" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260812-5" />
+  <style>
+    /* Page-specific bits; the look comes from factory.css. */
+    .rv-main { max-width: 980px; margin: 0 auto; padding: 32px 28px 96px; }
+    .rv-new { display: grid; grid-template-columns: 2fr 1fr auto; gap: 10px; align-items: end; }
+    .rv-new label { margin: 0 0 4px; }
+    .rv-project { margin-bottom: 14px; }
+    .rv-scores { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 0; }
+    .rv-reviewers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+    .rv-reviewer {
+      border: 1px solid var(--rf-line); border-radius: 10px; padding: 10px 12px;
+      background: var(--rf-bg-2); font-size: 12px;
+    }
+    .rv-reviewer.is-deciding { border-color: var(--rf-bad); background: var(--rf-bad-soft); }
+    .rv-reviewer b { display: block; font-size: 11.5px; word-break: break-all; }
+    .rv-reviewer .rv-rating { font-size: 18px; font-weight: 700; margin-top: 4px; }
+    .rv-review-text {
+      margin: 12px 0 0; padding: 12px 14px; max-height: 420px; overflow: auto;
+      font: 12px/1.55 var(--rf-mono); white-space: pre-wrap; word-break: break-word;
+      background: var(--rf-bg-1); border: 1px solid var(--rf-line); border-radius: 10px;
+      color: var(--rf-dim);
+    }
+    @media (max-width: 780px) { .rv-new, .rv-reviewers { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+
+<header class="rf-top">
+  <a class="rf-brand" href="/factory">
+    <span class="rf-brand__mark" aria-hidden="true"></span>
+    <span class="rf-brand__name">Review Factory</span>
+  </a>
+  <nav class="rf-top__nav">
+    <span class="rf-stat rf-stat--info" id="stat-projects"><b>—</b> projects</span>
+    <span class="rf-stat rf-stat--live" id="stat-running" hidden><b>—</b> running</span>
+    <a class="rf-btn rf-btn--ghost" href="/factory">Factory</a>
+    <a class="rf-btn rf-btn--ghost" href="/">Loom</a>
+  </nav>
+</header>
+
+<main class="rv-main">
+  <section class="rf-hero">
+    <p class="rf-eyebrow">Review Factory</p>
+    <h1>Every paper deserves the same panel.</h1>
+    <p class="rf-lede">
+      Point the three-model reviewer panel at any compiled PDF: independent
+      reports, structured scores, and the lowest-rating verdict — the same
+      panel the Paper Factory calls on every round.
+    </p>
+  </section>
+
+  <section class="rf-section">
+    <div class="rf-section__head">
+      <h2>Review a paper</h2>
+      <span class="rf-hint">A directory on this host holding the PDF (and nothing secret).</span>
+    </div>
+    <div class="rv-new">
+      <div>
+        <label for="new-path">Directory with the PDF</label>
+        <input type="text" id="new-path" placeholder="/path/to/paper-dir (main.pdf, or the newest *.pdf inside)" />
+      </div>
+      <div>
+        <label for="new-venue">Venue rubric</label>
+        <select id="new-venue">
+          <option value="iclr">ICLR</option>
+          <option value="neurips">NeurIPS</option>
+          <option value="icml">ICML</option>
+          <option value="colm">COLM</option>
+        </select>
+      </div>
+      <button type="button" class="rf-btn rf-btn--primary" id="btn-create">Add project</button>
+    </div>
+    <p class="rf-hint" id="create-status"></p>
+  </section>
+
+  <section class="rf-section">
+    <div class="rf-section__head">
+      <h2>Projects</h2>
+      <span class="rf-hint" id="projects-status"></span>
+    </div>
+    <div id="project-list">
+      <div class="rf-empty">Loading…</div>
+    </div>
+  </section>
+</main>
+
+<div class="rf-toasts" id="toasts" aria-live="polite"></div>
+
+<script src="/static/review_factory.js?v=20260815-1"></script>
+</body>
+</html>

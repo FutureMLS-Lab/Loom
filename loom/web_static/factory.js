@@ -96,7 +96,7 @@ function show(view) {
 
 function openFleet() {
   S.slug = ''; S.data = null;
-  document.title = 'Research Factory';
+  document.title = 'Paper Factory';
   show('fleet');
   loadFleet();
   writeHash('');
@@ -241,7 +241,7 @@ async function loadTask() {
   S.data = d;
   const state = d.state || {};
   // The tab is findable among many by what it shows, not just the app name.
-  document.title = `${d.title || slug} · Research Factory`;
+  document.title = `${d.title || slug} · Paper Factory`;
   if (state.role === 'paper') { show('paper'); renderPaper(d, state); }
   else { show('studio'); renderStudio(d, state); }
 }

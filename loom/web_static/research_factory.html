@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Research Factory</title>
+  <link rel="icon" type="image/png" href="/static/loom-logo.png" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260812-5" />
+  <style>
+    /* Portal-only styles; everything else comes from factory.css. */
+    .rf-portal { max-width: 1020px; margin: 0 auto; padding: 48px 28px 96px; }
+    .rf-lines { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 34px; }
+    .rf-line-card {
+      display: flex; flex-direction: column; gap: 10px; min-height: 240px;
+      padding: 24px 24px 20px; border: 1px solid var(--rf-line);
+      border-radius: var(--rf-radius); background: var(--rf-bg-1);
+      box-shadow: var(--rf-shadow); color: var(--rf-text); text-decoration: none;
+      transition: border-color 0.14s, transform 0.14s, box-shadow 0.14s;
+    }
+    .rf-line-card:hover {
+      border-color: var(--rf-accent); transform: translateY(-2px);
+      box-shadow: 0 10px 28px rgba(79, 70, 229, 0.12); text-decoration: none;
+    }
+    .rf-line-card h2 { font-size: 1.15rem; }
+    .rf-line-card p { margin: 0; font-size: 12.5px; color: var(--rf-dim); line-height: 1.55; flex: 1; }
+    .rf-line-card .rf-line-stats { font-size: 12px; color: var(--rf-faint); }
+    .rf-line-card .rf-line-stats b { color: var(--rf-text); font-variant-numeric: tabular-nums; }
+    .rf-line-glyph { font-size: 20px; }
+    @media (max-width: 900px) { .rf-lines { grid-template-columns: 1fr; } .rf-line-card { min-height: 0; } }
+  </style>
+</head>
+<body>
+
+<header class="rf-top">
+  <a class="rf-brand" href="/factory">
+    <span class="rf-brand__mark" aria-hidden="true"></span>
+    <span class="rf-brand__name">Research Factory</span>
+  </a>
+  <nav class="rf-top__nav">
+    <a class="rf-btn rf-btn--ghost" href="/">Loom</a>
+  </nav>
+</header>
+
+<main class="rf-portal">
+  <section class="rf-hero">
+    <p class="rf-eyebrow">Research Factory</p>
+    <h1>Three lines, one floor.</h1>
+    <p class="rf-lede">
+      Papers get written on one line, reviewed on the second, and defended on
+      the third. Each line runs its own agents behind its own gates — pick the
+      one your work is at.
+    </p>
+  </section>
+
+  <div class="rf-lines">
+    <a class="rf-line-card" href="/paper-factory">
+      <span class="rf-line-glyph">📝</span>
+      <h2>Paper Factory</h2>
+      <p>A studio mines the field and proposes grounded ideas; every idea you
+         keep drafts itself in the venue's LaTeX, runs its own experiments,
+         and argues with the reviewer panel round after round — pausing only
+         at your two gates.</p>
+      <span class="rf-line-stats" id="stat-paper">…</span>
+    </a>
+    <a class="rf-line-card" href="/review-factory">
+      <span class="rf-line-glyph">⚖️</span>
+      <h2>Review Factory</h2>
+      <p>The three-model reviewer panel as a service: point it at any
+         compiled PDF and get independent reports, structured scores, and the
+         lowest-rating verdict — the same panel the Paper Factory calls every
+         round.</p>
+      <span class="rf-line-stats" id="stat-review">…</span>
+    </a>
+    <a class="rf-line-card" href="/rebuttal-factory">
+      <span class="rf-line-glyph">🛡️</span>
+      <h2>Rebuttal Factory</h2>
+      <p>After you submit: a conference studio freezes the venue's own rules,
+         a live agent answers every reviewer point by point, and a strict
+         delivery harness turns the approved responses into a byte-exact
+         submission bundle.</p>
+      <span class="rf-line-stats" id="stat-rebuttal">…</span>
+    </a>
+  </div>
+</main>
+
+<script>
+  // Live counts, best-effort: a card without numbers is still a door.
+  (async () => {
+    const get = async (url) => {
+      try { const r = await fetch(url); return r.ok ? r.json() : null; }
+      catch { return null; }
+    };
+    const cat = await get('/api/ar/catalog');
+    if (cat && cat.project) {
+      const d = await get(`/api/ar/overview?project=${encodeURIComponent(cat.project)}`);
+      const t = (d && d.totals) || {};
+      const bits = [`<b>${t.studios || 0}</b> studios`, `<b>${t.papers || 0}</b> papers`];
+      if (t.running) bits.push(`<b>${t.running}</b> running`);
+      if (t.awaiting_you) bits.push(`<b>${t.awaiting_you}</b> waiting on you`);
+      document.getElementById('stat-paper').innerHTML = bits.join(' · ');
+    } else {
+      document.getElementById('stat-paper').textContent = '';
+    }
+    const rv = await get('/api/review/projects');
+    const rvp = (rv && rv.projects) || [];
+    const running = rvp.filter((p) => p.status === 'running').length;
+    document.getElementById('stat-review').innerHTML =
+      `<b>${rvp.length}</b> projects` + (running ? ` · <b>${running}</b> running` : '');
+    const rb = await get('/api/rebuttal/projects');
+    const rbp = (rb && rb.projects) || [];
+    document.getElementById('stat-rebuttal').innerHTML = `<b>${rbp.length}</b> papers`;
+  })();
+</script>
+</body>
+</html>

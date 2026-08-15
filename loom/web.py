@@ -44,6 +44,7 @@ from loom import agent_hooks
 from loom import ar_task as ar
 from loom import rebuttal_delivery as delivery
 from loom import rebuttal_task as rebuttal
+from loom import review_task as review
 from loom.openclaw import OpenClawClient, OpenClawConfig, openclaw_status
 from loom.paths import (
     AR_ROOT_ENV,
@@ -4809,6 +4810,34 @@ def _ar_link_job(root: Path, slug: str, model: str) -> None:
     print(f"[ar] {slug}: linked {res.get('linked')} idea(s) to prior work", flush=True)
 
 
+def _review_run_job(project_id: str) -> None:
+    """One standalone Review Factory panel run, off the request thread."""
+    try:
+        res = review.run_project_review(project_id)
+    except Exception as exc:  # noqa: BLE001
+        review.update_state(project_id, status="error", error=str(exc)[:300])
+        print(f"[review] {project_id} panel error: {exc}", flush=True)
+        return
+    if not res.get("ok"):
+        review.update_state(
+            project_id, status="error", error=str(res.get("error") or "")
+        )
+
+
+def _sweep_stale_review_runs() -> int:
+    """Review panels run in threads that do not survive a restart."""
+    cleared = 0
+    for item in review.list_projects():
+        if str(item.get("status")) == "running":
+            review.update_state(
+                str(item.get("id")),
+                status="error",
+                error="interrupted by a Loom restart - run it again",
+            )
+            cleared += 1
+    return cleared
+
+
 def _ar_review_job(root: Path, slug: str) -> None:
     """One out-of-band review, triggered from the panel rather than the loop."""
     state = ar.read_ar_state(root, slug)
@@ -4821,9 +4850,8 @@ def _ar_review_job(root: Path, slug: str) -> None:
         if build.get("ok")
         else f"PDF build failed: {build.get('error')}"
     )
-    res = ar.run_reviewer(
+    res = review.panel_review(
         paper_dir,
-        ar.ar_skill_text(ar.SKILL_REVIEWER),
         venue=str(state.get("venue") or ar.DEFAULT_VENUE),
         round_n=max(1, n),
         build=build,
@@ -5430,9 +5458,8 @@ class _ARLoopDriver:
         self._save(state)
         self._note(f"round {n} readiness passed - starting reviewer panel")
 
-        result = ar.run_reviewer(
+        result = review.panel_review(
             self._paper_dir(),
-            ar.ar_skill_text(ar.SKILL_REVIEWER),
             venue=str(state.get("venue") or ar.DEFAULT_VENUE),
             round_n=n,
             build=build,
@@ -6268,6 +6295,19 @@ def make_handler(
                     if build.get("ok"):
                         state["pdf_path"] = str(build.get("pdf") or "")
                         state["pdf_built_at"] = _iso_now()
+                    # A delivered paper will meet reviewers eventually; hand
+                    # its manuscript to the Rebuttal Factory now so the
+                    # reviews have somewhere to land. Best-effort: delivery
+                    # must not fail because a registry write did.
+                    try:
+                        meta = read_meta(root, slug)
+                        record = rebuttal.register_project(
+                            str(ar.paper_root(root, slug)),
+                            title=(meta.title if meta else slug),
+                        )
+                        state["rebuttal_project_id"] = str(record.get("id") or "")
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[ar] {slug}: rebuttal handoff failed: {exc}", flush=True)
                 ar.write_ar_state(root, slug, state)
                 if str(state.get("stage")) == ar.STAGE_LOOP:
                     ar_manager.start(root, project_id, slug)
@@ -6452,13 +6492,22 @@ def make_handler(
                 "/index.html",
                 "/factory",
                 "/factory.html",
+                "/paper-factory",
+                "/paper-factory.html",
+                "/review-factory",
+                "/review-factory.html",
                 "/rebuttal-factory",
                 "/rebuttal-factory.html",
             ):
                 if path.startswith("/rebuttal-factory"):
                     name = "rebuttal_factory.html"
-                elif path.startswith("/factory"):
+                elif path.startswith("/review-factory"):
+                    name = "review_factory.html"
+                elif path.startswith("/paper-factory"):
                     name = "factory.html"
+                elif path.startswith("/factory"):
+                    # The Research Factory front door: pick a line to walk.
+                    name = "research_factory.html"
                 else:
                     name = "index.html"
                 idx = static_root / name
@@ -6674,6 +6723,29 @@ def make_handler(
                 finally:
                     terminal_streams.unregister(stream_id, master)
                     self._kill_pty(proc, master)
+                return
+
+            if path == "/api/review/projects":
+                st, b, h = _json_bytes(
+                    {"ok": True, "projects": review.list_projects()}
+                )
+                self._send(st, b, h)
+                return
+
+            m_review_get = re.match(r"^/api/review/projects/([0-9a-f]{12})$", path)
+            if m_review_get:
+                project_id = m_review_get.group(1)
+                state = review.read_state(project_id)
+                record = review._project_record(project_id)
+                if not record:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "unknown review project"}, 404
+                    )
+                else:
+                    st, b, h = _json_bytes(
+                        {"ok": True, "project": record, "state": state}
+                    )
+                self._send(st, b, h)
                 return
 
             if path == "/api/rebuttal/catalog":
@@ -7770,6 +7842,50 @@ def make_handler(
                     {"ok": False, "error": f"unknown studio action: {action}"},
                     404,
                 )
+                self._send(st, b, h)
+                return
+
+            if path == "/api/review/projects":
+                try:
+                    payload = review.register_project(
+                        str(body.get("path") or ""),
+                        title=str(body.get("title") or ""),
+                        venue=str(body.get("venue") or ""),
+                        rubric_path=str(body.get("rubric_path") or ""),
+                    )
+                except ValueError as exc:
+                    st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
+                except OSError as exc:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": f"could not import package: {exc}"},
+                        500,
+                    )
+                else:
+                    st, b, h = _json_bytes(payload, 201)
+                self._send(st, b, h)
+                return
+
+            m_review_action = re.match(
+                r"^/api/review/projects/([0-9a-f]{12})/([a-z-]+)$", path
+            )
+            if m_review_action:
+                project_id, action = m_review_action.groups()
+                if review._project_record(project_id) is None:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "unknown review project"}, 404
+                    )
+                elif action == "run":
+                    state = review.read_state(project_id)
+                    if str(state.get("status")) == "running":
+                        st, b, h = _json_bytes({"ok": True, "status": "running"}, 202)
+                    else:
+                        review.update_state(project_id, status="running", error="")
+                        _ar_run_async(_review_run_job, project_id)
+                        st, b, h = _json_bytes({"ok": True, "status": "running"}, 202)
+                else:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": f"unknown review action {action!r}"}, 404
+                    )
                 self._send(st, b, h)
                 return
 
@@ -9666,6 +9782,24 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
+            m_review_del = re.match(r"^/api/review/projects/([0-9a-f]{12})$", path)
+            if m_review_del:
+                project_id = m_review_del.group(1)
+                if review._project_record(project_id) is None:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "unknown review project"}, 404
+                    )
+                elif str(review.read_state(project_id).get("status")) == "running":
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "a review is still running"}, 409
+                    )
+                else:
+                    review.unregister_project(project_id)
+                    # Reports stay on disk under review-output/, by design.
+                    st, b, h = _json_bytes({"ok": True})
+                self._send(st, b, h)
+                return
+
             m_rebuttal_del = re.match(
                 r"^/api/rebuttal/projects/([0-9a-f]{12})$",
                 path,
@@ -9937,6 +10071,9 @@ def serve(
     for _note in agent_hooks.install(port):
         print(f"  Stop hook {_note}", flush=True)
     ar_manager = ARLoopManager(openclaw_client, claude_registry, sk)
+    _review_swept = _sweep_stale_review_runs()
+    if _review_swept:
+        print(f"  Cleared {_review_swept} interrupted review run(s)", flush=True)
     _ar_swept = ar_manager.sweep_stale_jobs(_monitor_projects)
     if _ar_swept:
         print(

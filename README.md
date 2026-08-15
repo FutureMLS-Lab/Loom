@@ -55,22 +55,30 @@ own domain).
 
 ## Research Factory
 
-`/factory` — an autonomous paper pipeline on top of AR tasks:
+`/factory` — the front door to three production lines that share one panel
+of reviewers and call each other's APIs:
 
 ```
-Studio: brief ─▶ arXiv search ─▶ idea cards ─▶ citations verified vs OpenAlex ─▶ pick ideas
-Paper:  draft ─▶ your gate ─▶ author/reviewer rounds ─▶ your gate ─▶ delivered PDF
+Paper Factory    /paper-factory     brief ─▶ ideas (citations verified vs OpenAlex) ─▶ papers
+                                    draft ─▶ your gate ─▶ rounds (panel review each round) ─▶ your gate
+Review Factory   /review-factory    any compiled PDF ─▶ three independent reports ─▶ lowest-rating verdict
+Rebuttal Factory /rebuttal-factory  venue policy ─▶ point-by-point responses ─▶ strict delivery bundle
 ```
 
-A **studio** mines what the field just published and proposes grounded ideas —
-every cited arXiv id is checked against OpenAlex, so a fabricated reference
-cannot pass as grounding. Each idea you keep becomes a **paper** that drafts
-itself in the venue's LaTeX, runs its own experiments, and argues with a
-three-reviewer panel round after round behind a hard readiness gate (no
-placeholders, real numbers, a page-one figure, clean build). Authors that
-stall are nudged back to work; you are only interrupted at the two gates.
-Needs `latexmk` + TeX Live. The agents' methodology lives in
-`loom/skills/ar/` — edit it to change how papers get written.
+**Paper Factory** — a studio mines what the field just published and proposes
+grounded ideas; each idea you keep becomes a paper that drafts itself in the
+venue's LaTeX, runs its own experiments, and argues with the reviewer panel
+round after round behind a hard readiness gate (no placeholders, real
+numbers, a page-one figure, clean build). Stalled authors are nudged back to
+work; you are only interrupted at the two gates. On final approval the
+manuscript is handed to the Rebuttal Factory automatically, so the reviews
+have somewhere to land. Needs `latexmk` + TeX Live; methodology lives in
+`loom/skills/ar/`.
+
+**Review Factory** — the same three-model panel as a service: register any
+directory holding a compiled PDF, run the panel, read three independent
+reports with structured scores and the lowest-rating verdict. The Paper
+Factory calls this exact panel on every round.
 
 ## Rebuttal Factory
 
