@@ -66,7 +66,7 @@ def test_materialize_rebuttal_package(tmp_path, monkeypatch):
     out = paper_fetch.materialize_rebuttal_package(
         "https://openreview.net/forum?id=aB3_x9Yz", tmp_path
     )
-    package = tmp_path / "aB3_x9Yz"
+    package = tmp_path / "a-paper"  # slugged title names the folder
     assert out["ok"] and out["title"] == "A Paper" and out["reviews"] == 1
     assert (package / "submission.pdf").read_bytes().startswith(b"%PDF")
     review_md = (package / "reviews" / "reviewer-1.md").read_text()

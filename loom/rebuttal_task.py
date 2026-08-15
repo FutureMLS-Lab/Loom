@@ -477,7 +477,14 @@ def _manifest_entry(path: Path, source: Path, kind: str) -> dict[str, Any]:
 def scan_materials(source: Path) -> dict[str, Any]:
     files = _iter_material_files(source)
     pdfs = [path for path in files if path.suffix.lower() == ".pdf"]
-    review_pdfs = [path for path in pdfs if _REVIEW_NAME_RE.search(path.name)]
+    # Reviews arrive as PDFs when scanned from a package, but natively as
+    # text off OpenReview (the URL import writes reviewer-N.md) - both count.
+    review_pdfs = [
+        path
+        for path in files
+        if _REVIEW_NAME_RE.search(path.name)
+        and (path.suffix.lower() == ".pdf" or path.suffix.lower() in _TEXT_SUFFIXES)
+    ]
     paper_candidates = [path for path in pdfs if path not in review_pdfs]
 
     def paper_score(path: Path) -> tuple[int, int, str]:
@@ -510,7 +517,7 @@ def scan_materials(source: Path) -> dict[str, Any]:
         )
     if not review_pdfs:
         warnings.append(
-            "No reviewer PDF was identified. Include review/reviewer/meta-review "
+            "No reviewer document was identified. Include review/reviewer/meta-review "
             "in the filename."
         )
     if len(files) >= 5_000:

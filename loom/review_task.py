@@ -197,12 +197,15 @@ def register_project(
 
 
 def review_root() -> Path:
-    """Managed home for papers fetched by URL (local dirs register in place)."""
+    """Managed home for fetched papers: factories/review/<venue>/<paper>/.
+
+    Local directories register in place; only URL imports live here.
+    """
     override = os.environ.get("LOOM_REVIEW_ROOT", "").strip()
     return (
         Path(override).expanduser()
         if override
-        else Path.home() / ".loom" / "review-papers"
+        else Path.home() / ".loom" / "factories" / "review"
     )
 
 
@@ -214,11 +217,16 @@ def import_from_url(
     clean = str(url or "").strip()
     if not clean:
         raise ValueError("a paper URL is required")
-    dest = review_root() / hashlib.sha256(clean.encode()).hexdigest()[:12]
+    name = title.strip() or paper_fetch.probe_title(clean)
+    folder = (
+        paper_fetch.slugify(name)
+        or hashlib.sha256(clean.encode()).hexdigest()[:12]
+    )
+    dest = review_root() / (venue.strip().lower() or "unsorted") / folder
     fetched = paper_fetch.fetch_paper_pdf(clean, dest / "paper.pdf")
     record = register_project(
         str(dest),
-        title=title.strip() or str(fetched.get("title") or "").strip() or dest.name,
+        title=name or str(fetched.get("title") or "").strip() or dest.name,
         venue=venue,
     )
     update_state(str(record["id"]), source_url=clean)

@@ -41,7 +41,6 @@
     <span class="rf-stat rf-stat--info" id="stat-projects"><b>—</b> projects</span>
     <span class="rf-stat rf-stat--live" id="stat-running" hidden><b>—</b> running</span>
     <a class="rf-btn rf-btn--ghost" href="/factory">Factory</a>
-    <a class="rf-btn rf-btn--ghost" href="/">Loom</a>
   </nav>
 </header>
 
@@ -70,21 +69,50 @@
       <div>
         <label for="new-venue">Venue rubric</label>
         <select id="new-venue">
-          <option value="iclr">ICLR</option>
-          <option value="neurips">NeurIPS</option>
-          <option value="icml">ICML</option>
-          <option value="colm">COLM</option>
-          <option value="cvpr">CVPR</option>
-          <option value="iccv">ICCV</option>
-          <option value="eccv">ECCV</option>
-          <option value="wacv">WACV</option>
-          <option value="acl">ACL</option>
-          <option value="emnlp">EMNLP</option>
-          <option value="naacl">NAACL</option>
-          <option value="aaai">AAAI</option>
-          <option value="ijcai">IJCAI</option>
-          <option value="kdd">KDD</option>
-          <option value="aistats">AISTATS</option>
+          <optgroup label="Machine Learning">
+            <option value="iclr">ICLR</option>
+            <option value="neurips">NeurIPS</option>
+            <option value="icml">ICML</option>
+            <option value="aistats">AISTATS</option>
+            <option value="uai">UAI</option>
+            <option value="colm">COLM</option>
+          </optgroup>
+          <optgroup label="Computer Vision">
+            <option value="cvpr">CVPR</option>
+            <option value="iccv">ICCV</option>
+            <option value="eccv">ECCV</option>
+            <option value="wacv">WACV</option>
+          </optgroup>
+          <optgroup label="NLP & Speech">
+            <option value="acl">ACL</option>
+            <option value="emnlp">EMNLP</option>
+            <option value="naacl">NAACL</option>
+            <option value="coling">COLING</option>
+            <option value="icassp">ICASSP</option>
+            <option value="interspeech">INTERSPEECH</option>
+          </optgroup>
+          <optgroup label="AI (general)">
+            <option value="aaai">AAAI</option>
+            <option value="ijcai">IJCAI</option>
+          </optgroup>
+          <optgroup label="Data & Web">
+            <option value="kdd">KDD</option>
+            <option value="sigir">SIGIR</option>
+            <option value="www">TheWebConf (WWW)</option>
+            <option value="wsdm">WSDM</option>
+            <option value="vldb">VLDB</option>
+            <option value="icde">ICDE</option>
+            <option value="sigmod">SIGMOD</option>
+          </optgroup>
+          <optgroup label="Robotics">
+            <option value="icra">ICRA</option>
+            <option value="iros">IROS</option>
+            <option value="rss">RSS</option>
+            <option value="corl">CoRL</option>
+          </optgroup>
+          <optgroup label="Multimedia">
+            <option value="mm">ACM MM</option>
+          </optgroup>
         </select>
       </div>
       <button type="button" class="rf-btn rf-btn--primary" id="btn-create">Add project</button>

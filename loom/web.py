@@ -7803,7 +7803,8 @@ def make_handler(
                                 # package, then import that like any directory.
                                 fetched = paper_fetch.materialize_rebuttal_package(
                                     paper_source,
-                                    Path.home() / ".loom" / "rebuttal-imports",
+                                    Path.home() / ".loom" / "factories"
+                                    / "rebuttal" / studio_id,
                                 )
                                 paper_source = str(fetched["dir"])
                                 paper_title = paper_title or str(fetched.get("title") or "")

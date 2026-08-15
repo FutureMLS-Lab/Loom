@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import Any
 
 # The same public-URL policy the Rebuttal Factory already enforces for CFP
 # fetches; importing it is the point - two validators would drift.
+from loom.rebuttal_task import _slug as slugify
 from loom.rebuttal_task import _validate_url_syntax as validate_public_url
 
 MAX_PDF_BYTES = 80 * 1024 * 1024
@@ -27,8 +29,21 @@ OPENREVIEW_API = "https://api2.openreview.net"
 
 def _fetch(url: str, limit: int, timeout: int = 60) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": _UA})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        data = response.read(limit + 1)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = response.read(limit + 1)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 403 and "openreview" in url:
+            # OpenReview fronts scripted requests from datacenter IPs with a
+            # browser challenge. Passing it once in a real browser (same
+            # egress IP) unlocks the API for a while.
+            raise ValueError(
+                "OpenReview requires a one-time browser challenge from this "
+                "host's IP. Open https://openreview.net in a browser routed "
+                "through this machine, then retry - or paste a direct PDF "
+                "link instead."
+            ) from exc
+        raise
     if len(data) > limit:
         raise ValueError(f"download exceeds {limit // (1024 * 1024)}MB cap: {url}")
     return data
@@ -121,6 +136,19 @@ def note_markdown(note: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def probe_title(url: str) -> str:
+    """The paper's title without downloading the PDF - API calls only."""
+    clean = validate_public_url(str(url or "").strip(), "Paper URL")
+    forum = openreview_forum_id(clean)
+    if forum:
+        try:
+            return fetch_openreview_forum(forum)["title"]
+        except Exception:  # noqa: BLE001
+            return ""
+    ident = _arxiv_id(clean)
+    return _arxiv_title(ident) if ident else ""
+
+
 def fetch_paper_pdf(url: str, dest: Path) -> dict[str, Any]:
     """Download the PDF a URL points at (arXiv page, OpenReview forum, or
     a direct PDF link) to *dest*. Returns ``{ok, title?}``."""
@@ -144,7 +172,9 @@ def fetch_paper_pdf(url: str, dest: Path) -> dict[str, Any]:
     return {"ok": True, "title": title}
 
 
-def materialize_rebuttal_package(url: str, dest_root: Path) -> dict[str, Any]:
+def materialize_rebuttal_package(
+    url: str, dest_root: Path, dirname: str = ""
+) -> dict[str, Any]:
     """Build a Rebuttal Factory source package from an OpenReview forum URL.
 
     Lays down what the intake scanner expects to find on disk: the submission
@@ -159,7 +189,7 @@ def materialize_rebuttal_package(url: str, dest_root: Path) -> dict[str, Any]:
     if not info["reviews"]:
         raise ValueError("this forum has no official reviews yet")
 
-    package = dest_root / forum
+    package = dest_root / (dirname or slugify(info["title"]) or forum)
     reviews_dir = package / "reviews"
     reviews_dir.mkdir(parents=True, exist_ok=True)
 
