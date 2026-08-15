@@ -73,8 +73,11 @@ def test_operator_venue_url_leads_the_research_prompt(monkeypatch) -> None:
         direction="multimodal",
         venue="wacv",
         venue_url="https://wacv.example/awards ",
+        venue_kickoff=True,
     )
     assert with_url["venue_url"] == "https://wacv.example/awards"
+    assert with_url["venue_kickoff"] is True
+    assert ar.new_studio_state(direction="multimodal")["venue_kickoff"] is False
     assert ar.research_venue_cycle(with_url)["ok"]
     assert "START HERE" in captured["prompt"]
     assert "https://wacv.example/awards" in captured["prompt"]

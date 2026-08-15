@@ -6207,7 +6207,13 @@ def make_handler(
                     return {"ok": True, "status": "running"}, 202
                 if str(state.get("venue_status")) == "running":
                     return {"ok": False, "error": "venue research is still running"}, 409
-                source = str(body.get("source", "")).strip() or ar.IDEA_SOURCE_PAPERS
+                source = str(body.get("source", "")).strip() or (
+                    # A last-cycle studio's natural grounding is its venue
+                    # report; plain "Generate ideas" should not demand arXiv.
+                    ar.IDEA_SOURCE_VENUE
+                    if state.get("venue_kickoff") and state.get("venue_report")
+                    else ar.IDEA_SOURCE_PAPERS
+                )
                 if source not in (ar.IDEA_SOURCE_PAPERS, ar.IDEA_SOURCE_VENUE):
                     return {"ok": False, "error": "unknown idea source"}, 400
                 if source == ar.IDEA_SOURCE_VENUE and not state.get("venue_report"):
@@ -8520,6 +8526,7 @@ def make_handler(
                         mode=str(body.get("ar_mode", "")),
                         seed_idea=str(body.get("ar_seed_idea", "")),
                         venue_url=venue_url,
+                        venue_kickoff=bool(body.get("ar_venue_kickoff")),
                         max_rounds=body.get("ar_max_rounds", ar.DEFAULT_MAX_ROUNDS),
                     )
                     # AR asks for the paper's content, not a goal to interview

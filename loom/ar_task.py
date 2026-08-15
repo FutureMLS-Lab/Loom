@@ -550,6 +550,7 @@ def new_studio_state(
     mode: str = MODE_AUTO,
     seed_idea: str = "",
     venue_url: str = "",
+    venue_kickoff: bool = False,
     max_rounds: Any = DEFAULT_MAX_ROUNDS,
 ) -> dict[str, Any]:
     d = (direction or "").strip().lower()
@@ -585,6 +586,7 @@ def new_studio_state(
         "search_suggest_error": "",
         "venue_report": {},
         "venue_url": venue_url.strip(),
+        "venue_kickoff": bool(venue_kickoff),
         "venue_status": "idle",
         "venue_error": "",
         "venue_updated_at": "",

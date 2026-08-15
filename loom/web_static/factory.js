@@ -382,8 +382,10 @@ function renderStudio(d, state) {
   el('studio-title').textContent = d.title || S.slug;
   el('studio-eyebrow').textContent =
     `Studio · ${String(state.venue || '').toUpperCase()} · ${d.direction_label || ''}`;
-  el('studio-sub').textContent = state.seed_idea
-    || `Mining ${d.direction_label} and proposing ideas grounded in what it finds.`;
+  el('studio-sub').textContent = state.venue_kickoff
+    ? `Researching what ${String(state.venue || '').toUpperCase()} rewarded last cycle and proposing ideas from it.`
+    : (state.seed_idea
+      || `Mining ${d.direction_label} and proposing ideas grounded in what it finds.`);
 
   const logs = d.logs || {};
   renderLog('papers-log', logs.papers, state.papers_status === 'running');
@@ -473,14 +475,17 @@ function renderSteps(state, papers, ideas) {
   const spawned = ideas.filter((i) => i.status === 'spawned').length;
   const running = (job) => state[`${job}_status`] === 'running';
   // A studio seeded from your own idea can go straight to step 2; pointing
-  // "current" at mining would say the opposite.
+  // "current" at mining would say the opposite. A last-cycle studio never
+  // mines arXiv at all, so that step disappears entirely.
   const seeded = state.mode === 'seed';
+  const venueStudio = Boolean(state.venue_kickoff);
 
   const steps = [
     {
       id: 'mine',
       done: papers.length > 0,
-      optional: seeded,
+      optional: seeded || venueStudio,
+      hidden: venueStudio,
       state: seeded && !papers.length && !state.papers_status
         ? 'optional — this studio starts from your idea'
         : paperMiningState(state, papers),
@@ -489,6 +494,7 @@ function renderSteps(state, papers, ideas) {
       id: 'ideas',
       done: ideas.length > 0,
       state: running('ideas') ? 'generating, a few minutes…'
+        : venueStudio && running('venue') ? 'waiting for the last-cycle report…'
         : ideas.length ? `${ideas.length} ideas`
         : (state.ideas_error || 'not run yet'),
     },
@@ -509,11 +515,16 @@ function renderSteps(state, papers, ideas) {
   steps.forEach((s, i) => {
     const node = document.querySelector(`.rf-step[data-step="${s.id}"]`);
     if (!node) return;
+    node.hidden = Boolean(s.hidden);
     node.classList.toggle('is-done', s.done);
     node.classList.toggle('is-current', i === current);
     const label = el(`step-${s.id}-state`);
     if (label) label.textContent = s.state;
   });
+  // Renumber the visible steps so a hidden one leaves no gap behind.
+  document.querySelectorAll('.rf-step:not([hidden]) .rf-step__n').forEach(
+    (badge, i) => { badge.textContent = String(i + 1); },
+  );
 
   // A step whose input does not exist yet cannot run, so say so on the button
   // rather than letting it be pressed and answer with an error.
@@ -532,11 +543,15 @@ function renderSteps(state, papers, ideas) {
     why: busy ? 'a Studio job is already running'
       : (!terms.length ? 'add or suggest search terms first' : 'select at least one arXiv category'),
   });
-  setAction('btn-ideas', {
-    ok: !busy && (papers.length > 0 || state.mode === 'seed'),
-    why: busy ? 'a job is already running' : 'mine the field first, or start the studio from your own idea',
-  });
   const hasVenueReport = Object.keys(state.venue_report || {}).length > 0;
+  setAction('btn-ideas', {
+    ok: !busy && (
+      venueStudio ? hasVenueReport : (papers.length > 0 || state.mode === 'seed')
+    ),
+    why: busy ? 'a job is already running'
+      : venueStudio ? 'run the last-cycle research first'
+      : 'mine the field first, or start the studio from your own idea',
+  });
   setAction('btn-ideas-venue', {
     ok: !busy,
     why: busy ? 'a job is already running' : '',
@@ -1542,6 +1557,7 @@ el('btn-studio-create').addEventListener('click', async () => {
         ar_mode: venueKickoff ? 'auto' : mode,
         ar_seed_idea: seed,
         ar_venue_url: venueKickoff ? venueUrl : '',
+        ar_venue_kickoff: venueKickoff,
         ar_max_rounds: Number(el('new-rounds').value || 10),
       }),
     });
