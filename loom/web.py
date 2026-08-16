@@ -6947,6 +6947,72 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
+            if path == "/api/factories/approvals":
+                # One inbox for every human gate on the floor, so "what is
+                # waiting on me" is a single glance instead of three pages.
+                items: list[dict[str, Any]] = []
+                ar_pid = ""
+                for project in pr.list_projects():
+                    if project.get("path") == str(ar.ar_root()):
+                        ar_pid = str(project.get("id") or "")
+                        break
+                if ar_pid:
+                    try:
+                        overview = self._ar_overview(Path(str(ar.ar_root())), ar_pid)
+                        papers = list(overview.get("orphans") or [])
+                        for studio in overview.get("studios") or []:
+                            papers.extend(studio.get("children") or [])
+                        for paper in papers:
+                            stage = str(paper.get("stage") or "")
+                            if stage == ar.STAGE_AWAIT_DRAFT_REVIEW:
+                                items.append({
+                                    "factory": "paper", "gate": "draft",
+                                    "id": paper.get("slug"), "project": ar_pid,
+                                    "title": paper.get("title"),
+                                    "detail": "draft ready for your review",
+                                })
+                            elif stage == ar.STAGE_AWAIT_FINAL_REVIEW:
+                                items.append({
+                                    "factory": "paper", "gate": "final",
+                                    "id": paper.get("slug"), "project": ar_pid,
+                                    "title": paper.get("title"),
+                                    "detail": (
+                                        f"{paper.get('round')}/{paper.get('max_rounds')} rounds"
+                                        f" · best {paper.get('best_rating')}/10"
+                                    ),
+                                })
+                    except Exception:  # noqa: BLE001 - inbox is best-effort
+                        pass
+                try:
+                    for record in rebuttal.list_projects():
+                        pid = str(record.get("id") or "")
+                        state = rebuttal.read_state(pid)
+                        stage = str(state.get("stage") or "")
+                        title = str(record.get("title") or pid)
+                        if stage == rebuttal.STAGE_RESPONSES:
+                            items.append({
+                                "factory": "rebuttal", "gate": "validate",
+                                "id": pid, "title": title,
+                                "detail": "responses drafted - validate, then approve",
+                            })
+                        elif stage == rebuttal.STAGE_VALIDATED:
+                            items.append({
+                                "factory": "rebuttal", "gate": "content",
+                                "id": pid, "title": title,
+                                "detail": "validation passed - content approval (Gate 1)",
+                            })
+                        elif stage == rebuttal.STAGE_AWAIT_DELIVERY_APPROVAL:
+                            items.append({
+                                "factory": "rebuttal", "gate": "delivery",
+                                "id": pid, "title": title,
+                                "detail": "delivery preflight passed (Gate 2)",
+                            })
+                except Exception:  # noqa: BLE001
+                    pass
+                st, b, h = _json_bytes({"ok": True, "items": items})
+                self._send(st, b, h)
+                return
+
             if path == "/api/ar/catalog":
                 data = ar.catalog()
                 # The Research Factory is a standalone page, so it needs to be

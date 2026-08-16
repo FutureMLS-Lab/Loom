@@ -80,6 +80,18 @@
       <span class="rf-line-stats" id="stat-rebuttal">…</span>
     </a>
   </div>
+
+  <section class="rf-section" id="approvals-section" hidden>
+    <div class="rf-section__head">
+      <h2>Waiting on you</h2>
+      <div class="rf-section__actions">
+        <label class="rf-check"><input type="checkbox" id="approve-all-toggle" /> select all</label>
+        <button type="button" class="rf-btn rf-btn--primary rf-btn--sm" id="btn-approve-selected" disabled>Approve selected</button>
+      </div>
+    </div>
+    <p class="rf-hint" id="approvals-status"></p>
+    <div id="approvals-list"></div>
+  </section>
 </main>
 
 <script>
@@ -109,6 +121,138 @@
     const rbp = (rb && rb.projects) || [];
     document.getElementById('stat-rebuttal').innerHTML = `<b>${rbp.length}</b> papers`;
   })();
+
+  // ==== Approvals inbox: every human gate on the floor, batch-approvable ====
+  const AP = { items: [], picked: new Set(), busy: false, fp: '' };
+  const $id = (x) => document.getElementById(x);
+
+  function apEsc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
+  function apKey(it) { return `${it.factory}:${it.gate}:${it.id}`; }
+
+  const GATE_LABEL = {
+    'paper:draft': 'Draft gate', 'paper:final': 'Final gate',
+    'rebuttal:validate': 'Validate + Gate 1', 'rebuttal:content': 'Gate 1 · content',
+    'rebuttal:delivery': 'Gate 2 · delivery',
+  };
+
+  async function apLoad() {
+    let d = null;
+    try { const r = await fetch('/api/factories/approvals'); d = r.ok ? await r.json() : null; }
+    catch { /* keep the last view */ }
+    if (!d) return;
+    AP.items = d.items || [];
+    for (const k of [...AP.picked]) {
+      if (!AP.items.some((it) => apKey(it) === k)) AP.picked.delete(k);
+    }
+    const fp = JSON.stringify([AP.items, [...AP.picked]]);
+    if (fp === AP.fp) return;
+    AP.fp = fp;
+    apRender();
+  }
+
+  function apRender() {
+    const section = $id('approvals-section');
+    section.hidden = !AP.items.length;
+    if (!AP.items.length) return;
+    $id('approvals-list').innerHTML = AP.items.map((it) => {
+      const k = apKey(it);
+      const badge = it.factory === 'paper' ? '📝 Paper' : '🛡️ Rebuttal';
+      return `<div class="rf-paper-row" style="grid-template-columns:auto 1fr auto">
+        <input type="checkbox" data-pick="${apEsc(k)}" ${AP.picked.has(k) ? 'checked' : ''} />
+        <div>
+          <div class="rf-paper-row__title">${apEsc(it.title || it.id)}</div>
+          <div class="rf-paper-row__stage">${badge} · ${apEsc(GATE_LABEL[`${it.factory}:${it.gate}`] || it.gate)} · ${apEsc(it.detail || '')}</div>
+        </div>
+        <button type="button" class="rf-btn rf-btn--sm" data-approve="${apEsc(k)}">Approve</button>
+      </div>`;
+    }).join('');
+    $id('approvals-list').querySelectorAll('[data-pick]').forEach((box) => {
+      box.addEventListener('change', () => {
+        if (box.checked) AP.picked.add(box.dataset.pick); else AP.picked.delete(box.dataset.pick);
+        apSync();
+      });
+    });
+    $id('approvals-list').querySelectorAll('[data-approve]').forEach((btn) => {
+      btn.addEventListener('click', () => apRun([btn.dataset.approve]));
+    });
+    apSync();
+  }
+
+  function apSync() {
+    const btn = $id('btn-approve-selected');
+    btn.disabled = !AP.picked.size || AP.busy;
+    btn.textContent = AP.picked.size ? `Approve selected (${AP.picked.size})` : 'Approve selected';
+  }
+
+  async function apPost(url, body) {
+    const r = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    return d;
+  }
+
+  async function apApproveOne(it) {
+    if (it.factory === 'paper') {
+      await apPost(
+        `/api/tasks/${encodeURIComponent(it.id)}/ar/gate?project=${encodeURIComponent(it.project)}`,
+        { gate: it.gate, decision: 'approve' },
+      );
+      return;
+    }
+    if (it.gate === 'validate' || it.gate === 'content') {
+      if (it.gate === 'validate') {
+        const v = await apPost(`/api/rebuttal/projects/${it.id}/validate`);
+        const ready = v && (v.validation ? v.validation.ready : v.ready);
+        if (!ready) throw new Error('validation found problems - open the Rebuttal Factory');
+      }
+      await apPost(`/api/rebuttal/projects/${it.id}/approve`);
+      return;
+    }
+    if (it.gate === 'delivery') {
+      await apPost(`/api/rebuttal/projects/${it.id}/approve-delivery`);
+      return;
+    }
+    throw new Error(`unknown gate ${it.factory}:${it.gate}`);
+  }
+
+  async function apRun(keys) {
+    if (AP.busy) return;
+    AP.busy = true;
+    apSync();
+    const status = $id('approvals-status');
+    let ok = 0; const failed = [];
+    for (const k of keys) {
+      const it = AP.items.find((x) => apKey(x) === k);
+      if (!it) continue;
+      status.textContent = `Approving: ${it.title || it.id}…`;
+      try { await apApproveOne(it); ok += 1; AP.picked.delete(k); }
+      catch (err) { failed.push(`${it.title || it.id}: ${err.message}`); }
+    }
+    AP.busy = false;
+    status.textContent = failed.length
+      ? `approved ${ok}; failed ${failed.length} — ${failed[0]}`
+      : (ok ? `approved ${ok} ✓` : '');
+    AP.fp = '';
+    apLoad();
+  }
+
+  $id('approve-all-toggle').addEventListener('change', (ev) => {
+    AP.picked = ev.target.checked ? new Set(AP.items.map(apKey)) : new Set();
+    AP.fp = '';
+    apRender();
+  });
+  $id('btn-approve-selected').addEventListener('click', () => apRun([...AP.picked]));
+
+  apLoad();
+  setInterval(() => { if (!document.hidden) apLoad(); }, 8000);
 </script>
 </body>
 </html>
