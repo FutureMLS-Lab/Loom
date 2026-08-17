@@ -864,7 +864,7 @@ def _conversation_transcript_path(
 
 
 def _parse_conversation_transcript(path: Path, agent: str) -> list[dict[str, Any]]:
-    """Normalize Claude/Cursor JSONL into a small Happy-style message protocol."""
+    """Normalize Claude/Cursor JSONL into a small message protocol for clients."""
     try:
         stat = path.stat()
     except OSError:

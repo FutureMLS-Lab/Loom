@@ -135,3 +135,10 @@ loom web --project /path --openclaw \
 - **[docs/LOOM_CODEBASE_ARCHITECTURE.md](docs/LOOM_CODEBASE_ARCHITECTURE.md)**
   and **[docs/FIGURE_SKILL_FLOW.md](docs/FIGURE_SKILL_FLOW.md)** — how the
   codebase and the figure-skill pipeline are put together.
+
+## Licence
+
+Noncommercial use only, under the
+[PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0)
+terms in [`LICENSE`](LICENSE). Commercial use needs a separate licence from
+FutureMLS-Lab.
