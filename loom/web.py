@@ -6880,6 +6880,27 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
+            m_ar_skills_report = re.match(
+                r"^/api/tasks/([a-zA-Z0-9][a-zA-Z0-9_-]*)/ar/skills-report$", path
+            )
+            if m_ar_skills_report:
+                root, pid = self._resolve_scope(parsed)
+                if root is None:
+                    self._bad_project()
+                    return
+                slug = m_ar_skills_report.group(1)
+                state = ar.read_ar_state(root, slug)
+                if not state:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "this task has no AR state"}, 404
+                    )
+                else:
+                    st, b, h = _json_bytes(
+                        {"ok": True, **ar.paper_skills_report(root, slug, state)}
+                    )
+                self._send(st, b, h)
+                return
+
             if path == "/api/ar/skills":
                 # What the agents are told, readable from the outside. One
                 # skill's body when asked for, otherwise the catalogue.

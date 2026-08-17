@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Paper Factory</title>
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
-  <link rel="stylesheet" href="/static/factory.css?v=20260815-1" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260816-1" />
 </head>
 <body>
 
@@ -47,6 +47,15 @@
     <div class="rf-section__head">
       <h2>Studios</h2>
       <span class="rf-hint">A studio owns a direction and the papers spawned from it.</span>
+    </div>
+    <div class="rf-fleet-bulk" id="fleet-bulk" hidden>
+      <label class="rf-check">
+        <input type="checkbox" id="fleet-all-drafts" />
+        select all draft-ready papers
+      </label>
+      <span class="rf-hint" id="fleet-picked">none selected</span>
+      <button type="button" class="rf-btn rf-btn--primary rf-btn--sm"
+              id="btn-fleet-rounds" disabled>Start selected rounds</button>
     </div>
     <div class="rf-fleet" id="fleet-list">
       <div class="rf-empty">Loading the fleet…</div>
@@ -319,6 +328,7 @@
       <h2 id="skills-modal-title">Skills</h2>
       <button type="button" class="rf-x" id="btn-skills-close" aria-label="Close">×</button>
     </div>
+    <div class="rf-skills-paper" id="skills-paper" hidden></div>
     <p class="rf-hint">
       An agent's behaviour is mostly these instructions, and every one of them
       reaches its agent automatically — nothing here needs enabling. Each entry
@@ -333,6 +343,6 @@
 
 <div class="rf-toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/factory.js?v=20260815-1"></script>
+<script src="/static/factory.js?v=20260816-1"></script>
 </body>
 </html>

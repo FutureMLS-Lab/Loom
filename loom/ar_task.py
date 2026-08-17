@@ -3698,6 +3698,84 @@ def skill_catalog() -> list[dict[str, str]]:
     return out
 
 
+def paper_skills_report(
+    project_root: Path, slug: str, state: dict[str, Any]
+) -> dict[str, Any]:
+    """What THIS paper was told, and which skills it demonstrably reached for.
+
+    "Selected" is the task's own skills picker; "injected" is the always-on
+    AR set every round carries; "applied" is evidence, not guesswork - a
+    skill counts only when the author's own round notes name it.
+    """
+    from loom.rud_task import read_meta, split_skills_paths
+
+    meta = read_meta(project_root, slug)
+    selected = []
+    if meta is not None:
+        for path in split_skills_paths(getattr(meta, "skills_path", "") or ""):
+            selected.append(path.stem if path.name != "SKILL.md" else path.parent.name)
+
+    injected = [
+        {"name": "AR-AUTHOR", "how": "full text, every round prompt"},
+        {
+            "name": DEFAULT_TEASER_SKILL,
+            "how": "figure menu default - the prompt orders proactive use",
+        },
+    ]
+    injected += [
+        {"name": sk["name"], "how": "figure menu - read on demand"}
+        for sk in figure_skills()
+        if sk["name"] != DEFAULT_TEASER_SKILL
+    ]
+    injected.append(
+        {"name": "paper-rebuttal", "how": "named in the prompt for reviewer replies"}
+    )
+
+    # Evidence pass: the author's own notes, round by round.
+    names = {sk["name"] for sk in figure_skills()}
+    names.update({"paper-rebuttal", "checkbib"})
+    mentions: dict[str, list[int]] = {}
+    rounds = rounds_root(project_root, slug)
+    if rounds.is_dir():
+        for note in sorted(rounds.glob("round-*/" + AUTHOR_NOTE)):
+            try:
+                text = note.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            try:
+                n = int(note.parent.name.split("-")[1])
+            except (IndexError, ValueError):
+                n = -1
+            for name in names:
+                if name in text:
+                    mentions.setdefault(name, []).append(n)
+    applied = [
+        {"name": name, "rounds": sorted(set(ns))}
+        for name, ns in sorted(mentions.items())
+    ]
+    # Physical evidence: a page-one figure on disk (authors name it
+    # teaser/overview/figure1) proves the figure work happened even when
+    # the notes never name the skill that drew it.
+    figures_dir = paper_root(project_root, slug) / "figures"
+    figure_evidence = (
+        sorted(
+            f.name
+            for f in figures_dir.iterdir()
+            if f.is_file()
+            and any(k in f.name.lower() for k in ("teaser", "overview", "figure1", "fig1"))
+        )
+        if figures_dir.is_dir()
+        else []
+    )
+    return {
+        "venue": venue_label(str(state.get("venue") or DEFAULT_VENUE)),
+        "selected": selected,
+        "injected": injected,
+        "applied": applied,
+        "figure_evidence": figure_evidence,
+    }
+
+
 def skill_body(skill_id: str, limit: int = 60000) -> str:
     """The text of one catalogued skill, refusing anything not in the catalog."""
     for entry in skill_catalog():
