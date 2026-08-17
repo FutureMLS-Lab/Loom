@@ -5506,6 +5506,12 @@ class _ARLoopDriver:
             "reviewers": stored_reviewers,
         }
         rec.pop("review_error", None)
+        # A round that reviewed fine outdates any earlier manual-review
+        # failure; a stale top-level error would keep an "error" pill on a
+        # perfectly healthy paper.
+        if str(state.get("review_status") or "") == "error":
+            state["review_status"] = "done"
+            state["review_error"] = ""
         state["cost_usd"] = round(
             float(state.get("cost_usd") or 0.0) + float(result.get("cost") or 0.0), 4
         )
