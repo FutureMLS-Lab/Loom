@@ -4215,6 +4215,51 @@ def _rebuttal_watch_agent(project_id: str) -> None:
         time.sleep(2)
 
 
+def _rebuttal_join_staged(
+    studio_id: str, claude_registry: Any
+) -> list[dict[str, Any]]:
+    """Register every staged quick-import package under a now-active studio.
+
+    A package is a directory holding the fetched submission.pdf; ones already
+    registered are recognised by source path. Each fresh one is registered and
+    its rebuttal agent started - after the policy approval there is nothing
+    left that needs a human hand.
+    """
+    staged_root = Path.home() / ".loom" / "factories" / "rebuttal" / studio_id
+    if not staged_root.is_dir():
+        return []
+    known = {
+        str(Path(str(p.get("source_path") or "")).resolve())
+        for p in rebuttal.list_projects()
+    }
+    joined: list[dict[str, Any]] = []
+    for package in sorted(staged_root.iterdir()):
+        if not package.is_dir() or not (package / "submission.pdf").is_file():
+            continue
+        if str(package.resolve()) in known:
+            continue
+        try:
+            payload = rebuttal.register_paper_for_studio(
+                studio_id, str(package)
+            )
+        except (ValueError, OSError) as exc:
+            joined.append({"dir": str(package), "error": str(exc)})
+            continue
+        project = payload.get("project") or {}
+        project_id = str(project.get("id") or "")
+        entry: dict[str, Any] = {
+            "project_id": project_id,
+            "title": str(project.get("title") or package.name),
+        }
+        if project_id and bool((project.get("manifest") or {}).get("ready")):
+            started = _rebuttal_start_agent(
+                project_id, CURSOR_DEFAULT_MODEL, claude_registry
+            )
+            entry["agent_started"] = bool(started.get("ok"))
+        joined.append(entry)
+    return joined
+
+
 def _rebuttal_start_agent(
     project_id: str,
     model: str,
@@ -6581,7 +6626,7 @@ def make_handler(
                     "created_studio": created,
                     "message": (
                         f"{conference} {year} policy is being discovered - "
-                        "approve it, then the staged paper joins with one click"
+                        "approve it once and the paper joins and starts by itself"
                     ),
                 },
                 202,
@@ -8128,6 +8173,14 @@ def make_handler(
                                 409,
                             )
                         else:
+                            # Quick imports staged their packages while the
+                            # policy was pending; approval is the last human
+                            # step, so they join and start on their own now.
+                            joined = _rebuttal_join_staged(
+                                studio_id, claude_registry
+                            )
+                            if joined:
+                                payload["joined_papers"] = joined
                             st, b, h = _json_bytes(payload)
                     self._send(st, b, h)
                     return
