@@ -62,8 +62,44 @@ a:hover { text-decoration: underline; }
   border-bottom: 1px solid var(--rf-line);
 }
 .rf-brand { display: flex; align-items: center; gap: 10px; color: var(--rf-text); }
-.rf-top__links { display: flex; align-items: center; gap: 6px; margin-right: auto; }
 .rf-brand:hover { text-decoration: none; }
+.rf-brand__text { display: flex; flex-direction: column; line-height: 1.14; }
+.rf-brand__tag { font-size: 9.5px; color: var(--rf-faint); letter-spacing: 0.03em; white-space: nowrap; }
+
+/* The factory switcher: one segmented control, current line lit. */
+.fx-switch {
+  display: inline-flex; align-items: center; gap: 2px;
+  margin-right: auto; padding: 3px;
+  background: rgba(15, 23, 42, 0.045);
+  border: 1px solid var(--rf-line);
+  border-radius: 999px;
+}
+.fx-switch__item {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 11px; border-radius: 999px;
+  font-size: 12px; font-weight: 640; color: var(--rf-faint);
+  text-decoration: none; white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+.fx-switch__item svg { display: block; border-radius: 4px; }
+a.fx-switch__item:hover {
+  background: #fff; text-decoration: none;
+  box-shadow: 0 1px 4px rgba(16, 24, 40, 0.12);
+}
+.fx-switch__item--on {
+  background: #fff; cursor: default;
+  box-shadow: 0 1px 4px rgba(16, 24, 40, 0.14);
+}
+.fx-switch__item--paper.fx-switch__item--on, a.fx-switch__item--paper:hover { color: #4f46e5; }
+.fx-switch__item--review.fx-switch__item--on, a.fx-switch__item--review:hover { color: #059669; }
+.fx-switch__item--rebuttal.fx-switch__item--on, a.fx-switch__item--rebuttal:hover { color: #e11d48; }
+a.fx-switch__item--home:hover { color: var(--rf-text); }
+.fx-switch__sep { width: 1px; height: 16px; background: var(--rf-line); margin: 0 3px; }
+@media (max-width: 900px) {
+  .rf-brand__tag { display: none; }
+  .fx-switch__item > span { display: none; }
+  .fx-switch__item { padding: 5px 8px; }
+}
 .rf-brand__mark {
   width: 15px; height: 15px; border-radius: 5px;
   background: linear-gradient(135deg, var(--rf-accent), var(--rf-accent-2));

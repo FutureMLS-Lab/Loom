@@ -120,6 +120,7 @@ function openPaper(slug, parent) {
   S.data = null;
   S.pane = ''; S.filePath = '';
   S.paperFp = '';
+  S.paneFollowTouched = false;
   show('paper');
   loadTask();
   openFiles('');
@@ -1247,6 +1248,13 @@ function renderPaper(d, state) {
   setAction('btn-loop-stop', can.stop);
   setAction('btn-review-now', can.review);
   S.pane = d.pane || '';
+  // A running loop means the pane is where the action is - watch it by
+  // default; an explicit untick stays respected for this paper.
+  if (!S.paneFollowTouched) {
+    S.paneFollow = !!(d.loop && d.loop.running) && !!S.pane;
+    const box = el('pane-follow');
+    if (box) box.checked = S.paneFollow;
+  }
   renderPane();
 
   const at = STAGES.findIndex(([id]) => id === state.stage);
@@ -1541,6 +1549,7 @@ el('btn-goto-ideas').addEventListener('click', () => {
 });
 el('pane-follow').addEventListener('change', (ev) => {
   S.paneFollow = ev.target.checked;
+  S.paneFollowTouched = true;
   renderPane();
 });
 el('ideas-all').addEventListener('change', (ev) => {

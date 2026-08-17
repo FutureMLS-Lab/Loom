@@ -52,11 +52,39 @@ code { font-family: var(--rb-mono); }
   background: rgba(245, 246, 248, 0.90);
   backdrop-filter: blur(14px);
 }
-.rb-links {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-right: auto;
+/* The factory switcher: same segmented control the rf pages use. */
+.fx-switch {
+  display: inline-flex; align-items: center; gap: 2px;
+  margin-right: auto; padding: 3px;
+  background: rgba(15, 23, 42, 0.045);
+  border: 1px solid var(--rb-line);
+  border-radius: 999px;
+}
+.fx-switch__item {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 11px; border-radius: 999px;
+  font-size: 12px; font-weight: 640; color: var(--rb-faint);
+  text-decoration: none; white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+.fx-switch__item svg { display: block; border-radius: 4px; }
+a.fx-switch__item:hover {
+  background: #fff; text-decoration: none;
+  box-shadow: 0 1px 4px rgba(16, 24, 40, 0.12);
+}
+.fx-switch__item--on {
+  background: #fff; cursor: default;
+  box-shadow: 0 1px 4px rgba(16, 24, 40, 0.14);
+}
+.fx-switch__item--paper.fx-switch__item--on, a.fx-switch__item--paper:hover { color: #4f46e5; }
+.fx-switch__item--review.fx-switch__item--on, a.fx-switch__item--review:hover { color: #059669; }
+.fx-switch__item--rebuttal.fx-switch__item--on, a.fx-switch__item--rebuttal:hover { color: #e11d48; }
+a.fx-switch__item--home:hover { color: var(--rb-text); }
+.fx-switch__sep { width: 1px; height: 16px; background: var(--rb-line); margin: 0 3px; }
+@media (max-width: 900px) {
+  .rb-brand small { display: none; }
+  .fx-switch__item > span { display: none; }
+  .fx-switch__item { padding: 5px 8px; }
 }
 
 .rb-brand {
