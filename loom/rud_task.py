@@ -96,7 +96,6 @@ def _cursor_model_options() -> tuple[dict[str, str], ...]:
     Keep a short fallback so task creation still works when the CLI is absent
     or temporarily unable to query the account.
     """
-    global _CURSOR_MODEL_OPTIONS, _CURSOR_MODEL_OPTIONS_AT
     now = time.monotonic()
     if _CURSOR_MODEL_OPTIONS is not None and now - _CURSOR_MODEL_OPTIONS_AT < _CURSOR_MODEL_TTL_SECONDS:
         return _CURSOR_MODEL_OPTIONS
