@@ -1773,3 +1773,13 @@ def test_sweep_stale_jobs_unwedges_interrupted_work(tmp_path: Path) -> None:
 def test_every_venue_template_is_vendored() -> None:
     missing = [v["id"] for v in ar.VENUES if not ar.venue_is_available(v["id"])]
     assert not missing, f"run scripts/fetch_paper_styles.py for: {missing}"
+
+
+def test_round_prompt_defends_the_main_body(tmp_path: Path) -> None:
+    # The failure mode this guards: reviewers demand rigor, the author
+    # responds with defensive side probes and appendix exile, and the paper
+    # gets longer and weaker at once.
+    rnd = ar.author_round_prompt(tmp_path, tmp_path / "manuscript", _paper_state(), 2)
+    assert "The MAIN BODY carries the story" in rnd
+    assert "ONE adequately-powered decisive" in rnd
+    assert "exiling primary evidence" in rnd or "exile" in rnd

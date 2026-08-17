@@ -3949,6 +3949,19 @@ The idea this paper must establish:
 Run the experiments first, then fold the real numbers into the paper, then
 rebuild the PDF. Never write a number an experiment did not produce.
 
+Evidence placement and focus - this is where revised papers quietly rot:
+- The MAIN BODY carries the story. Headline results, their tables and their
+  figures stay in the main sections; the appendix holds only what a reader
+  can skip (proofs, extra seeds, robustness sweeps, negative side probes).
+  Never answer a reviewer by exiling primary evidence to the appendix.
+- When the reviewer challenges your core claim, do NOT bury it under many
+  small defensive probes. Choose: run ONE adequately-powered decisive
+  experiment that settles it, or honestly reframe the claim to what the
+  evidence supports. A pile of underpowered side studies makes the paper
+  longer and weaker at the same time.
+- Every time you move material into the appendix, justify it in one line of
+  your completion note.
+
 When you answer the reviewer point by point, read and follow the rebuttal
 methodology first: {ar_skills_dir() / SKILL_REBUTTAL}
 
