@@ -1614,6 +1614,26 @@ def test_ar_skill_text_missing_file() -> None:
     assert ar.ar_skill_text("NOPE.md") == ""
 
 
+def test_author_prompts_demand_the_teaser_and_name_their_skills(tmp_path: Path) -> None:
+    # The draft is skeleton-only EXCEPT Figure 1: the conceptual teaser is
+    # drawn at the draft so the human gate sees the visual story, and every
+    # completion note must name the skills it applied so the per-paper
+    # skills report fills from evidence rather than guesswork.
+    state = _paper_state()
+    draft = ar.author_draft_prompt(tmp_path, tmp_path / "manuscript", state)
+    assert "The one figure you DO draw now is Figure 1" in draft
+    assert "every RESULTS figure an \\ARfig{} placeholder" in draft
+    assert "Skills used:" in draft
+
+    rnd = ar.author_round_prompt(tmp_path, tmp_path / "manuscript", state, 2)
+    assert "Skills used:" in rnd
+
+    repair = ar.author_readiness_repair_prompt(
+        tmp_path, tmp_path / "manuscript", state, 2, {"ready": False, "failed": []}
+    )
+    assert "Skills used:" in repair
+
+
 def test_author_prompts_carry_the_contract(tmp_path: Path) -> None:
     state = _paper_state(venue="icml")
     task_dir = tmp_path / "task"

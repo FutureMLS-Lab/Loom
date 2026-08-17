@@ -3874,13 +3874,22 @@ abstract arc, introduction with its contribution list, related work with real
 citations, and a method section precise enough to reimplement from. Build out
 the full experiments structure - setup, baselines, metrics, main results,
 ablations, analysis - but leave every number as \\ARnum{{}}, every table
-commented out and every figure an \\ARfig{{}} placeholder. Do not run
+commented out and every RESULTS figure an \\ARfig{{}} placeholder. Do not run
 experiments yet.
+
+The one figure you DO draw now is Figure 1: the page-one teaser/overview is a
+conceptual picture of the method - it needs no experiment numbers, and the
+human judging this draft needs to see the paper's visual story. Draw it with
+the default teaser skill from the figure menu above and cite it from the
+introduction.
 
 When the draft compiles, write your summary to:
 {note}
 
-then stop. A human reviews the draft before the author/reviewer loop opens.
+End that note with a line `Skills used:` naming every skill you actually
+applied (e.g. `Skills used: teaser-figure-3`), or `Skills used: none`.
+
+Then stop. A human reviews the draft before the author/reviewer loop opens.
 """
 
 
@@ -3953,6 +3962,10 @@ measured results and the bibliography must go beyond the template seeds.
 When the round is finished, write your summary to:
 {note}
 
+End that note with a line `Skills used:` naming every figure/rebuttal/other
+skill you actually applied this round (e.g. `Skills used: teaser-figure-3,
+results-figure-1`), or `Skills used: none`.
+
 Writing that file is how Loom knows the round is over and hands the paper to
 the deterministic readiness gate. Only a passing gate hands the PDF to the
 reviewers. Make the note the last thing you do, then stop.
@@ -4024,6 +4037,8 @@ Before signalling completion again, make the whole submission complete:
 Do not ask the reviewers to evaluate unfinished work. When and only when every
 failure above is fixed, write a NEW completion note to:
 {note}
+
+End it with the same `Skills used:` line naming the skills you applied.
 
 Writing that file is the final action. Loom will rerun the deterministic gate;
 the reviewer panel runs only after it passes.
