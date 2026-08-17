@@ -21,17 +21,73 @@
     #state.on { background: #3fb950; }
     #target { overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, monospace; }
     #hint { margin-left: auto; color: #484f58; }
+    #btn-zh {
+      flex: none; border: 1px solid #30363d; border-radius: 6px;
+      background: transparent; color: #8b949e; font: 600 11px system-ui;
+      padding: 2px 8px; cursor: pointer;
+    }
+    #btn-zh[aria-expanded="true"], #btn-zh:hover { color: #e6edf3; border-color: #8b949e; }
     #term { flex: 1; min-height: 0; padding: 4px 0 0 6px; }
     #term .xterm { height: 100%; }
+    /* Chinese / long-text compose: a real textarea, so the IME composes
+       natively instead of fighting xterm's hidden input. */
+    #compose {
+      display: flex; gap: 8px; align-items: flex-end;
+      padding: 7px 10px; background: #010409; border-top: 1px solid #21262d;
+      flex: none;
+    }
+    #compose[hidden] { display: none; }
+    #compose textarea {
+      flex: 1; resize: none; max-height: 168px;
+      background: #0d1117; color: #e6edf3;
+      border: 1px solid #30363d; border-radius: 8px;
+      padding: 7px 10px; font: 13px/1.45 system-ui, sans-serif;
+    }
+    #compose textarea:focus { outline: none; border-color: #58a6ff; }
+    #compose button {
+      flex: none; border: 1px solid #238636; border-radius: 8px;
+      background: #238636; color: #fff; font: 600 12px system-ui;
+      padding: 8px 14px; cursor: pointer;
+    }
+    #compose button:hover { background: #2ea043; }
+    #keys {
+      display: flex; gap: 6px; padding: 6px 10px; flex: none;
+      background: #010409; border-top: 1px solid #21262d; overflow-x: auto;
+    }
+    #keys button {
+      flex: none; min-width: 40px; padding: 4px 10px;
+      border: 1px solid #30363d; border-radius: 6px;
+      background: #161b22; color: #c9d1d9; font: 600 12px ui-monospace, monospace;
+      cursor: pointer;
+    }
+    #keys button:active { background: #30363d; }
   </style>
 </head>
 <body>
 <div id="bar">
   <span id="state"></span>
   <span id="target"></span>
-  <span id="hint">type to steer · Esc interrupts · Enter answers</span>
+  <button type="button" id="btn-zh" aria-expanded="false"
+          title="Chinese / long-text input (reliable IME; Enter to send, Shift+Enter for newline)">中 输入</button>
+  <span id="hint">wheel scrolls history · type to steer · Esc interrupts</span>
 </div>
 <div id="term"></div>
+<div id="compose" hidden>
+  <textarea id="compose-input" rows="1"
+            placeholder="中文/长文本 — Enter 发送，Shift+Enter 换行"
+            autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+  <button type="button" id="compose-send">Send</button>
+</div>
+<div id="keys">
+  <button type="button" data-key="&#27;">Esc</button>
+  <button type="button" data-key="&#3;">⌃C</button>
+  <button type="button" data-key="&#27;[A">↑</button>
+  <button type="button" data-key="&#27;[B">↓</button>
+  <button type="button" data-key="&#27;[D">←</button>
+  <button type="button" data-key="&#27;[C">→</button>
+  <button type="button" data-key="&#9;">Tab</button>
+  <button type="button" data-key="&#13;">⏎</button>
+</div>
 
 <script src="/static/vendor/xterm.js?v=5.5.0"></script>
 <script src="/static/vendor/addon-fit.js?v=0.10.0"></script>
@@ -84,11 +140,22 @@
 
   // --- input: queue keystrokes, send bare Esc alone so the TUI sees a real
   // interrupt instead of a half-glued escape sequence.
-  var queue = [], sending = false;
+  var queue = [], sending = false, scrolledUp = false;
   function pump() {
     if (sending) return;
     sending = true;
-    (function step() {
+    var ready = Promise.resolve();
+    if (scrolledUp) {
+      // Typing while scrolled: leave tmux copy-mode BEFORE the first key,
+      // or it would move the copy cursor instead of reaching the agent.
+      scrolledUp = false;
+      ready = fetch('/api/tmux/scroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: target, dir: 'bottom' }),
+      }).catch(function () {});
+    }
+    ready.then(function step() {
       if (!queue.length) { sending = false; return; }
       var chunk = '', bareEsc = false;
       while (queue.length) {
@@ -111,9 +178,81 @@
       }).catch(function () {}).finally(function () {
         setTimeout(step, bareEsc ? 40 : 0);
       });
-    })();
+    });
   }
   term.onData(function (d) { queue.push(d); pump(); });
+
+  // --- scrolling: full-screen TUIs live on the alternate screen, which has
+  // no scrollback, so the wheel scrolls tmux's OWN history via copy-mode.
+  // Batched so one flick becomes one request, not thirty.
+  var wheelLines = 0, wheelTimer = null;
+  document.getElementById('term').addEventListener('wheel', function (e) {
+    e.preventDefault();
+    wheelLines += (e.deltaY < 0 ? -3 : 3) * Math.max(1, Math.min(3, Math.abs(Math.round(e.deltaY / 100))));
+    if (wheelTimer) return;
+    wheelTimer = setTimeout(function () {
+      var lines = wheelLines; wheelLines = 0; wheelTimer = null;
+      if (!lines) return;
+      if (lines < 0) scrolledUp = true;
+      fetch('/api/tmux/scroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          target: target,
+          dir: lines < 0 ? 'up' : 'down',
+          lines: Math.min(50, Math.abs(lines)),
+        }),
+      }).catch(function () {});
+    }, 60);
+  }, { passive: false });
+
+  // --- Chinese / long-text compose: text goes through tmux's paste buffer
+  // (send-text), which delivers multi-byte input in one piece.
+  var zhBtn = document.getElementById('btn-zh');
+  var compose = document.getElementById('compose');
+  var composeInput = document.getElementById('compose-input');
+  function composeOpen(open) {
+    compose.hidden = !open;
+    zhBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) { composeGrow(); composeInput.focus(); }
+    else { term.focus(); }
+  }
+  function composeGrow() {
+    composeInput.style.height = 'auto';
+    composeInput.style.height = Math.min(composeInput.scrollHeight, 168) + 'px';
+  }
+  function composeSend() {
+    var text = composeInput.value;
+    if (!text.trim()) return;
+    composeInput.value = '';
+    composeGrow();
+    fetch('/api/tmux/send-text', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target: target, text: text, submit: true }),
+    }).catch(function () {});
+    composeInput.focus();
+  }
+  zhBtn.addEventListener('click', function () { composeOpen(compose.hidden); });
+  composeInput.addEventListener('input', composeGrow);
+  composeInput.addEventListener('keydown', function (e) {
+    // Enter sends; Shift+Enter inserts a newline; the Enter that commits an
+    // IME composition has isComposing=true and must be left alone so Chinese
+    // input still works.
+    if (e.key === 'Enter' && !e.isComposing && !e.shiftKey) {
+      e.preventDefault();
+      composeSend();
+    }
+  });
+  document.getElementById('compose-send').addEventListener('click', composeSend);
+
+  // --- key bar: literal sequences through the same input pump as typing.
+  document.getElementById('keys').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-key]');
+    if (!btn) return;
+    queue.push(btn.dataset.key);
+    pump();
+  });
 
   function setOn(on) { stateDot.className = on ? 'on' : ''; }
 

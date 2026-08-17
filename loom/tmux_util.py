@@ -379,6 +379,12 @@ def scroll_pane(target: str, direction: str = "up", lines: int = 3) -> tuple[boo
         n = 3
     env = tmux_subprocess_env()
 
+    if direction == "bottom":
+        # "Take me back to live" - typing while scrolled must reach the
+        # program, so leave copy-mode outright instead of scrolling there.
+        _exit_copy_mode_if_active(t, env)
+        return True, ""
+
     # Probe the pane: already browsing copy-mode? running a full-screen app?
     # has the app turned on mouse reporting (so it wants wheel events itself)?
     in_mode = False
