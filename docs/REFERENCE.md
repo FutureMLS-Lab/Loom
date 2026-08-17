@@ -89,8 +89,14 @@ Each paper walks a fixed pipeline:
 
 1. **Draft** — the author agent fills the venue's LaTeX skeleton. The experiments
    section gets its full structure but every number stays an `\ARnum{}` marker
-   and every figure an `\ARfig{}` placeholder.
+   and every results figure an `\ARfig{}` placeholder. The one exception is
+   Figure 1: the page-one teaser is conceptual, so it is drawn immediately
+   with the default figure skill and the human gate sees the visual story.
 2. **Your review** — a gate. Approve to open the loop, or send it back with notes.
+   On the Paper Factory fleet page, draft-ready papers can be selected across
+   studios and approved together with **Start selected rounds**; each paper is
+   still validated independently, so a stale item cannot move from the wrong
+   stage.
 3. **Rounds** — by default ten of them. The author agent works in the task's tmux
    pane (revising the paper, running experiments locally in the worktree) and
    signals the end of its turn by writing `rounds/round-NN/author.md`. If it
@@ -102,7 +108,10 @@ Each paper walks a fixed pipeline:
    overview figure. A blocked paper goes back to the author in the same round
    with the exact failed checks. Only a complete submission runs three
    independent Cursor reviewers headlessly; each sees an isolated workspace
-   containing only the compiled PDF (never the LaTeX source). All reports are
+   containing only the compiled PDF (never the LaTeX source), and each is
+   told the venue's own review form — ICLR papers get the ICLR sections and
+   scales, CVF papers the 1–5 strong-reject-to-strong-accept shape, and so
+   on (the Review Factory shares this same panel). All reports are
    preserved; the lowest-Rating reviewer's complete score block is the final
    verdict. If that lowest score plateaus for three rounds, the fixed panel
    stays in place and the author must make a structural change. Two more rounds
@@ -230,55 +239,8 @@ AR tasks live in their own always-registered project (`~/ar` by default,
 
 ## HTTP API
 
-Everything is plain JSON; scope with `?project=<id>` (or the
-`X-Loom-Project` header). When `--auth-token` is set, send it as
-`Authorization: Bearer <token>` (or HTTP basic, password = token).
-
-| Method | URL | Purpose |
-|--------|-----|---------|
-| `GET` | `/api/project` | Active project root, skills path, skills options |
-| `GET` | `/api/projects` | List registered projects, default, launch root |
-| `POST` | `/api/projects` `{path}` | Register a project root |
-| `POST` | `/api/projects/<id>/activate` | Set the default project |
-| `POST` | `/api/projects/reorder` `{ids}` | Persist order |
-| `DELETE` | `/api/projects/<id>` | Drop from registry (files untouched) |
-| `GET` / `PUT` | `/api/notes` | Read / save project `NOTES.md` |
-| `GET` | `/api/tasks` | All tasks for the active project |
-| `POST` | `/api/tasks` `{title, general_goal, agent?, kind?}` | Create task (auto-worktree if the root is a git repo) |
-| `POST` | `/api/tasks/reorder` `{slugs}` | Persist order |
-| `GET` | `/api/tasks/<slug>` | Meta + PLAN.md + scanned markdown + agent summary + worktree statuses |
-| `PUT` | `/api/tasks/<slug>/meta` `{title?, general_goal?, agent?, skills_path?}` | Rename / re-goal / switch agent |
-| `PUT` | `/api/tasks/<slug>/template` `{name, content}` | Write PLAN.md |
-| `DELETE` | `/api/tasks/<slug>` | Delete task tree (also unregisters worktrees) |
-| `GET` | `/api/tasks/<slug>/diff` | **Changes tab**: per-worktree uncommitted + committed diff |
-| `GET`/`POST`/`DELETE` | `/api/tasks/<slug>/monitor` | Run-monitor status / enable / disable |
-| `POST` | `/api/tasks/<slug>/claude/send` `{text, submit?}` | Push a message into the pane (used by OpenClaw replies) |
-| `GET` | `/api/tasks/<slug>/worktree-candidates` | Repos you could base a worktree on |
-| `POST` / `DELETE` | `/api/tasks/<slug>/worktree` | Create / remove a worktree |
-| `POST` | `/api/tasks/<slug>/worktree/push` `{path}` | `git push -u origin <branch>` |
-| `POST` | `/api/tasks/<slug>/worktree/merge` `{path}` | Merge the worktree branch into the base branch (no push) |
-| `POST` | `/api/tasks/<slug>/worktrees/push-all` | Push every task worktree branch |
-| `POST` | `/api/tasks/<slug>/review` `{path, rules?}` | AI review of the worktree diff vs rules / skills |
-| `POST` | `/api/tasks/<slug>/claude/start` | Launch the agent pane in the primary worktree |
-| `POST` | `/api/tasks/<slug>/claude/stop` | Kill the tmux pane (on-disk sessions stay resumable) |
-| `POST` | `/api/tasks/<slug>/claude/paste-prompt` | Re-paste the deep-interview prompt |
-| `POST` | `/api/tasks/<slug>/claude/resume` `{session_id}` | New tmux, `--resume <id>` |
-| `GET` | `/api/tasks/<slug>/claude-sessions` | Tracked session UUIDs + on-disk transcripts |
-| `GET` | `/api/tmux/stream?target=…&cols=N&rows=N` | Live PTY byte stream for the xterm terminal |
-| `POST` | `/api/tmux/stream-close` `{stream_id}` | A client ends its own stream (proxies can swallow the socket close) |
-| `GET` | `/api/tmux/capture?target=…&lines=N` | Pane scrollback snapshot (used by the monitor) |
-| `POST` | `/api/tmux/send-literal` `{target, text}` | Send raw keystrokes/bytes (used by the terminal) |
-| `POST` | `/api/tmux/send-text` / `send-key` | Type text / send a named key into a pane |
-
-Review Factory endpoints: `GET/POST /api/review/projects` (list / register a
-directory holding a PDF), `GET /api/review/projects/<id>` (state + latest
-report), `POST /api/review/projects/<id>/run` (start the panel),
-`DELETE /api/review/projects/<id>` (unregister; reports stay on disk).
-Entry pages: `/factory` (portal), `/paper-factory`, `/review-factory`,
-`/rebuttal-factory`.
-
-AR tasks add `/api/ar/*` and `/api/tasks/<slug>/ar*` endpoints (overview,
-catalog, skills, mine/ideas/link/spawn, loop control, reviews, files, PDF).
-Kernel Lab adds `/api/kernel/*`. For backwards compatibility,
-`/api/tasks/<slug>/interview/{start,stop,paste-prompt}` still resolves to the
-agent-pane endpoints.
+The full endpoint contract — auth, project scoping, every route with its
+body — lives in **[docs/API.md](API.md)**. Entry pages: `/` (console),
+`/factory` (portal), `/paper-factory`, `/review-factory`,
+`/rebuttal-factory`, and `/terminal?target=<pane>` (the embeddable
+Agent Terminal).

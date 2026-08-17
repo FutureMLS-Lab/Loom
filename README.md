@@ -75,10 +75,12 @@ manuscript is handed to the Rebuttal Factory automatically, so the reviews
 have somewhere to land. Needs `latexmk` + TeX Live; methodology lives in
 `loom/skills/ar/`.
 
-**Review Factory** — the same three-model panel as a service: register any
-directory holding a compiled PDF, run the panel, read three independent
-reports with structured scores and the lowest-rating verdict. The Paper
-Factory calls this exact panel on every round.
+**Review Factory** — the same three-model panel as a service: paste an arXiv
+/ OpenReview / PDF link (or a local directory), and the panel reviews to the
+venue's own form — thirty CORE-A* venues carry their real sections and score
+scales. Download `review.md` per run, or auto-fill the paper's OpenReview
+Official_Review form behind a preview-then-confirm. The Paper Factory calls
+this exact panel on every round.
 
 ## Rebuttal Factory
 
@@ -90,14 +92,17 @@ Paper:  import package ─▶ concern matrix ─▶ responses ─▶ validation 
         ─▶ delivery agent ─▶ strict preflight ─▶ three-model figure check ─▶ your gate ─▶ bundle
 ```
 
-A **conference studio** turns the venue's own author guide into a frozen,
-human-approved policy; every paper under it inherits the rules. A live agent
-atomizes each review into a concern matrix and drafts evidence-bounded
-point-by-point responses; deterministic validation, a strict rebuild-and-
-preflight harness (full body pages, anonymity, no placeholder values), and a
-unanimous three-model figure check stand between the drafts and a byte-exact
-`submission-bundle.zip`. Approvals bind to content hashes — change a file and
-the approval dies. Uploading to OpenReview stays manual, by design.
+One OpenReview forum link is the whole intake: the venue is read off the
+submission itself, the **conference studio** is found or created, and the
+venue's own author guide becomes a frozen, human-approved policy every paper
+under it inherits. A live agent atomizes each review into a concern matrix
+and drafts evidence-bounded point-by-point responses; deterministic
+validation, a strict rebuild-and-preflight harness (full body pages,
+anonymity, no placeholder values), and a unanimous three-model figure check
+stand between the drafts and a byte-exact `submission-bundle.zip`. Approvals
+bind to content hashes — change a file and the approval dies. Posting back
+to OpenReview is built in but never automatic: sign in, preview the exact
+plan, and an explicit confirm fires it.
 
 ## OpenClaw notifications
 
@@ -127,7 +132,9 @@ loom web --project /path --openclaw \
 - **[AGENT.md](AGENT.md)** — one-file deploy runbook an agent can execute.
 - **[docs/REFERENCE.md](docs/REFERENCE.md)** — the long version: full task
   flow, every UI control, task types, AR pipeline internals, OpenClaw setup,
-  storage layout, HTTP API.
+  storage layout.
+- **[docs/API.md](docs/API.md)** — the HTTP API contract every client speaks
+  (console, desktop, mobile, OpenClaw agents, your scripts).
 - **[docs/research-factory/arch.md](docs/research-factory/arch.md)** and
   **[docs/rebuttal-factory/arch.md](docs/rebuttal-factory/arch.md)** — each
   factory's full pipeline flowchart and module map, with its debt ledger
