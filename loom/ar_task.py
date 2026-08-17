@@ -2414,8 +2414,36 @@ def _cursor_pdf_review_prompt(
     pdf_path: Path,
     venue: str,
     round_n: int,
+    prior_review: str = "",
+    author_response: str = "",
 ) -> str:
-    """Prompt one independent reviewer to judge only the compiled PDF."""
+    """Prompt one independent reviewer to judge only the compiled PDF.
+
+    From round two on, the reviewer also receives ITS OWN previous report and
+    the author's response note - the rebuttal dynamic of a real venue - but
+    never another reviewer's report, and never the LaTeX source.
+    """
+    continuity = ""
+    if prior_review.strip():
+        response_block = (
+            f"=== the author's response note for this revision ===\n"
+            f"{author_response.strip()}\n"
+            f"=== end author response ===\n\n"
+            if author_response.strip()
+            else ""
+        )
+        continuity = (
+            f"=== your own review of the previous revision (round {round_n - 1}) ===\n"
+            f"{prior_review.strip()}\n"
+            f"=== end previous review ===\n\n"
+            f"{response_block}"
+            "You have reviewed this submission before; the report above is your "
+            "own. The author's note claims what changed - treat claims as "
+            "claims and verify each against the PDF itself. Acknowledge what "
+            "is genuinely fixed, keep pressing what is not, and raise anything "
+            "new. Score the CURRENT pages on their merits; do not anchor on "
+            "your previous rating in either direction.\n\n"
+        )
     return (
         f"{skill_text}\n\n"
         "=== end reviewer instructions ===\n\n"
@@ -2425,13 +2453,14 @@ def _cursor_pdf_review_prompt(
         "full reasoning budget configured by your model and think deeply before "
         "returning the report. Do not reveal private chain-of-thought; return only "
         "the required review.\n\n"
+        f"{continuity}"
         "The sole paper artifact for this review is the compiled PDF below:\n"
         f"{pdf_path}\n\n"
         "Open and inspect every page of that PDF. Judge both the scientific content "
         "and the rendered artifact (tables, figures, equations, clipping, legibility, "
         "and page-level presentation). The PDF is the source of truth. Do not search "
         "for, open, or infer from LaTeX source files, author notes, experiment code, "
-        "or another review. Review the submission cold and independently.\n\n"
+        "or another review's report. Review independently.\n\n"
         "Write your review now, in exactly the required markdown structure."
     )
 
@@ -2449,14 +2478,18 @@ def run_reviewer(
     models: list[str] | tuple[str, ...] | None = None,
     timeout: int = 900,
     on_line: Any = None,
+    prior_reviews: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Review a compiled PDF with the fixed three-model Cursor panel.
 
-    ``idea`` and ``author_note`` remain accepted for API compatibility, but are
-    deliberately not included: reviewers see the same PDF a human reviewer
-    would receive, not the author's framing or raw LaTeX.
+    ``idea`` is deliberately not included: reviewers see the same PDF a human
+    reviewer would receive, not the author's framing or raw LaTeX. From round
+    two, ``prior_reviews`` maps each model to its OWN previous report and
+    ``author_note`` carries the author's response - real rebuttal dynamics,
+    with cross-reviewer isolation intact (no reviewer ever sees another's
+    report).
     """
-    del idea, author_note
+    del idea
     build = build or {}
     pdf_value = str(build.get("pdf") or "").strip()
     pdf = Path(pdf_value) if pdf_value else paper_dir / "main.pdf"
@@ -2510,18 +2543,20 @@ def run_reviewer(
             shutil.copy2(pdf, review_pdf)
         except OSError as exc:
             return {"ok": False, "error": f"could not isolate compiled PDF: {exc}"}
-        prompt = _cursor_pdf_review_prompt(
-            skill_text,
-            pdf_path=review_pdf,
-            venue=venue,
-            round_n=round_n,
-        )
+        priors = prior_reviews or {}
         by_model: dict[str, dict[str, Any]] = {}
         with ThreadPoolExecutor(max_workers=len(selected)) as pool:
             futures = {
                 pool.submit(
                     _run_cursor_headless,
-                    prompt,
+                    _cursor_pdf_review_prompt(
+                        skill_text,
+                        pdf_path=review_pdf,
+                        venue=venue,
+                        round_n=round_n,
+                        prior_review=str(priors.get(model) or "")[:20000],
+                        author_response=str(author_note or "")[:12000],
+                    ),
                     model,
                     workspace,
                     timeout=timeout,

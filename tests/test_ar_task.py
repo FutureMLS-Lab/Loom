@@ -1783,3 +1783,28 @@ def test_round_prompt_defends_the_main_body(tmp_path: Path) -> None:
     assert "The MAIN BODY carries the story" in rnd
     assert "ONE adequately-powered decisive" in rnd
     assert "exiling primary evidence" in rnd or "exile" in rnd
+
+
+def test_review_prompt_carries_the_reviewers_own_memory(tmp_path: Path) -> None:
+    # Rebuttal dynamics: from round two each reviewer re-reads its OWN prior
+    # report and the author's response, then re-scores the current pages.
+    pdf = tmp_path / "submission.pdf"
+    cold = ar._cursor_pdf_review_prompt(
+        "RUBRIC", pdf_path=pdf, venue="iclr", round_n=1
+    )
+    assert "previous review" not in cold
+    warm = ar._cursor_pdf_review_prompt(
+        "RUBRIC",
+        pdf_path=pdf,
+        venue="iclr",
+        round_n=3,
+        prior_review="Rating: 4. The baselines are missing.",
+        author_response="Added the baselines in Table 2.",
+    )
+    assert "your own review of the previous revision (round 2)" in warm
+    assert "The baselines are missing." in warm
+    assert "Added the baselines in Table 2." in warm
+    assert "verify each against the PDF" in warm
+    assert "do not anchor on your previous rating" in warm
+    # Isolation still holds: no other reviewer's report is ever offered.
+    assert "another review's report" in warm

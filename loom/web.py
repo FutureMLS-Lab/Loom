@@ -4889,6 +4889,32 @@ def _sweep_stale_review_runs() -> int:
     return cleared
 
 
+def _ar_prior_panel_reviews(state: dict[str, Any], n: int) -> dict[str, str]:
+    """Each model's OWN report from round n-1, for reviewer continuity."""
+    rec = ar.round_record(state, n - 1) or {}
+    stored = rec.get("review") if isinstance(rec.get("review"), dict) else {}
+    out: dict[str, str] = {}
+    for item in stored.get("reviewers") or []:
+        model = str((item or {}).get("model") or "")
+        path = str((item or {}).get("path") or "")
+        if not model or not path:
+            continue
+        try:
+            out[model] = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+    return out
+
+
+def _ar_author_note_text(root: Path, slug: str, n: int) -> str:
+    try:
+        return ar.author_note_path_for(task_root(root, slug), n).read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return ""
+
+
 def _ar_review_job(root: Path, slug: str) -> None:
     """One out-of-band review, triggered from the panel rather than the loop."""
     state = ar.read_ar_state(root, slug)
@@ -4908,6 +4934,8 @@ def _ar_review_job(root: Path, slug: str) -> None:
         build=build,
         models=ar.CURSOR_REVIEWER_MODELS,
         on_line=log,
+        prior_reviews=_ar_prior_panel_reviews(state, max(1, n)),
+        author_note=_ar_author_note_text(root, slug, max(1, n)),
     )
     if not res.get("ok"):
         log(f"failed: {res.get('error')}")
@@ -5517,6 +5545,10 @@ class _ARLoopDriver:
             readiness=readiness,
             models=ar.CURSOR_REVIEWER_MODELS,
             on_line=_ar_logger(self.project_root, self.slug, ar.JOB_REVIEW),
+            # Rebuttal dynamics: each reviewer re-reads its OWN prior report
+            # and the author's response, then re-scores the current pages.
+            prior_reviews=_ar_prior_panel_reviews(state, n),
+            author_note=_ar_author_note_text(self.project_root, self.slug, n),
         )
         state = self._state()
         rec = ar.ensure_round(state, n)
