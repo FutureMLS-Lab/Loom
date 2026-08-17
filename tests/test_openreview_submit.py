@@ -265,3 +265,12 @@ def test_execute_plan_posts_each_item_and_isolates_failures(monkeypatch) -> None
     assert results[0] == {"reviewer_id": "reviewer-1", "note_id": "note-rev-a", "ok": True}
     assert results[1]["error"] == "window closed"
     assert results[2]["error"] == "no matching official review"
+
+
+def test_invitation_form_text_renders_fields_and_scales() -> None:
+    text = ors.invitation_form_text(REVIEW_INVITATION)
+    assert "- summary (required)" in text
+    assert "- flag (optional)" in text
+    assert "1: strong reject | 3: reject" in text
+    assert "max 200000 chars" in text
+    assert ors.invitation_form_text({}) == ""

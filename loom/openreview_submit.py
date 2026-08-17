@@ -356,6 +356,32 @@ def _max_length(schema: dict[str, Any]) -> int:
         return 0
 
 
+def invitation_form_text(invitation: dict[str, Any]) -> str:
+    """A venue's live review form rendered as prompt text: every field with
+    its description, required/optional, length limit and score options."""
+    spec = _content_spec(invitation)
+    if not spec:
+        return ""
+    lines: list[str] = []
+    for field, schema in spec.items():
+        value = (schema or {}).get("value") or {}
+        param = value.get("param") or {}
+        desc = str((schema or {}).get("description") or "").strip()
+        bits = [f"- {field}"]
+        bits.append("(optional)" if param.get("optional") else "(required)")
+        enum = _enum_values(schema)
+        if enum:
+            bits.append("options: " + " | ".join(str(v) for v in enum[:24]))
+        limit = _max_length(schema)
+        if limit:
+            bits.append(f"max {limit} chars")
+        line = " ".join(bits)
+        if desc:
+            line += f"\n    {desc[:300]}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def build_review_content(
     invitation: dict[str, Any],
     review_md: str,
