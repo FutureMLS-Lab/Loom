@@ -93,6 +93,11 @@ function show(view) {
   for (const name of ['fleet', 'studio', 'paper']) {
     el(`view-${name}`).hidden = name !== view;
   }
+  if (view !== 'paper') {
+    // Leaving the paper view must detach the terminal - a hidden iframe
+    // would otherwise hold its PTY attach (and the tmux client) forever.
+    paneFrameSet('');
+  }
   if (changed) window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -1027,7 +1032,19 @@ function drawLegend(all, workCount, ideaCount) {
 // terminal; repeating it here would mean a second place to get input handling
 // wrong, and watching is the thing you actually want from this page.
 
+// The iframe's src is the PTY attach: setting it connects, blanking it
+// detaches. about:blank (not removeAttribute) is what reliably unloads.
+function paneFrameSet(url) {
+  const view = el('pane-view');
+  if (!view) return;
+  const current = view.getAttribute('src') || '';
+  const want = url || 'about:blank';
+  if (current !== want && !(current === '' && !url)) view.setAttribute('src', want);
+}
+
 function renderPane() {
+  // The view is Loom's Agent Terminal page in an iframe - the real thing,
+  // typing and Esc included - not a read-only capture.
   const status = el('pane-status');
   const view = el('pane-view');
   el('btn-open-loom').href = S.slug
@@ -1035,24 +1052,16 @@ function renderPane() {
     : '/';
   if (!S.pane) {
     view.hidden = true;
+    paneFrameSet('');
     status.textContent = 'No agent session yet — it starts when the author does.';
     return;
   }
-  status.textContent = S.paneFollow ? `Watching ${S.pane}` : `Session ${S.pane} — tick "live" to watch.`;
+  const live = S.paneFollow && S.view === 'paper';
+  paneFrameSet(live ? `/terminal?target=${encodeURIComponent(S.pane)}` : '');
+  status.textContent = S.paneFollow
+    ? `Live terminal on ${S.pane} — click it and type; Esc interrupts the agent.`
+    : `Session ${S.pane} — tick "live" for the interactive terminal.`;
   view.hidden = !S.paneFollow;
-}
-
-async function pollPane() {
-  if (S.paneFollow && S.pane && S.view === 'paper') {
-    try {
-      const d = await api(`/api/tmux/capture?target=${encodeURIComponent(S.pane)}&lines=60`);
-      const view = el('pane-view');
-      const atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 40;
-      view.textContent = d.text || '(the pane is empty)';
-      if (atBottom) view.scrollTop = view.scrollHeight;
-    } catch { /* the pane can die between polls; the next one will say so */ }
-  }
-  setTimeout(pollPane, 2000);
 }
 
 // ===== what the author wrote =====
@@ -1702,7 +1711,6 @@ el('btn-studio-create').addEventListener('click', async () => {
   readHash();
   loadFleet();
   startPolling();
-  pollPane();
   window.addEventListener('hashchange', readHash);
   document.addEventListener('keydown', (ev) => {
     // A modal owns Escape while it is open; clearing the graph selection

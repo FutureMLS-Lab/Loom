@@ -6500,8 +6500,14 @@ def make_handler(
                 "/review-factory.html",
                 "/rebuttal-factory",
                 "/rebuttal-factory.html",
+                "/terminal",
+                "/terminal.html",
             ):
-                if path.startswith("/rebuttal-factory"):
+                if path.startswith("/terminal"):
+                    # The Agent Terminal as its own page: the factory pages
+                    # iframe it to reuse the exact attach/input protocol.
+                    name = "terminal.html"
+                elif path.startswith("/rebuttal-factory"):
                     name = "rebuttal_factory.html"
                 elif path.startswith("/review-factory"):
                     name = "review_factory.html"
