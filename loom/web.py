@@ -3567,10 +3567,14 @@ class AgentActivityWatcher:
 
     POLL_SECONDS = 4.0
     RESCAN_SECONDS = 30.0
-    CAPTURE_LINES = 12
-    # Same confirmation the OpenClaw monitor uses: the working indicator
-    # flickers mid-turn, and a ring that blinks on every flicker is noise.
-    IDLE_CONFIRM = 3
+    # A short tail misses the working marker whenever the TUI floods the
+    # pane with tool output for a dozen seconds - the ring then flashed a
+    # false "finished" and cleared it on the next redraw. A deeper capture
+    # plus a longer confirmation makes a finish mean a real stop (~32s of
+    # sustained silence), at the cost of the blink arriving half a minute
+    # after the agent stops.
+    CAPTURE_LINES = 40
+    IDLE_CONFIRM = 8
 
     def __init__(self, registry: WebProjectRegistry) -> None:
         self.registry = registry
