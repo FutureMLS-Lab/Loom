@@ -252,7 +252,8 @@ function projectBadge(project) {
 function paperRow(project, studioId = '', ordinal = 0, conference = '') {
   const num = ordinal ? `<span class="rb-ordinal">${ordinal}</span>` : '';
   const conf = conference
-    ? `<span class="rb-pill rb-pill--conf" title="conference policy this paper answers under">${esc(conference)}</span>`
+    ? `<span class="rb-pill rb-pill--conf" ${studioId ? `data-studio-open="${esc(studioId)}" role="link" tabindex="0"` : ''}
+        title="${studioId ? 'open this conference’s policy studio' : 'conference policy this paper answers under'}">${esc(conference)}</span>`
     : '';
   return `<article class="rb-project" data-paper="${esc(project.id)}" data-studio="${esc(studioId)}">
     ${num}
@@ -312,34 +313,29 @@ async function loadFleet() {
     paperHost.querySelectorAll('[data-paper]').forEach((node) => {
       node.addEventListener('click', () => openPaper(node.dataset.paper, node.dataset.studio));
     });
+    paperHost.querySelectorAll('[data-studio-open]').forEach((pill) => {
+      pill.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        openStudio(pill.dataset.studioOpen);
+      });
+    });
   }
 
-  const host = el('studio-list');
-  if (!R.studios.length) {
-    host.innerHTML = '<div class="rb-card">No Conference Studios yet. Start one above.</div>';
-    return;
+  // Studios shrink to chips beside "Start a Conference Studio": one per
+  // conference cycle, colored by policy state, click to manage or add papers.
+  const chips = el('studio-chips');
+  if (chips) {
+    chips.innerHTML = R.studios.map((studio) => {
+      const cls = studio.policy_approved ? 'is-approved' : (studio.error ? 'is-blocked' : '');
+      const mark = studio.policy_approved ? '✓ ' : (studio.active_job ? '… ' : '');
+      return `<button type="button" class="rb-studio-chip ${cls}" data-studio="${esc(studio.id)}"
+        title="${esc(studio.policy_approved ? 'policy approved — open to add papers' : `stage: ${studio.stage}`)}">
+        ${mark}${esc(studio.title)} · ${esc(String(studio.papers || 0))}</button>`;
+    }).join('');
+    chips.querySelectorAll('[data-studio]').forEach((node) => {
+      node.addEventListener('click', () => openStudio(node.dataset.studio));
+    });
   }
-  host.innerHTML = R.studios.map((studio) => {
-    const badge = studio.active_job
-      ? `<span class="rb-pill rb-pill--live">${esc(studio.active_job)} running</span>`
-      : studio.policy_approved
-        ? '<span class="rb-pill rb-pill--ready">policy approved</span>'
-        : studio.error
-          ? '<span class="rb-pill rb-pill--bad">policy blocked</span>'
-          : `<span class="rb-pill">${esc(studio.stage)}</span>`;
-    return `<article class="rb-project" data-studio="${esc(studio.id)}">
-      <div>
-        <h3>${esc(studio.title)}</h3>
-        <p>${esc(studio.cfp_url || '')}</p>
-      </div>
-      <span class="rb-count">${esc(plural(Number(studio.papers || 0), 'paper'))}</span>
-      <span class="rb-count">${esc(studio.rebuttal_deadline || 'deadline unknown')}</span>
-      ${badge}
-    </article>`;
-  }).join('');
-  host.querySelectorAll('[data-studio]:not([data-paper])').forEach((node) => {
-    node.addEventListener('click', () => openStudio(node.dataset.studio));
-  });
 }
 
 async function createStudio() {

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Auto Rebuttal Factory</title>
-  <link rel="stylesheet" href="/static/rebuttal_factory.css?v=20260817-3" />
+  <link rel="stylesheet" href="/static/rebuttal_factory.css?v=20260817-5" />
 </head>
 <body>
 
@@ -62,6 +62,7 @@
         <h2>Start a Conference Studio</h2>
         <p>Step 1 is always official rebuttal-policy discovery and human approval.</p>
       </div>
+      <div class="rb-studio-chips" id="studio-chips"></div>
     </div>
     <div class="rb-import-grid">
       <label class="rb-field">
@@ -98,19 +99,10 @@
     <div class="rb-projects" id="paper-list"></div>
   </section>
 
-  <section class="rb-section">
-    <div class="rb-section-head">
-      <div>
-        <h2>Conference policies</h2>
-        <p>One Studio per conference cycle owns the approved policy. Open one to discover/approve its policy or add papers under it.</p>
-      </div>
-    </div>
-    <div class="rb-projects" id="studio-list"></div>
-  </section>
 </main>
 
 <main class="rb-main" id="view-studio" hidden>
-  <button type="button" class="rb-back" id="btn-studio-back">← All Conference Studios</button>
+  <button type="button" class="rb-back" id="btn-studio-back">← Back to papers</button>
 
   <section class="rb-project-head">
     <div>
@@ -428,6 +420,6 @@
   referrerpolicy="no-referrer"
   onerror="window.__loomMathJaxFailed=true;window.dispatchEvent(new Event('loom:mathjax-error'))"
 ></script>
-<script defer src="/static/rebuttal_factory.js?v=20260814-1"></script>
+<script defer src="/static/rebuttal_factory.js?v=20260817-5"></script>
 </body>
 </html>

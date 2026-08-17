@@ -134,6 +134,114 @@ def test_build_plan_without_forum_or_invitation(monkeypatch) -> None:
         )
 
 
+REVIEW_MD = """# Cursor Reviewer Panel
+
+# Reviewer: `model-a`
+
+## Summary
+
+The paper studies X.
+
+## Strengths
+
+- solid systems work
+
+## Weaknesses
+
+- causal claim unsupported
+
+## Questions for the authors
+
+- does it hold at 7B?
+
+## Limitations and ethics
+
+None beyond compute.
+"""
+
+REVIEW_INVITATION = {
+    "id": "AConf.cc/2027/Conference/Submission7/-/Official_Review",
+    "edit": {
+        "signatures": {
+            "param": {
+                "items": [
+                    {"value": "AConf.cc/2027/Conference/Submission7/Reviewer_gZk1"},
+                ]
+            }
+        },
+        "note": {
+            "content": {
+                "summary": {"value": {"param": {"type": "string"}}},
+                "strengths_and_weaknesses": {"value": {"param": {"type": "string", "maxLength": 200000}}},
+                "questions": {"value": {"param": {"type": "string"}}},
+                "rating": {"value": {"param": {"enum": [
+                    "1: strong reject", "3: reject", "5: borderline", "8: accept",
+                ]}}},
+                "confidence": {"value": {"param": {"enum": ["1", "3", "5"]}}},
+                "code_of_conduct": {"value": {"param": {"enum": ["Yes"]}}},
+                "flag": {"value": {"param": {"type": "string", "optional": True}}},
+            }
+        },
+    },
+}
+
+
+def test_markdown_sections_parse() -> None:
+    sections = ors.markdown_sections(REVIEW_MD)
+    assert sections["summary"] == "The paper studies X."
+    assert "causal claim" in sections["weaknesses"]
+    assert "7B" in sections["questions for the authors"]
+
+
+def test_build_review_content_fills_a_venue_form() -> None:
+    content, mapping = ors.build_review_content(
+        REVIEW_INVITATION, REVIEW_MD, {"rating": 3, "confidence": 5}, headline="reject 3/10"
+    )
+    assert content["summary"]["value"] == "The paper studies X."
+    assert "Strengths" in content["strengths_and_weaknesses"]["value"]
+    assert "causal claim" in content["strengths_and_weaknesses"]["value"]
+    assert content["questions"]["value"].startswith("- does it hold")
+    assert content["rating"]["value"] == "3: reject"
+    assert content["confidence"]["value"] == "5"
+    assert content["code_of_conduct"]["value"] == "Yes"
+    assert "flag" not in content
+    assert any(m.startswith("rating") for m in mapping)
+
+
+def test_build_review_content_picks_nearest_enum() -> None:
+    content, _ = ors.build_review_content(
+        REVIEW_INVITATION, REVIEW_MD, {"rating": 4, "confidence": 2}
+    )
+    assert content["rating"]["value"] in ("3: reject", "5: borderline")
+    assert content["confidence"]["value"] in ("1", "3")
+
+
+def test_build_review_content_refuses_unfillable_required_field() -> None:
+    invitation = {
+        "edit": {"note": {"content": {
+            "summary": {"value": {"param": {"type": "string"}}},
+            "reviewer_expertise_statement": {"value": {"param": {"type": "string"}}},
+        }}}
+    }
+    with pytest.raises(ValueError, match="reviewer_expertise_statement"):
+        ors.build_review_content(invitation, REVIEW_MD, {})
+
+
+def test_pick_reviewer_signature() -> None:
+    assert ors.pick_reviewer_signature(REVIEW_INVITATION).endswith("Reviewer_gZk1")
+    # The Authors-only Official_Comment invitation offers a Reviewer_* PREFIX
+    # pattern but no concrete reviewer group - patterns are never signable.
+    assert ors.pick_reviewer_signature(INVITATION) == ""
+
+
+def test_review_invitation_selects_signable(monkeypatch) -> None:
+    monkeypatch.setattr(
+        ors, "reply_invitations", lambda forum, token: [INVITATION, REVIEW_INVITATION]
+    )
+    picked = ors.review_invitation("f", "tok")
+    assert picked is REVIEW_INVITATION
+
+
 def test_execute_plan_posts_each_item_and_isolates_failures(monkeypatch) -> None:
     calls = []
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -269,6 +270,63 @@ def list_projects() -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+_RUN_NAME_RE = re.compile(r"^[0-9][0-9T.:Z\-]{7,39}$")
+RUN_FILES = ("review.md", "panel.json")
+
+
+def list_runs(project_id: str) -> list[dict[str, Any]]:
+    """Every persisted panel run for a project, newest first."""
+    source = _source_for(project_id)
+    if source is None:
+        return []
+    runs_dir = output_root(source) / "reviews"
+    out: list[dict[str, Any]] = []
+    if not runs_dir.is_dir():
+        return out
+    for entry in sorted(runs_dir.iterdir(), reverse=True):
+        if not entry.is_dir() or not _RUN_NAME_RE.match(entry.name):
+            continue
+        panel = _read_json(entry / "panel.json", {})
+        out.append(
+            {
+                "run": entry.name,
+                "scores": panel.get("scores") or {},
+                "headline": str(panel.get("headline") or ""),
+                "deciding_model": str(panel.get("deciding_model") or ""),
+                "models": panel.get("models") or [],
+                "has_review": (entry / "review.md").is_file(),
+            }
+        )
+    return out
+
+
+def run_file(project_id: str, run: str, name: str) -> Path | None:
+    """A run artifact's path, or None - names and run ids are whitelisted so
+    nothing outside the project's own review-output can be served."""
+    if name not in RUN_FILES or not _RUN_NAME_RE.match(str(run or "")):
+        return None
+    source = _source_for(project_id)
+    if source is None:
+        return None
+    path = output_root(source) / "reviews" / run / name
+    return path if path.is_file() else None
+
+
+def review_text(project_id: str, run: str = "") -> str:
+    """The assembled review.md of a run (latest when *run* is empty)."""
+    if not run:
+        state = read_state(project_id)
+        latest = state.get("latest_review") or {}
+        run = Path(str(latest.get("path") or "")).name
+    path = run_file(project_id, run, "review.md")
+    if path is None:
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def _rubric_text(state: dict[str, Any]) -> str:

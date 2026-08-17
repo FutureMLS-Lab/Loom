@@ -27,6 +27,39 @@
       background: var(--rf-bg-1); border: 1px solid var(--rf-line); border-radius: 10px;
       color: var(--rf-dim);
     }
+    /* One project = one clean line: big score, title, quiet meta. */
+    .rv-head { align-items: center; gap: 14px; }
+    .rv-score {
+      flex: none; width: 46px; height: 46px; border-radius: 12px;
+      display: grid; place-items: center;
+      font: 800 19px/1 system-ui; letter-spacing: -0.02em;
+      border: 1px solid var(--rf-line); color: var(--rf-faint); background: var(--rf-bg-2);
+    }
+    .rv-score small { font: 700 9px/1 system-ui; opacity: 0.7; margin-top: 1px; }
+    .rv-score--bad  { color: #b42318; background: #fee4e2; border-color: #fecdca; }
+    .rv-score--mid  { color: #b54708; background: #fef0c7; border-color: #fedf89; }
+    .rv-score--good { color: #067647; background: #dcfae6; border-color: #abefc6; }
+    .rv-title-wrap { min-width: 0; flex: 1; }
+    .rv-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+    .rv-when { font-size: 11px; color: var(--rf-faint); }
+    .rv-verdict { font: 700 11px system-ui; text-transform: capitalize; }
+    .rv-verdict--bad { color: #b42318; }
+    .rv-verdict--mid { color: #b54708; }
+    .rv-verdict--good { color: #067647; }
+    .rv-run {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 8px 10px; margin-top: 8px;
+      border: 1px solid var(--rf-line); border-radius: 10px; background: var(--rf-bg-2);
+      font-size: 12px;
+    }
+    .rv-run__stamp { color: var(--rf-faint); font-family: var(--rf-mono); font-size: 11px; }
+    .rv-run__spacer { flex: 1; }
+    .rv-run a { text-decoration: none; }
+    .rv-field-preview {
+      flex: 1; min-width: 200px; color: var(--rf-dim); font-size: 11.5px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .rv-or { margin-top: 14px; border-top: 1px dashed var(--rf-line); }
     @media (max-width: 780px) { .rv-new, .rv-reviewers { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -154,6 +187,6 @@
 
 <div class="rf-toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/review_factory.js?v=20260815-2"></script>
+<script src="/static/review_factory.js?v=20260817-5"></script>
 </body>
 </html>

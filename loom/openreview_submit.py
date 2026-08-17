@@ -266,6 +266,164 @@ def build_plan(
     }
 
 
+# --- Filling a venue's Official_Review form -----------------------------------
+#
+# The panel's review.md is structured (## Summary / Strengths / Weaknesses /
+# Questions / Limitations, plus a scores block mirroring the OpenReview
+# rubric), so most venue forms can be filled field-by-field from it. Anything
+# the mapping cannot fill honestly is reported back as an error - a real
+# venue form never gets placeholder junk.
+
+_SECTION_FIELD_MAP = {
+    "summary": ("summary",),
+    "strengths": ("strengths",),
+    "weaknesses": ("weaknesses",),
+    "questions": ("questions for the authors", "questions"),
+    "limitations": ("limitations and ethics", "limitations"),
+}
+_FULL_TEXT_FIELDS = ("review", "main_review", "detailed_comments", "comments")
+_SCORE_FIELDS = ("rating", "confidence", "soundness", "presentation", "contribution")
+
+
+def markdown_sections(md: str) -> dict[str, str]:
+    """``## Heading`` blocks of a review, keyed by lower-cased heading."""
+    out: dict[str, str] = {}
+    current = ""
+    lines: list[str] = []
+    for line in str(md or "").splitlines():
+        m = re.match(r"^##\s+(.+?)\s*$", line)
+        if m:
+            if current:
+                out[current] = "\n".join(lines).strip()
+            current = m.group(1).strip().lower()
+            lines = []
+        elif current:
+            lines.append(line)
+    if current:
+        out[current] = "\n".join(lines).strip()
+    return out
+
+
+def pick_reviewer_signature(invitation: dict[str, Any]) -> str:
+    """The concrete reviewer group this invitation lets us sign as, or ''."""
+    for option in _signature_options(invitation):
+        if ("Reviewer" in option or "AnonReviewer" in option) and not any(
+            ch in option for ch in "*{}$"
+        ):
+            return option
+    return ""
+
+
+def review_invitation(forum_id: str, token: str) -> dict[str, Any] | None:
+    """The open Official_Review invitation the signed-in reviewer can use."""
+    for inv in reply_invitations(forum_id, token):
+        if str(inv.get("id") or "").endswith("/Official_Review") and pick_reviewer_signature(inv):
+            return inv
+    return None
+
+
+def _enum_values(schema: dict[str, Any]) -> list[Any]:
+    param = ((schema or {}).get("value") or {}).get("param") or {}
+    values = param.get("enum") or []
+    if not values and isinstance(param.get("items"), list):
+        values = [i.get("value") for i in param["items"] if isinstance(i, dict)]
+    return [v for v in values if v is not None]
+
+
+def _leading_int(value: Any) -> int | None:
+    m = re.match(r"\s*(\d+)", str(value))
+    return int(m.group(1)) if m else None
+
+
+def _pick_enum(values: list[Any], want: Any) -> Any:
+    """The enum option matching a panel score - exact leading number first,
+    else the numerically closest, else None."""
+    want_n = _leading_int(want)
+    if want_n is None:
+        return None
+    numbered = [(v, _leading_int(v)) for v in values]
+    numbered = [(v, n) for v, n in numbered if n is not None]
+    if not numbered:
+        return None
+    return min(numbered, key=lambda vn: abs(vn[1] - want_n))[0]
+
+
+def _max_length(schema: dict[str, Any]) -> int:
+    param = ((schema or {}).get("value") or {}).get("param") or {}
+    try:
+        return int(param.get("maxLength") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def build_review_content(
+    invitation: dict[str, Any],
+    review_md: str,
+    scores: dict[str, Any],
+    headline: str = "",
+) -> tuple[dict[str, Any], list[str]]:
+    """Fill the invitation's review form from the panel report.
+
+    Returns ``(content, mapping)`` where mapping says what went where; raises
+    on a required field the report cannot fill honestly.
+    """
+    spec = _content_spec(invitation)
+    if not spec:
+        raise ValueError("invitation carries no content schema")
+    sections = markdown_sections(review_md)
+    content: dict[str, Any] = {}
+    mapping: list[str] = []
+
+    def put(field: str, value: Any, how: str) -> None:
+        content[field] = {"value": value}
+        mapping.append(f"{field} <- {how}")
+
+    for field, schema in spec.items():
+        key = field.lower()
+        enum = _enum_values(schema)
+        optional = bool(((schema or {}).get("value") or {}).get("param", {}).get("optional"))
+
+        if key in _SCORE_FIELDS and enum:
+            choice = _pick_enum(enum, scores.get(key))
+            if choice is not None:
+                put(field, choice, f"panel {key}={scores.get(key)}")
+                continue
+        if enum and len(enum) == 1:
+            # Single-option enums are acknowledgements (code of conduct etc.).
+            put(field, enum[0], "single-option acknowledgement")
+            continue
+        section_names = _SECTION_FIELD_MAP.get(key)
+        if section_names:
+            text = next((sections[n] for n in section_names if sections.get(n)), "")
+            if text:
+                limit = _max_length(schema)
+                put(field, text[: limit or len(text)], f"review section '{section_names[0]}'")
+                continue
+        if key == "strengths_and_weaknesses":
+            text = "\n\n".join(
+                f"**{n.title()}**\n\n{sections[n]}"
+                for n in ("strengths", "weaknesses")
+                if sections.get(n)
+            )
+            if text:
+                limit = _max_length(schema)
+                put(field, text[: limit or len(text)], "strengths + weaknesses sections")
+                continue
+        if key in _FULL_TEXT_FIELDS:
+            limit = _max_length(schema)
+            put(field, review_md[: limit or len(review_md)], "full panel review")
+            continue
+        if key == "title":
+            put(field, (headline or "Three-model panel review")[:200], "headline")
+            continue
+        if not optional:
+            raise ValueError(
+                f"venue form requires field {field!r} the panel report cannot fill - "
+                "download review.md and submit that field by hand"
+            )
+    return content, mapping
+
+
 # --- Posting ------------------------------------------------------------------
 
 

@@ -95,20 +95,28 @@ function renderProjects() {
   }
   host.innerHTML = S.projects.map((p) => {
     const opened = S.open.has(p.id);
+    const rated = p.rating != null;
+    const grade = !rated ? 'none' : (p.rating >= 7 ? 'good' : (p.rating >= 5 ? 'mid' : 'bad'));
+    const verdict = (p.headline || '').split('·').map((s) => s.trim())
+      .find((s) => /^(accept|reject|borderline|weak)/i.test(s)) || '';
     return `<article class="rf-studio rv-project" data-id="${esc(p.id)}">
-      <div class="rf-studio__head" data-open="${esc(p.id)}" tabindex="0" role="button"
-           aria-label="Toggle reports for ${esc(p.title)}">
-        <div>
+      <div class="rf-studio__head rv-head" data-open="${esc(p.id)}" tabindex="0" role="button"
+           title="${esc(p.source_path)}" aria-label="Toggle reports for ${esc(p.title)}">
+        <div class="rv-score rv-score--${grade}">${rated ? esc(p.rating) : '·'}<small>/10</small></div>
+        <div class="rv-title-wrap">
           <div class="rf-studio__name">${esc(p.title)}</div>
-          <div class="rf-studio__meta">${esc(p.source_path)} · ${esc(String(p.venue || '').toUpperCase())}${p.reviewed_at ? ` · reviewed ${esc(p.reviewed_at.slice(0, 16).replace('T', ' '))}` : ''}</div>
-          ${p.headline ? `<div class="rf-studio__meta">${esc(p.headline)}</div>` : ''}
+          <div class="rv-meta">
+            <span class="rf-pill">${esc(String(p.venue || '').toUpperCase())}</span>
+            ${verdict ? `<span class="rv-verdict rv-verdict--${grade}">${esc(verdict)}</span>` : ''}
+            ${p.reviewed_at ? `<span class="rv-when">reviewed ${esc(p.reviewed_at.slice(0, 16).replace('T', ' '))}</span>` : '<span class="rv-when">not reviewed yet</span>'}
+          </div>
           ${p.error ? `<div class="rf-studio__meta" style="color:var(--rf-bad)">${esc(p.error)}</div>` : ''}
         </div>
         <div class="rf-section__actions">
-          ${statusPill(p)}
+          ${p.status === 'running' ? statusPill(p) : ''}
           <button type="button" class="rf-btn rf-btn--sm" data-run="${esc(p.id)}"
                   ${p.status === 'running' ? 'disabled title="already reviewing"' : ''}>
-            ${p.rating != null ? 'Review again' : 'Run review'}</button>
+            ${rated ? 'Review again' : 'Run review'}</button>
           <button type="button" class="rf-btn rf-btn--sm rf-btn--ghost" data-del="${esc(p.id)}"
                   title="Unregister; files and reports stay on disk">×</button>
         </div>
@@ -166,31 +174,127 @@ function renderOpenStates() {
   });
 }
 
+function runRow(id, run, isLatest) {
+  const scores = run.scores || {};
+  const chips = ['rating', 'confidence']
+    .filter((k) => scores[k] != null)
+    .map((k) => `<span class="rf-pill">${esc(k)} ${esc(scores[k])}</span>`).join(' ');
+  const base = `/api/review/projects/${encodeURIComponent(id)}/runs/${encodeURIComponent(run.run)}`;
+  return `<div class="rv-run">
+    <span class="rv-run__stamp">${esc(run.run.slice(0, 16).replace('T', ' '))}${isLatest ? ' · latest' : ''}</span>
+    ${chips}
+    <span class="rv-run__spacer"></span>
+    <a class="rf-btn rf-btn--sm" href="${base}/review.md?dl=1">⬇ review.md</a>
+    <a class="rf-btn rf-btn--sm rf-btn--ghost" href="${base}/panel.json?dl=1">⬇ panel.json</a>
+  </div>`;
+}
+
+function openreviewBox(id, state) {
+  const src = String(state.source_url || '');
+  if (!/openreview\.net/.test(src)) return '';
+  const done = state.openreview_review || null;
+  return `<div class="rv-or" data-or="${esc(id)}">
+    <div class="rf-section__head" style="margin:14px 0 6px">
+      <h3 style="margin:0">Fill the OpenReview form</h3>
+      <span class="rf-hint" data-or-auth>…</span>
+    </div>
+    ${done ? `<p class="rf-hint">Already submitted ${esc(String(done.at || '').slice(0, 16))} as ${esc(done.signature || '')} (note ${esc(done.note_id || '')}).</p>` : ''}
+    <p class="rf-hint">Maps the panel report onto the venue's Official_Review fields (summary, strengths &amp; weaknesses, questions, rating, confidence). You must be an assigned reviewer; nothing posts without the confirm.</p>
+    <div class="rf-section__actions" style="justify-content:flex-start; gap:8px">
+      <button type="button" class="rf-btn rf-btn--sm" data-or-preview="${esc(id)}">Preview form</button>
+      <button type="button" class="rf-btn rf-btn--sm rf-btn--danger" data-or-submit="${esc(id)}" disabled
+              title="preview first">Confirm — submit review</button>
+    </div>
+    <p class="rf-hint" data-or-status></p>
+    <div data-or-plan></div>
+  </div>`;
+}
+
+async function orAuthLabel(node) {
+  try {
+    const auth = await api('/api/openreview/auth');
+    node.textContent = auth.logged_in
+      ? `signed in as ${auth.user}`
+      : 'not signed in — use the Rebuttal Factory sign-in once, it is shared';
+    return !!auth.logged_in;
+  } catch { node.textContent = 'auth check failed'; return false; }
+}
+
+function wireOpenreviewBox(id) {
+  const box = document.querySelector(`.rv-or[data-or="${CSS.escape(id)}"]`);
+  if (!box) return;
+  const status = box.querySelector('[data-or-status]');
+  const plan = box.querySelector('[data-or-plan]');
+  const submitBtn = box.querySelector('[data-or-submit]');
+  orAuthLabel(box.querySelector('[data-or-auth]'));
+  box.querySelector('[data-or-preview]').addEventListener('click', async () => {
+    status.textContent = 'Reading the venue form…';
+    try {
+      const d = await api(`/api/review/projects/${id}/submit-openreview`, { method: 'POST', body: '{}' });
+      plan.innerHTML = `
+        <p class="rf-hint">forum <b>${esc(d.forum)}</b> · invitation <b>${esc(d.invitation)}</b> · signing as <b>${esc(d.signature)}</b></p>
+        ${(d.fields || []).map((f) => `<div class="rv-run"><span class="rf-pill">${esc(f.field)}</span>
+          <span class="rv-run__stamp">${esc(String(f.chars))} chars</span>
+          <span class="rv-field-preview">${esc(f.preview)}</span></div>`).join('')}`;
+      status.textContent = 'Dry run only — nothing posted yet.';
+      submitBtn.disabled = false;
+      submitBtn.title = '';
+    } catch (err) { status.textContent = err.message; submitBtn.disabled = true; }
+  });
+  submitBtn.addEventListener('click', async () => {
+    if (!confirm('Submit this review to the PUBLIC OpenReview forum now? This cannot be undone.')) return;
+    status.textContent = 'Submitting…';
+    try {
+      const d = await api(`/api/review/projects/${id}/submit-openreview`, {
+        method: 'POST', body: JSON.stringify({ confirm: true }),
+      });
+      status.textContent = `Submitted — note ${d.note_id || '(id unknown)'}.`;
+      submitBtn.disabled = true;
+      toast('Official review submitted to OpenReview.');
+      S.fp = '';
+      fillDetail(id);
+    } catch (err) { status.textContent = err.message; }
+  });
+}
+
 async function fillDetail(id) {
   const node = document.querySelector(`.rv-detail[data-detail="${CSS.escape(id)}"]`);
   if (!node || !S.open.has(id)) return;
   let d;
   try { d = await api(`/api/review/projects/${id}`); }
   catch (err) { node.innerHTML = `<p class="rf-hint">${esc(err.message)}</p>`; return; }
-  const latest = (d.state || {}).latest_review;
-  if (!latest) {
+  const state = d.state || {};
+  const latest = state.latest_review;
+  const runs = d.runs || [];
+  if (!latest && !runs.length) {
     node.innerHTML = '<p class="rf-hint" style="margin-top:10px">No report yet — run the review.</p>';
     return;
   }
-  const scores = latest.scores || {};
+  const scores = (latest && latest.scores) || {};
   const chips = Object.entries(scores)
     .map(([k, v]) => `<span class="rf-pill">${esc(k)} ${esc(v)}</span>`).join(' ');
-  let text = '';
-  try {
-    const md = latest.reviewers && latest.reviewers.length
-      ? latest.reviewers.map((r) => `# ${r.model}\n\n${r.review || ''}`).join('\n\n---\n\n')
-      : '';
-    text = md;
-  } catch { /* keep empty */ }
+  const latestRun = latest ? Path_name(latest.path) : '';
   node.innerHTML = `
     <div class="rv-scores">${chips}</div>
-    ${reviewerCards(latest)}
-    ${text ? `<pre class="rv-review-text">${esc(text.slice(0, 60000))}</pre>` : ''}`;
+    ${reviewerCards(latest || {})}
+    <div class="rv-runs">${runs.map((r) => runRow(id, r, r.run === latestRun)).join('')}</div>
+    ${openreviewBox(id, state)}
+    <pre class="rv-review-text" data-md>loading review…</pre>`;
+  wireOpenreviewBox(id);
+  try {
+    const res = await fetch(`/api/review/projects/${id}/runs/${encodeURIComponent(latestRun || (runs[0] || {}).run || '')}/review.md`);
+    const md = res.ok ? await res.text() : '';
+    const pre = node.querySelector('[data-md]');
+    if (pre) {
+      if (md) pre.textContent = md.slice(0, 120000);
+      else pre.remove();
+    }
+  } catch { const pre = node.querySelector('[data-md]'); if (pre) pre.remove(); }
+}
+
+function Path_name(p) {
+  const parts = String(p || '').split('/');
+  return parts[parts.length - 1] || '';
 }
 
 el('btn-create').addEventListener('click', async () => {

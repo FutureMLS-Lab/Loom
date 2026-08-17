@@ -81,6 +81,20 @@ a.fx-switch__item:hover {
 .fx-switch__item--rebuttal.fx-switch__item--on, a.fx-switch__item--rebuttal:hover { color: #e11d48; }
 a.fx-switch__item--home:hover { color: var(--rb-text); }
 .fx-switch__sep { width: 1px; height: 16px; background: var(--rb-line); margin: 0 3px; }
+
+.rb-studio-chips { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.rb-studio-chip {
+  border: 1px solid var(--rb-line-strong);
+  border-radius: 999px;
+  background: var(--rb-soft);
+  color: var(--rb-dim);
+  font: 700 11px system-ui;
+  padding: 4px 11px;
+  cursor: pointer;
+}
+.rb-studio-chip:hover { border-color: var(--rb-accent); color: var(--rb-accent); }
+.rb-studio-chip.is-approved { color: var(--rb-good); border-color: #a9dfc2; background: var(--rb-good-soft); }
+.rb-studio-chip.is-blocked { color: var(--rb-bad); border-color: #efbcc7; background: var(--rb-bad-soft); }
 @media (max-width: 900px) {
   .rb-brand small { display: none; }
   .fx-switch__item > span { display: none; }
