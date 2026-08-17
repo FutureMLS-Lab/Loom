@@ -5818,3 +5818,83 @@ async function loadWorkspace() {
     toast(e.message, { type: 'error' });
   }
 })();
+
+
+/* ---- Loom server switcher -------------------------------------------------
+   Every machine runs its own Loom and serves its own console, so "switching"
+   means going to the other one's address; nothing is fetched across origins
+   and each keeps its own token. The list lives in this browser, because no
+   one server owns it.
+--------------------------------------------------------------------------- */
+(function () {
+  var KEY = 'loom.servers.v1';
+  var el = document.getElementById('server-switch');
+  if (!el) return;
+
+  function here() { return window.location.origin.replace(/\/$/, ''); }
+  function label(url) {
+    try { return new URL(url).host; } catch (e) { return url; }
+  }
+  function load() {
+    var list = [];
+    try { list = JSON.parse(localStorage.getItem(KEY) || '[]'); } catch (e) { list = []; }
+    if (!Array.isArray(list)) { list = []; }
+    list = list.filter(function (s) { return s && s.url; });
+    // Always know where you are, even before anything has been added.
+    if (!list.some(function (s) { return s.url === here(); })) {
+      list.unshift({ name: label(here()), url: here() });
+    }
+    return list;
+  }
+  function save(list) {
+    try { localStorage.setItem(KEY, JSON.stringify(list)); } catch (e) {}
+  }
+  function render() {
+    var list = load();
+    el.innerHTML = '';
+    list.forEach(function (s) {
+      var o = document.createElement('option');
+      o.value = s.url;
+      o.textContent = (s.url === here() ? '\u25CF ' : '\u25CB ') + (s.name || label(s.url));
+      if (s.url === here()) { o.selected = true; }
+      el.appendChild(o);
+    });
+    var sep = document.createElement('option');
+    sep.disabled = true;
+    sep.textContent = '\u2500\u2500\u2500\u2500\u2500\u2500';
+    el.appendChild(sep);
+    var add = document.createElement('option');
+    add.value = '__add';
+    add.textContent = 'Add a Loom\u2026';
+    el.appendChild(add);
+    if (list.length > 1) {
+      var drop = document.createElement('option');
+      drop.value = '__forget';
+      drop.textContent = 'Forget this one\u2026';
+      el.appendChild(drop);
+    }
+  }
+  el.addEventListener('change', function () {
+    var value = el.value;
+    if (value === '__add') {
+      var url = (window.prompt('Address of the other Loom\n\ne.g. http://192.168.1.20:8765', 'http://') || '').trim();
+      render();
+      if (!url) { return; }
+      url = url.replace(/\/$/, '');
+      var name = (window.prompt('A name for it', label(url)) || label(url)).trim();
+      var list = load();
+      if (!list.some(function (s) { return s.url === url; })) { list.push({ name: name, url: url }); }
+      save(list);
+      render();
+      return;
+    }
+    if (value === '__forget') {
+      save(load().filter(function (s) { return s.url !== here(); }));
+      render();
+      return;
+    }
+    if (value && value !== here()) { window.location.href = value; return; }
+    render();
+  });
+  render();
+})();
