@@ -130,11 +130,13 @@ loom web --project /path --openclaw \
 ## Going deeper
 
 - **[AGENT.md](AGENT.md)** — one-file deploy runbook an agent can execute.
-- **[docs/REFERENCE.md](docs/REFERENCE.md)** — the long version: full task
-  flow, every UI control, task types, AR pipeline internals, OpenClaw setup,
-  storage layout.
 - **[docs/API.md](docs/API.md)** — the HTTP API contract every client speaks
-  (console, desktop, mobile, OpenClaw agents, your scripts).
+  (console, desktop, mobile, OpenClaw agents, your scripts), plus where
+  everything lives on disk.
+- **[docs/PAPER-PIPELINE.md](docs/PAPER-PIPELINE.md)** — how a paper actually
+  gets written: studio steps, gates, the readiness gate, the reviewer panel.
+- **[docs/OPENCLAW.md](docs/OPENCLAW.md)** — notifications in Slack and
+  replying to agents from there.
 - **[docs/research-factory/arch.md](docs/research-factory/arch.md)** and
   **[docs/rebuttal-factory/arch.md](docs/rebuttal-factory/arch.md)** — each
   factory's full pipeline flowchart and module map, with its debt ledger

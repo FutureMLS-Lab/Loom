@@ -187,4 +187,35 @@ fetch rides the token, which also skips OpenReview's datacenter-IP challenge.
 
 `/api/kernel/*` drives the optional Kernel Hub evaluator: `interview`,
 `prepare`, `runs` (+ per-run `log`, `leaderboard`, `judge`, `best-kernel`,
-`stop`), `plugins`, `service`. See `docs/LOOM_CODEBASE_ARCHITECTURE.md`.
+`stop`), `plugins`, `service`. The evaluator bundle ships in the source tree
+but not the installed package — point `LOOM_KERNEL_HUB_DIR` at a checkout's
+`loom/kernel_hub`. See `docs/LOOM_CODEBASE_ARCHITECTURE.md`.
+
+## Where things live on disk
+
+```
+<project>/.RUD/
+├── NOTES.md              # project-scoped scratch (📓 Notes button)
+├── MEMORY.md             # lessons agents append when tasks finish
+├── task-order.json
+└── <slug>/
+    ├── task.json         # title, goal, agent, skills, worktrees, sessions
+    ├── PLAN.md           # done / results / to-do
+    ├── monitor.json      # run-monitor state (only if used)
+    ├── ar.json           # only for Factory (AR) tasks
+    ├── rounds/round-NN/  # author notes, readiness reports, panel reviews
+    └── work/<repo>/…     # git worktree, branch zhongzhu/<slug>
+
+~/.loom/
+├── web-projects.json     # registered project paths
+├── openreview-auth.json  # cached OpenReview token (0600; never the password)
+├── review-projects.json  # Review Factory registry
+└── factories/
+    ├── review/<venue>/<paper>/       # fetched papers + review-output/reviews/<run>/
+    └── rebuttal/<studio>/<paper>/    # fetched forum packages (+ staged quick imports)
+
+~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl   # agent transcripts
+```
+
+Factory (AR) tasks live in their own always-registered project (`~/ar` by
+default, `LOOM_AR_ROOT` moves it) rather than inside a code repo.
