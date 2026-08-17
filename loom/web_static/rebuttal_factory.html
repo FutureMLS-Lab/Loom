@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Auto Rebuttal Factory</title>
-  <link rel="stylesheet" href="/static/rebuttal_factory.css?v=20260817-7" />
+  <link rel="stylesheet" href="/static/rebuttal_factory.css?v=20260817-8" />
 </head>
 <body>
 
@@ -63,6 +63,17 @@
         <p>Venue and year are read off the submission itself; the Conference Studio is found or created, official policy discovery runs, and the paper package (PDF + every official review) is fetched. You approve the policy once — the paper joins and the rebuttal agent starts by itself.</p>
       </div>
       <div class="rb-studio-chips" id="studio-chips"></div>
+    </div>
+    <div class="rb-import-grid rb-import-grid--paper" id="quick-login-row">
+      <label class="rb-field">
+        <span>OpenReview email <em id="quick-or-state">required — OpenReview blocks anonymous fetches from this host</em></span>
+        <input type="email" id="quick-or-user" autocomplete="username" placeholder="you@lab.org" />
+      </label>
+      <label class="rb-field">
+        <span>Password <em>exchanged for a token, never stored</em></span>
+        <input type="password" id="quick-or-pass" autocomplete="current-password" />
+      </label>
+      <button type="button" class="rb-btn" id="btn-quick-or-login">Sign in</button>
     </div>
     <div class="rb-import-grid rb-import-grid--paper">
       <label class="rb-field rb-field--wide">
@@ -431,6 +442,6 @@
   referrerpolicy="no-referrer"
   onerror="window.__loomMathJaxFailed=true;window.dispatchEvent(new Event('loom:mathjax-error'))"
 ></script>
-<script defer src="/static/rebuttal_factory.js?v=20260817-7"></script>
+<script defer src="/static/rebuttal_factory.js?v=20260817-8"></script>
 </body>
 </html>

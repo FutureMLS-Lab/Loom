@@ -1256,6 +1256,35 @@ el('btn-refresh').addEventListener('click', () => {
 el('btn-studio-back').addEventListener('click', openFleet);
 
 /* ---- quick import: one OpenReview link -> studio + policy job + package -- */
+async function quickAuthRefresh() {
+  const row = el('quick-login-row');
+  const state = el('quick-or-state');
+  try {
+    const auth = await api('/api/openreview/auth');
+    if (auth.logged_in) {
+      row.hidden = true;
+      return true;
+    }
+    row.hidden = false;
+    state.textContent = 'required — OpenReview blocks anonymous fetches from this host';
+    return false;
+  } catch { return false; }
+}
+el('btn-quick-or-login').addEventListener('click', async () => {
+  const username = el('quick-or-user').value.trim();
+  const password = el('quick-or-pass').value;
+  const status = el('quick-status');
+  if (!username || !password) { status.textContent = 'Email and password are required.'; return; }
+  status.textContent = 'Signing in to OpenReview…';
+  try {
+    await api('/api/openreview/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+    el('quick-or-pass').value = '';
+    status.textContent = 'Signed in — imports will ride this session.';
+    await quickAuthRefresh();
+  } catch (error) { status.textContent = error.message; }
+});
+quickAuthRefresh();
+
 el('btn-quick-import').addEventListener('click', async () => {
   const url = el('quick-url').value.trim();
   const status = el('quick-status');

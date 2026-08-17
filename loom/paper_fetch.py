@@ -29,19 +29,28 @@ OPENREVIEW_API = "https://api2.openreview.net"
 
 def _fetch(url: str, limit: int, timeout: int = 60) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": _UA})
+    if "openreview.net" in url:
+        # A signed-in session skips OpenReview's datacenter-IP challenge
+        # outright (the challenge page says so itself), so ride the cached
+        # token whenever the user has signed in.
+        from loom.openreview_submit import cached_auth
+
+        auth = cached_auth()
+        if auth:
+            request.add_header("Authorization", f"Bearer {auth['token']}")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = response.read(limit + 1)
     except urllib.error.HTTPError as exc:
         if exc.code == 403 and "openreview" in url:
-            # OpenReview fronts scripted requests from datacenter IPs with a
-            # browser challenge. Passing it once in a real browser (same
-            # egress IP) unlocks the API for a while.
+            # OpenReview challenges anonymous requests from datacenter IPs.
+            # Signing in is the reliable way through: the login endpoint is
+            # exempt, and authenticated requests skip the check.
             raise ValueError(
-                "OpenReview requires a one-time browser challenge from this "
-                "host's IP. Open https://openreview.net in a browser routed "
-                "through this machine, then retry - or paste a direct PDF "
-                "link instead."
+                "OpenReview blocks anonymous requests from this host's IP. "
+                "Sign in to OpenReview (the sign-in box on the Rebuttal "
+                "Factory page) and retry - a signed-in session skips the "
+                "check. A direct PDF link works too."
             ) from exc
         raise
     if len(data) > limit:
