@@ -6266,8 +6266,44 @@ def make_handler(
                 if not idea_ids:
                     return {"ok": False, "error": "select at least one idea"}, 400
                 spawned, errors = _ar_spawn_children(root, slug, state, idea_ids)
+                # Spawning used to stop at the draft gate and wait for a manual
+                # "Start the draft" per paper. Operators want a studio's picks to
+                # begin writing immediately, so kick off each freshly spawned
+                # paper's author loop here (same seed + start the draft action
+                # runs). Papers that fail to start are reported, not fatal.
+                started: list[str] = []
+                for item in spawned:
+                    child = str(item.get("slug") or "")
+                    if not child:
+                        continue
+                    try:
+                        cstate = ar.read_ar_state(root, child)
+                        paper_dir = ar.paper_root(root, child)
+                        if not (paper_dir / "main.tex").is_file():
+                            ok_seed, msg_seed = ar.seed_paper_skeleton(
+                                paper_dir,
+                                str(cstate.get("venue") or ar.DEFAULT_VENUE),
+                                cstate.get("idea"),
+                            )
+                            if ok_seed:
+                                ar.update_ar_state(
+                                    root, child, paper_dir=str(paper_dir)
+                                )
+                            else:
+                                errors.append(f"{child}: {msg_seed}")
+                                continue
+                        res = ar_manager.start(root, project_id, child)
+                        if res.get("ok"):
+                            started.append(child)
+                        else:
+                            errors.append(
+                                f"{child}: {res.get('error') or 'failed to start'}"
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(f"{child}: autostart failed: {exc}")
                 payload = self._ar_payload(root, project_id, slug)
                 payload["spawned"] = spawned
+                payload["started"] = started
                 payload["errors"] = errors
                 return payload, 200
 

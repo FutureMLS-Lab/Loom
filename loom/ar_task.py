@@ -314,6 +314,19 @@ VENUES: tuple[dict[str, Any], ...] = (
         "page_limit": 9,
         "invitation": "colmweb.org/COLM/{year}/Conference/-/Submission",
     },
+    {
+        "id": "wacv",
+        "label": "WACV",
+        "template": "wacv",
+        "aliases": [
+            "WACV",
+            "IEEE/CVF Winter Conference on Applications of Computer Vision",
+        ],
+        "page_limit": 8,
+        # WACV uses CMT rather than OpenReview; keep this empty so Loom does
+        # not fabricate an invitation id.
+        "invitation": "",
+    },
 )
 
 VENUE_IDS = frozenset(v["id"] for v in VENUES)
@@ -940,6 +953,7 @@ SHARED_TEMPLATE = "_shared"
 TOKEN_TITLE = "@@TITLE@@"
 TOKEN_RUNNING_TITLE = "@@RUNNING_TITLE@@"
 TOKEN_KEYWORDS = "@@KEYWORDS@@"
+TOKEN_WACV_TRACK = "@@WACV_TRACK@@"
 
 
 def templates_paper_dir() -> Path:
@@ -1019,8 +1033,19 @@ def seed_paper_skeleton(
         return False, f"failed to seed skeleton: {exc}"
 
     title = str((idea or {}).get("title") or "").strip() or "Untitled AR Submission"
+    # Personalized Studio cards are bilingual ("中文 — English"). The UI keeps
+    # both halves, but pdfLaTeX venue templates cannot typeset CJK safely
+    # without adding a different font stack. Seed the manuscript with the
+    # English publication title while preserving the bilingual title in state.
+    if " — " in title:
+        english_title = title.rsplit(" — ", 1)[-1].strip()
+        if english_title:
+            title = english_title
     keywords = str((idea or {}).get("metric") or "").strip() or "machine learning"
     running = title if len(title) <= 60 else title[:57].rstrip() + "..."
+    wacv_track = str((idea or {}).get("wacv_track") or "algorithms").strip().lower()
+    if wacv_track not in {"algorithms", "applications", "datasets"}:
+        wacv_track = "algorithms"
     main = dest / "main.tex"
     try:
         text = main.read_text(encoding="utf-8")
@@ -1028,6 +1053,7 @@ def seed_paper_skeleton(
             text.replace(TOKEN_TITLE, _tex_escape(title))
             .replace(TOKEN_RUNNING_TITLE, _tex_escape(running))
             .replace(TOKEN_KEYWORDS, _tex_escape(keywords))
+            .replace(TOKEN_WACV_TRACK, wacv_track)
         )
         main.write_text(text, encoding="utf-8")
     except OSError as exc:
