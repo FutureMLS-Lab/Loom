@@ -1121,15 +1121,18 @@ async function renderPaperSkills() {
     || '<span class="rf-hint">none named in the author\'s notes yet</span>';
   const selected = (d.selected || []).map((n) => `<span class="rf-pill">${esc(n)}</span>`).join(' ')
     || '<span class="rf-hint">(bundled default)</span>';
+  const injected = (d.injected || []).map((s) =>
+    `<span class="rf-pill rf-pill--live" title="${esc(s.how || '')}">${esc(s.name)}</span>`).join(' ');
   const figs = (d.figure_evidence || []).map((n) => `<span class="rf-pill rf-pill--idea">${esc(n)}</span>`).join(' ');
   host.innerHTML = `
     <h3>This paper · ${esc(d.venue || '')}</h3>
+    <p class="rf-hint">Paper skills — every paper carries ALL of these, injected into every author prompt:</p>
+    <div class="rf-edges">${injected}</div>
     <p class="rf-hint">Task-selected skills (the pane's default prompt):</p>
     <div class="rf-edges">${selected}</div>
     <p class="rf-hint">Applied — skills the author named in its round notes:</p>
     <div class="rf-edges">${applied}</div>
-    ${figs ? `<p class="rf-hint">Teasers on disk (figure-skill output):</p><div class="rf-edges">${figs}</div>` : ''}
-    <p class="rf-hint">Every round also carries the full injected set below.</p>`;
+    ${figs ? `<p class="rf-hint">Teasers on disk (figure-skill output):</p><div class="rf-edges">${figs}</div>` : ''}`;
 }
 
 async function openSkills() {

@@ -46,6 +46,7 @@ from loom import rebuttal_delivery as delivery
 from loom import rebuttal_task as rebuttal
 from loom import review_task as review
 from loom import paper_fetch
+from loom import openreview_submit
 from loom.openclaw import OpenClawClient, OpenClawConfig, openclaw_status
 from loom.paths import (
     AR_ROOT_ENV,
@@ -6749,6 +6750,11 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
+            if path == "/api/openreview/auth":
+                st, b, h = _json_bytes(openreview_submit.auth_status())
+                self._send(st, b, h)
+                return
+
             if path == "/api/rebuttal/catalog":
                 st, b, h = _json_bytes(
                     {
@@ -7998,6 +8004,23 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
+            if path == "/api/openreview/login":
+                try:
+                    result = openreview_submit.login(
+                        str(body.get("username") or ""),
+                        str(body.get("password") or ""),
+                    )
+                    st, b, h = _json_bytes(result)
+                except ValueError as exc:
+                    st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
+                self._send(st, b, h)
+                return
+
+            if path == "/api/openreview/logout":
+                st, b, h = _json_bytes(openreview_submit.logout())
+                self._send(st, b, h)
+                return
+
             if path == "/api/rebuttal/projects":
                 try:
                     payload = rebuttal.register_project(
@@ -8091,6 +8114,115 @@ def make_handler(
                         if result.get("ok")
                         else result,
                         200 if result.get("ok") else 500,
+                    )
+                    self._send(st, b, h)
+                    return
+
+                if action == "submit-openreview":
+                    # The human's confirm click is the trigger; a dry run
+                    # first shows exactly what would land where.
+                    auth = openreview_submit.cached_auth()
+                    if not auth:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": "not signed in to OpenReview"},
+                            401,
+                        )
+                        self._send(st, b, h)
+                        return
+                    if str(state.get("stage") or "") in (
+                        rebuttal.STAGE_INTAKE,
+                        rebuttal.STAGE_CONCERNS,
+                    ):
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": "responses are not written yet"},
+                            409,
+                        )
+                        self._send(st, b, h)
+                        return
+                    source = rebuttal._source_for(project_id)
+                    forum_file = source / "forum.json" if source else None
+                    if forum_file is None or not forum_file.is_file():
+                        st, b, h = _json_bytes(
+                            {
+                                "ok": False,
+                                "error": (
+                                    "no forum.json in the source package - only "
+                                    "papers imported from an OpenReview link "
+                                    "carry the note ids replies must target"
+                                ),
+                            },
+                            400,
+                        )
+                        self._send(st, b, h)
+                        return
+                    try:
+                        forum_info = json.loads(
+                            forum_file.read_text(encoding="utf-8")
+                        )
+                        responses = {
+                            rid: rebuttal.response_body(project_id, rid)
+                            for rid in (state.get("responses") or {})
+                        }
+                        plan = openreview_submit.build_plan(
+                            forum_info, responses, auth["token"]
+                        )
+                    except (ValueError, OSError) as exc:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": str(exc)}, 400
+                        )
+                        self._send(st, b, h)
+                        return
+                    preview = [
+                        {
+                            k: item.get(k)
+                            for k in (
+                                "reviewer_id",
+                                "reviewer_label",
+                                "replyto",
+                                "characters",
+                                "error",
+                            )
+                            if item.get(k) is not None
+                        }
+                        for item in plan["items"]
+                    ]
+                    if not body.get("confirm"):
+                        st, b, h = _json_bytes(
+                            {
+                                "ok": True,
+                                "dry_run": True,
+                                "forum": plan["forum"],
+                                "invitation": plan["invitation"],
+                                "signature": plan["signature"],
+                                "items": preview,
+                                "user": auth["username"],
+                            }
+                        )
+                        self._send(st, b, h)
+                        return
+                    results = openreview_submit.execute_plan(plan, auth["token"])
+                    posted = sum(1 for r in results if r.get("ok"))
+                    state = rebuttal.read_state(project_id)
+                    state["openreview_submission"] = {
+                        "at": rebuttal._now(),
+                        "forum": plan["forum"],
+                        "invitation": plan["invitation"],
+                        "signature": plan["signature"],
+                        "by": auth["username"],
+                        "results": results,
+                    }
+                    rebuttal.append_log(
+                        state,
+                        f"OpenReview: posted {posted}/{len(results)} replies "
+                        f"as {plan['signature']}",
+                    )
+                    rebuttal.write_state(project_id, state)
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": posted == len(results) and posted > 0,
+                            "results": results,
+                            "project": rebuttal.project_payload(project_id),
+                        }
                     )
                     self._send(st, b, h)
                     return

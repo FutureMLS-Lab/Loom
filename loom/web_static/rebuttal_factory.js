@@ -216,6 +216,9 @@ function openPaper(id, studioId = '') {
   writeHash(`paper/${encodeURIComponent(id)}`);
   show('paper');
   loadPaper();
+  const orPlan = el('or-plan');
+  if (orPlan) { orPlan.innerHTML = ''; el('or-status').textContent = ''; el('btn-or-submit').disabled = true; }
+  orRefreshAuth();
 }
 
 function readHash() {
@@ -246,12 +249,18 @@ function projectBadge(project) {
   return `<span class="rb-pill">${esc(project.stage || 'intake')}</span>`;
 }
 
-function paperRow(project, studioId = '') {
+function paperRow(project, studioId = '', ordinal = 0, conference = '') {
+  const num = ordinal ? `<span class="rb-ordinal">${ordinal}</span>` : '';
+  const conf = conference
+    ? `<span class="rb-pill rb-pill--conf" title="conference policy this paper answers under">${esc(conference)}</span>`
+    : '';
   return `<article class="rb-project" data-paper="${esc(project.id)}" data-studio="${esc(studioId)}">
+    ${num}
     <div>
       <h3>${esc(project.title || project.id)}</h3>
       <p>${esc(project.source_path || '')}</p>
     </div>
+    ${conf}
     <span class="rb-count">${esc(plural(Number(project.reviewers || 0), 'reviewer'))}</span>
     <span class="rb-count">${esc(plural(Number(project.responses || 0), 'response'))}</span>
     ${projectBadge(project)}
@@ -282,12 +291,35 @@ async function loadFleet() {
   el('stat-cost').innerHTML = `<b>$${spent.toFixed(2)}</b> spent`;
   if (R.view !== 'fleet') return;
 
+  // Papers first: every rebuttal is its own numbered line, whatever studio
+  // holds its policy. The studios keep the policy machinery below.
+  const paperHost = el('paper-list');
+  const confOf = {};
+  R.studios.forEach((studio) => { confOf[studio.id] = studio.title || studio.id; });
+  const count = el('fleet-paper-count');
+  if (count) count.textContent = plural(R.projects.length, 'paper');
+  if (!R.projects.length) {
+    paperHost.innerHTML =
+      '<div class="rb-card">No Paper Rebuttals yet. Approve a conference policy below, then add papers under it.</div>';
+  } else {
+    paperHost.innerHTML = R.projects.map((project, i) =>
+      paperRow(
+        project,
+        project.studio_id || '',
+        i + 1,
+        project.studio_id ? confOf[project.studio_id] || '' : 'flat import',
+      )).join('');
+    paperHost.querySelectorAll('[data-paper]').forEach((node) => {
+      node.addEventListener('click', () => openPaper(node.dataset.paper, node.dataset.studio));
+    });
+  }
+
   const host = el('studio-list');
-  if (!R.studios.length && !orphanProjects.length) {
+  if (!R.studios.length) {
     host.innerHTML = '<div class="rb-card">No Conference Studios yet. Start one above.</div>';
     return;
   }
-  const studios = R.studios.map((studio) => {
+  host.innerHTML = R.studios.map((studio) => {
     const badge = studio.active_job
       ? `<span class="rb-pill rb-pill--live">${esc(studio.active_job)} running</span>`
       : studio.policy_approved
@@ -305,16 +337,8 @@ async function loadFleet() {
       ${badge}
     </article>`;
   }).join('');
-  const legacy = orphanProjects.length
-    ? `<div class="rb-section-head"><div><h2>Legacy flat imports</h2><p>Assign new papers through a Conference Studio.</p></div></div>
-       ${orphanProjects.map((project) => paperRow(project)).join('')}`
-    : '';
-  host.innerHTML = studios + legacy;
   host.querySelectorAll('[data-studio]:not([data-paper])').forEach((node) => {
     node.addEventListener('click', () => openStudio(node.dataset.studio));
-  });
-  host.querySelectorAll('[data-paper]').forEach((node) => {
-    node.addEventListener('click', () => openPaper(node.dataset.paper, node.dataset.studio));
   });
 }
 
@@ -1271,6 +1295,77 @@ el('btn-delivery-approve').addEventListener('click', async () => {
 });
 el('btn-policy-save').addEventListener('click', savePaperPolicy);
 el('btn-forget').addEventListener('click', forgetPaper);
+
+/* ---- OpenReview submission --------------------------------------------------
+   Sign in once (password -> token, cached server-side under 0600), dry-run
+   the plan, then a separate explicit confirm posts the replies. */
+async function orRefreshAuth() {
+  try {
+    const auth = await api('/api/openreview/auth');
+    const signedIn = !!auth.logged_in;
+    el('or-auth-state').textContent = signedIn ? `signed in as ${auth.user}` : 'not signed in';
+    el('or-username').parentElement.hidden = signedIn;
+    el('or-password').parentElement.hidden = signedIn;
+    el('btn-or-login').hidden = signedIn;
+    el('btn-or-logout').hidden = !signedIn;
+    return signedIn;
+  } catch { return false; }
+}
+el('btn-or-login').addEventListener('click', async () => {
+  const username = el('or-username').value.trim();
+  const password = el('or-password').value;
+  if (!username || !password) { el('or-status').textContent = 'Email and password are required.'; return; }
+  el('or-status').textContent = 'Signing in…';
+  try {
+    await api('/api/openreview/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+    el('or-password').value = '';
+    el('or-status').textContent = '';
+    await orRefreshAuth();
+  } catch (error) { el('or-status').textContent = error.message; }
+});
+el('btn-or-logout').addEventListener('click', async () => {
+  await api('/api/openreview/logout', { method: 'POST', body: '{}' });
+  el('btn-or-submit').disabled = true;
+  await orRefreshAuth();
+});
+function orRenderPlan(payload) {
+  const rows = (payload.items || []).map((item) => item.error
+    ? `<article class="rb-project"><div><h3>${esc(item.reviewer_id)}</h3><p>${esc(item.error)}</p></div><span class="rb-pill rb-pill--bad">skipped</span></article>`
+    : `<article class="rb-project"><div><h3>${esc(item.reviewer_id)} → ${esc(item.reviewer_label || '')}</h3><p>replyto ${esc(item.replyto)}</p></div><span class="rb-count">${esc(String(item.characters))} chars</span></article>`).join('');
+  el('or-plan').innerHTML = `<p class="rb-status">forum <b>${esc(payload.forum)}</b> · invitation <b>${esc(payload.invitation)}</b> · signing as <b>${esc(payload.signature)}</b></p>${rows}`;
+}
+el('btn-or-preview').addEventListener('click', async () => {
+  if (!(await orRefreshAuth())) { el('or-status').textContent = 'Sign in to OpenReview first.'; return; }
+  el('or-status').textContent = 'Building the plan…';
+  try {
+    const payload = await api(`/api/rebuttal/projects/${encodeURIComponent(R.paperId)}/submit-openreview`, {
+      method: 'POST', body: '{}',
+    });
+    orRenderPlan(payload);
+    const good = (payload.items || []).filter((item) => !item.error).length;
+    el('or-status').textContent = good
+      ? `Dry run only — nothing posted. ${good} repl${good === 1 ? 'y' : 'ies'} ready.`
+      : 'Nothing postable — see the plan below.';
+    el('btn-or-submit').disabled = !good;
+    el('btn-or-submit').title = good ? '' : 'preview produced no postable replies';
+  } catch (error) { el('or-status').textContent = error.message; el('btn-or-submit').disabled = true; }
+});
+el('btn-or-submit').addEventListener('click', async () => {
+  if (!window.confirm('Post these replies to the PUBLIC OpenReview forum now? This cannot be undone.')) return;
+  el('or-status').textContent = 'Posting…';
+  try {
+    const payload = await api(`/api/rebuttal/projects/${encodeURIComponent(R.paperId)}/submit-openreview`, {
+      method: 'POST', body: JSON.stringify({ confirm: true }),
+    });
+    const ok = (payload.results || []).filter((r) => r.ok).length;
+    const bad = (payload.results || []).filter((r) => r.error);
+    el('or-status').textContent = `Posted ${ok}/${(payload.results || []).length} replies.`
+      + (bad.length ? ` Failed: ${bad.map((r) => `${r.reviewer_id} (${r.error})`).join('; ')}` : '');
+    el('btn-or-submit').disabled = true;
+    if (ok) toast(`OpenReview: ${ok} replies posted.`);
+    loadPaper();
+  } catch (error) { el('or-status').textContent = error.message; }
+});
 el('agent-live').addEventListener('change', (event) => {
   R.agentLive = event.target.checked;
   R.agentLiveTouched = true;

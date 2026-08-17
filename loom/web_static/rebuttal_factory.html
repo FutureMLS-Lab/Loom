@@ -22,7 +22,9 @@
     <span id="stat-ready"><b>—</b> ready</span>
     <span id="stat-cost"><b>—</b> spent</span>
     <button type="button" class="rb-btn rb-btn--ghost" id="btn-refresh">Refresh</button>
-    <a class="rb-btn rb-btn--ghost" href="/factory">Research Factory</a>
+    <a class="rb-btn rb-btn--ghost" href="/paper-factory">Paper</a>
+    <a class="rb-btn rb-btn--ghost" href="/review-factory">Review</a>
+    <a class="rb-btn rb-btn--ghost" href="/factory" title="Research Factory portal">⌂ Home</a>
   </nav>
 </header>
 
@@ -72,8 +74,19 @@
   <section class="rb-section">
     <div class="rb-section-head">
       <div>
-        <h2>Conference Studios</h2>
-        <p>Each Studio owns one approved policy and all Paper Rebuttals for that conference.</p>
+        <h2>Paper Rebuttals</h2>
+        <p>Every paper is its own line. The conference policy it answers under is a property of the paper, not a folder around it.</p>
+      </div>
+      <span class="rb-count" id="fleet-paper-count"></span>
+    </div>
+    <div class="rb-projects" id="paper-list"></div>
+  </section>
+
+  <section class="rb-section">
+    <div class="rb-section-head">
+      <div>
+        <h2>Conference policies</h2>
+        <p>One Studio per conference cycle owns the approved policy. Open one to discover/approve its policy or add papers under it.</p>
       </div>
     </div>
     <div class="rb-projects" id="studio-list"></div>
@@ -318,7 +331,7 @@
     <div class="rb-section-head">
       <div>
         <h2>Validation and handoff</h2>
-        <p>Loom never posts externally. Approval marks the on-disk package paste-ready.</p>
+        <p>Approval marks the on-disk package paste-ready. Nothing posts externally without your explicit confirm below.</p>
       </div>
     </div>
     <div class="rb-validation" id="validation"></div>
@@ -334,6 +347,35 @@
       <span class="rb-count" id="delivery-phase">not started</span>
     </div>
     <div class="rb-delivery" id="delivery"></div>
+  </section>
+
+  <section class="rb-section" id="openreview-section">
+    <div class="rb-section-head">
+      <div>
+        <h2>Submit to OpenReview</h2>
+        <p>Posts each approved response as an official reply on the paper's forum, signed as Authors. Preview first; nothing fires without your confirm.</p>
+      </div>
+      <span class="rb-count" id="or-auth-state">not signed in</span>
+    </div>
+    <div class="rb-import-grid rb-import-grid--paper" id="or-login-row">
+      <label class="rb-field">
+        <span>OpenReview email</span>
+        <input type="email" id="or-username" autocomplete="username" placeholder="you@lab.org" />
+      </label>
+      <label class="rb-field">
+        <span>Password <em>exchanged for a token, never stored</em></span>
+        <input type="password" id="or-password" autocomplete="current-password" />
+      </label>
+      <button type="button" class="rb-btn" id="btn-or-login">Sign in</button>
+      <button type="button" class="rb-btn rb-btn--ghost" id="btn-or-logout" hidden>Sign out</button>
+    </div>
+    <div class="rb-import-options">
+      <button type="button" class="rb-btn" id="btn-or-preview">Preview submission</button>
+      <button type="button" class="rb-btn rb-btn--danger" id="btn-or-submit" disabled
+              title="preview first">Confirm — post replies to OpenReview</button>
+    </div>
+    <p class="rb-status" id="or-status"></p>
+    <div id="or-plan"></div>
   </section>
 </main>
 
