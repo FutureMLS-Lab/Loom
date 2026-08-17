@@ -52,6 +52,12 @@ code { font-family: var(--rb-mono); }
   background: rgba(245, 246, 248, 0.90);
   backdrop-filter: blur(14px);
 }
+.rb-links {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+}
 
 .rb-brand {
   display: flex;
