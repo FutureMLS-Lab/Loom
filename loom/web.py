@@ -38,7 +38,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote as _urlquote, unquote, urlparse
 
 from loom import agent_hooks
 from loom import ar_task as ar
@@ -6485,6 +6485,108 @@ def make_handler(
                 "claude_cwd": str(cwd),
             }
 
+        def _rebuttal_quick_import(
+            self, body: dict[str, Any]
+        ) -> tuple[int, bytes, list[tuple[str, str]]]:
+            url = str(body.get("url") or "").strip()
+            forum = paper_fetch.openreview_forum_id(url)
+            if not forum:
+                raise ValueError(
+                    "paste an openreview.net forum link (…?id=<forum>)"
+                )
+            info = paper_fetch.fetch_openreview_forum(forum)
+            conference, year = paper_fetch.venue_of_submission(
+                info.get("submission") or {}
+            )
+            if not conference or not year:
+                raise ValueError(
+                    "could not read the venue off this submission - create "
+                    "the Conference Studio by hand, then add this link there"
+                )
+
+            # One studio per conference cycle: reuse it when it exists.
+            studio = next(
+                (
+                    s
+                    for s in rebuttal.list_studios()
+                    if str(s.get("conference") or "").lower() == conference.lower()
+                    and int(s.get("year") or 0) == year
+                ),
+                None,
+            )
+            created = False
+            if studio is None:
+                group = str(
+                    (info.get("submission") or {}).get("domain")
+                    or f"{conference}.cc/{year}/Conference"
+                )
+                payload = rebuttal.register_studio(
+                    conference,
+                    year,
+                    f"https://openreview.net/group?id={_urlquote(group)}",
+                )
+                studio = payload.get("studio") or payload
+                created = True
+            studio_id = str(studio.get("id") or "")
+
+            # The paper package lands on disk either way; registration waits
+            # for the human policy gate when the studio is not active yet.
+            fetched = paper_fetch.materialize_rebuttal_package(
+                url, Path.home() / ".loom" / "factories" / "rebuttal" / studio_id
+            )
+            state = rebuttal.read_studio(studio_id)
+            if str(state.get("stage")) == rebuttal.STUDIO_STAGE_ACTIVE:
+                project = rebuttal.register_paper_for_studio(
+                    studio_id, str(fetched["dir"]), title=str(fetched.get("title") or "")
+                )
+                project_id = str((project.get("project") or {}).get("id") or "")
+                if project_id and bool(
+                    ((project.get("project") or {}).get("manifest") or {}).get("ready")
+                ):
+                    started = _rebuttal_start_agent(
+                        project_id, CURSOR_DEFAULT_MODEL, claude_registry
+                    )
+                    project["agent_start"] = started
+                return _json_bytes(
+                    {
+                        "ok": True,
+                        "studio_id": studio_id,
+                        "project_id": project_id,
+                        "title": fetched.get("title") or "",
+                        "message": "paper registered - the rebuttal agent is on it",
+                    },
+                    201,
+                )
+
+            # Fresh (or unapproved) studio: kick policy discovery so the only
+            # human step left is the approval.
+            if not str(state.get("active_job") or ""):
+                state["active_job"] = rebuttal.JOB_POLICY
+                state["stage"] = rebuttal.STUDIO_STAGE_POLICY_DRAFT
+                state["error"] = ""
+                state["policy_approved_at"] = ""
+                rebuttal.append_log(
+                    state, "quick import: started official policy discovery"
+                )
+                rebuttal.write_studio(studio_id, state)
+                _ar_run_async(
+                    _rebuttal_policy_job, studio_id, _ar_headless_model(None)
+                )
+            return _json_bytes(
+                {
+                    "ok": True,
+                    "studio_id": studio_id,
+                    "staged_dir": str(fetched["dir"]),
+                    "title": fetched.get("title") or "",
+                    "created_studio": created,
+                    "message": (
+                        f"{conference} {year} policy is being discovered - "
+                        "approve it, then the staged paper joins with one click"
+                    ),
+                },
+                202,
+            )
+
         def _review_submit_openreview(
             self, project_id: str, body: dict[str, Any]
         ) -> tuple[int, bytes, list[tuple[str, str]]]:
@@ -8170,6 +8272,19 @@ def make_handler(
 
             if path == "/api/openreview/logout":
                 st, b, h = _json_bytes(openreview_submit.logout())
+                self._send(st, b, h)
+                return
+
+            if path == "/api/rebuttal/quick-import":
+                # One OpenReview forum link does everything derivable: venue
+                # and year come off the submission itself, the studio is
+                # found or created (policy discovery kicked off), and the
+                # paper package is fetched. Only the policy approval stays
+                # human - by design.
+                try:
+                    st, b, h = self._rebuttal_quick_import(body)
+                except ValueError as exc:
+                    st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
                 self._send(st, b, h)
                 return
 

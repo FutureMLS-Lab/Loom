@@ -122,6 +122,42 @@ def fetch_openreview_forum(forum_id: str) -> dict[str, Any]:
     }
 
 
+def venue_of_submission(note: dict[str, Any]) -> tuple[str, int]:
+    """(conference, year) read off a submission note's own venue ids.
+
+    OpenReview encodes the venue as path-like group ids - ``ICLR.cc/2025/
+    Conference``, ``aclweb.org/ACL/2025/Conference`` - on the note's domain,
+    its invitations and content.venueid. The conference is the path segment
+    just before the year, with any bare domain suffix stripped.
+    """
+    content = note.get("content") or {}
+    venueid = content.get("venueid")
+    if isinstance(venueid, dict):
+        venueid = venueid.get("value")
+    candidates = [
+        str(note.get("domain") or ""),
+        *[str(i) for i in note.get("invitations") or []],
+        str(venueid or ""),
+    ]
+    for candidate in candidates:
+        parts = [p for p in candidate.split("/") if p]
+        for i, part in enumerate(parts):
+            if re.fullmatch(r"(19|20)\d{2}", part) and i > 0:
+                conference = re.sub(
+                    r"\.(cc|org|net|io|ws|com)$", "", parts[i - 1], flags=re.IGNORECASE
+                )
+                if conference:
+                    return conference, int(part)
+    # 'ICLR 2025 Poster' style display strings, as a last resort.
+    venue = content.get("venue")
+    if isinstance(venue, dict):
+        venue = venue.get("value")
+    m = re.match(r"^([A-Za-z][A-Za-z+\-]*)\s+((?:19|20)\d{2})\b", str(venue or ""))
+    if m:
+        return m.group(1), int(m.group(2))
+    return "", 0
+
+
 def note_markdown(note: dict[str, Any]) -> str:
     """One review note flattened to readable markdown, field by field."""
     content = note.get("content") or {}

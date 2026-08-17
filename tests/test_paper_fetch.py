@@ -102,3 +102,19 @@ def test_forum_without_reviews_is_refused(tmp_path, monkeypatch):
         paper_fetch.materialize_rebuttal_package(
             "https://openreview.net/forum?id=aB3_x9Yz", tmp_path
         )
+
+
+def test_venue_of_submission_reads_group_ids():
+    from loom.paper_fetch import venue_of_submission
+
+    assert venue_of_submission({"domain": "ICLR.cc/2025/Conference"}) == ("ICLR", 2025)
+    assert venue_of_submission(
+        {"invitations": ["aclweb.org/ACL/2025/Conference/-/Submission"]}
+    ) == ("ACL", 2025)
+    assert venue_of_submission(
+        {"content": {"venueid": {"value": "NeurIPS.cc/2024/Conference"}}}
+    ) == ("NeurIPS", 2024)
+    assert venue_of_submission(
+        {"content": {"venue": {"value": "COLM 2025 Poster"}}}
+    ) == ("COLM", 2025)
+    assert venue_of_submission({}) == ("", 0)

@@ -56,11 +56,28 @@
     </p>
   </section>
 
+  <section class="rb-import rb-quick">
+    <div class="rb-section-head">
+      <div>
+        <h2>One link does it</h2>
+        <p>Paste the paper's OpenReview forum link. The venue and year are read off the submission, the Conference Studio is found or created, policy discovery starts, and the paper package (PDF + every official review) is fetched. Only the policy approval stays yours.</p>
+      </div>
+    </div>
+    <div class="rb-import-grid rb-import-grid--paper">
+      <label class="rb-field rb-field--wide">
+        <span>OpenReview forum link</span>
+        <input type="url" id="quick-url" placeholder="https://openreview.net/forum?id=…" />
+      </label>
+      <button type="button" class="rb-btn rb-btn--primary" id="btn-quick-import">Import everything</button>
+    </div>
+    <p class="rb-status" id="quick-status"></p>
+  </section>
+
   <section class="rb-import">
     <div class="rb-section-head">
       <div>
         <h2>Start a Conference Studio</h2>
-        <p>Step 1 is always official rebuttal-policy discovery and human approval.</p>
+        <p>Step 1 is always official rebuttal-policy discovery and human approval. (Manual path — the link above does this for OpenReview venues.)</p>
       </div>
       <div class="rb-studio-chips" id="studio-chips"></div>
     </div>
@@ -420,6 +437,6 @@
   referrerpolicy="no-referrer"
   onerror="window.__loomMathJaxFailed=true;window.dispatchEvent(new Event('loom:mathjax-error'))"
 ></script>
-<script defer src="/static/rebuttal_factory.js?v=20260817-5"></script>
+<script defer src="/static/rebuttal_factory.js?v=20260817-6"></script>
 </body>
 </html>

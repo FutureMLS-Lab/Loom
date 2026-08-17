@@ -522,6 +522,13 @@ async function loadStudio() {
   try {
     const payload = await api(`/api/rebuttal/studios/${encodeURIComponent(R.studioId)}`);
     if (R.studioId === payload.studio.id) renderStudio(payload.studio);
+    // A quick import staged this paper's package on disk; hand its path to
+    // the add-paper box so approval -> Add Paper is the whole remaining path.
+    if (R.stagedPaperPath) {
+      const box = el('paper-import-path');
+      if (box && !box.value) box.value = R.stagedPaperPath;
+      R.stagedPaperPath = '';
+    }
   } catch (error) {
     toast(error.message, true);
   }
@@ -1247,6 +1254,37 @@ el('btn-refresh').addEventListener('click', () => {
   if (R.view === 'paper') loadPaper();
 });
 el('btn-studio-back').addEventListener('click', openFleet);
+
+/* ---- quick import: one OpenReview link -> studio + policy job + package -- */
+el('btn-quick-import').addEventListener('click', async () => {
+  const url = el('quick-url').value.trim();
+  const status = el('quick-status');
+  if (!url) { status.textContent = 'Paste an OpenReview forum link first.'; return; }
+  setButton('btn-quick-import', false, 'importing');
+  status.textContent = 'Fetching the forum, deriving the venue…';
+  try {
+    const d = await api('/api/rebuttal/quick-import', {
+      method: 'POST', body: JSON.stringify({ url }),
+    });
+    el('quick-url').value = '';
+    status.textContent = d.message || '';
+    toast(d.message || 'Imported.');
+    if (d.project_id) {
+      openPaper(d.project_id, d.studio_id);
+    } else if (d.studio_id) {
+      R.stagedPaperPath = d.staged_dir || '';
+      openStudio(d.studio_id);
+    }
+  } catch (error) {
+    status.textContent = error.message;
+    toast(error.message, true);
+  } finally {
+    setButton('btn-quick-import', true);
+  }
+});
+el('quick-url').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') { ev.preventDefault(); el('btn-quick-import').click(); }
+});
 el('btn-paper-back').addEventListener('click', () => {
   if (R.studioId) openStudio(R.studioId);
   else openFleet();
