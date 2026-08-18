@@ -11,15 +11,50 @@ are plain-text, copy-paste-ready CMT registration fields.
 
 ## Registration Summary
 
-| ID | Status | Final/current round | Primary subject area |
-|---|---|---:|---|
-| `wsdm-03` | Delivered | 10 | Foundation Models and Agentic Systems → Retrieval, indexing, and ranking with foundation models |
-| `wsdm-04` | Delivered | 7 | Foundation Models and Agentic Systems → Evaluation and benchmarking of foundation models in search/mining |
-| `wsdm-06` | In progress; abstract provisional | 3 | Web Mining and Content Analysis → Web recommender systems and algorithms |
-| `wsdm-09` | Delivered | 6 | Web Mining and Content Analysis → Web recommender systems and algorithms |
-| `wsdm-02` | Delivered | 6 | Web Search → Algorithms for web-scale search, distributed search, metasearch, peer-to-peer search |
+| CMT submission ID | ID | Status | Final/current round | Primary subject area |
+|---:|---|---|---:|---|
+| 1779 | `wsdm-02` | Delivered | 6 | Web Search → Algorithms for web-scale search, distributed search, metasearch, peer-to-peer search |
+| 1797 | `wsdm-03` | Delivered | 10 | Foundation Models and Agentic Systems → Retrieval, indexing, and ranking with foundation models |
+| 1996 | `wsdm-04` | Delivered | 7 | Foundation Models and Agentic Systems → Evaluation and benchmarking of foundation models in search/mining |
+| 1999 | `wsdm-06` | In progress; abstract provisional | 3 | Web Mining and Content Analysis → Web recommender systems and algorithms |
+| 2002 | `wsdm-09` | Delivered | 6 | Web Mining and Content Analysis → Web recommender systems and algorithms |
 
-## 1. wsdm-03
+## 1. wsdm-02
+
+**CMT submission ID:** `1779`
+
+**Status:** Delivered, Round 6
+
+### Title
+
+Risk-Sensitive Diversification Without an Oracle: Valid Certificates Need Not Identify Better Rankings
+
+### Subject Areas
+
+- **Primary:** Web Search → Algorithms for web-scale search, distributed search, metasearch, peer-to-peer search
+- **Secondary:** Web Search → Search benchmarking and evaluation
+- **Secondary:** Web Search → Query analysis and query processing
+- **Secondary:** Privacy, Fairness, Interpretability → Model and algorithm transparency
+
+### Abstract
+
+Does a valid robust tail-risk certificate identify a better diversified ranking when the intent prior is estimated? Not necessarily. For finite-intent VRisk, fixed-ranking L1 error ε changes risk by at most min{1, ε/(2β)}, sharply, while a standard count radius can collapse robust CVaR to minimax. Even with a perfectly estimated prior and valid coverage, the resulting saturated minimizer and upper-bound gate can incur regret arbitrarily close to one. This separates certificate validity from decision usefulness.
+
+A frozen-proposal audit across retrieval and recommendation benchmarks supports the distinction. Exact same-prior comparison accepts 17.9% of proposals in the primary NTCIR synthetic-prior experiment, while the evaluated real-estimator settings certify no intervention and matched robust-versus-minimax effects are mostly negligible. Validity, informativeness, and decision benefit are therefore distinct properties.
+
+### Internal Automated Review — Do Not Paste into CMT
+
+Round 6 panel score: **4/10 · soundness 3/4 · weak reject**.
+
+| Reviewer | Rating | Soundness | Presentation | Contribution | Recommendation |
+|---|---:|---:|---:|---:|---|
+| GPT-5.6 Sol | 5/10 | 3/4 | 3/4 | 2/4 | Weak reject |
+| Claude Fable 5 | 6/10 | 3/4 | 3/4 | 2/4 | Weak accept |
+| Cursor Grok 4.5 | 4/10 | 3/4 | 2/4 | 2/4 | Weak reject |
+
+## 2. wsdm-03
+
+**CMT submission ID:** `1797`
 
 **Status:** Delivered, Round 10
 
@@ -51,7 +86,9 @@ Round 10 panel score: **5/10 · soundness 3/4 · weak reject**.
 | Claude Fable 5 | 6/10 | 3/4 | 2/4 | 3/4 | Weak accept |
 | Cursor Grok 4.5 | 5/10 | 3/4 | 3/4 | 2/4 | Weak reject |
 
-## 2. wsdm-04
+## 3. wsdm-04
+
+**CMT submission ID:** `1996`
 
 **Status:** Delivered, Round 7
 
@@ -83,7 +120,9 @@ Round 7 panel score: **5/10 · soundness 3/4 · weak reject**.
 | Claude Fable 5 | 6/10 | 3/4 | 3/4 | 2/4 | Weak accept |
 | Cursor Grok 4.5 | 5/10 | 3/4 | 3/4 | 2/4 | Borderline |
 
-## 3. wsdm-06
+## 4. wsdm-06
+
+**CMT submission ID:** `1999`
 
 **Status:** Round 3 in progress. The abstract and review below are provisional.
 
@@ -121,7 +160,9 @@ running, so this score is provisional.
 After `wsdm-06` is delivered, refresh its abstract, round, status, and automated
 review before finalizing CMT registration.
 
-## 4. wsdm-09
+## 5. wsdm-09
+
+**CMT submission ID:** `2002`
 
 **Status:** Delivered, Round 6
 
@@ -150,37 +191,6 @@ Round 6 panel score: **5/10 · soundness 2/4 · weak reject**.
 | GPT-5.6 Sol | 6/10 | 3/4 | 3/4 | 3/4 | Weak accept |
 | Claude Fable 5 | 6/10 | 3/4 | 3/4 | 2/4 | Weak accept |
 | Cursor Grok 4.5 | 5/10 | 2/4 | 3/4 | 2/4 | Weak reject |
-
-## 5. wsdm-02
-
-**Status:** Delivered, Round 6
-
-### Title
-
-Risk-Sensitive Diversification Without an Oracle: Valid Certificates Need Not Identify Better Rankings
-
-### Subject Areas
-
-- **Primary:** Web Search → Algorithms for web-scale search, distributed search, metasearch, peer-to-peer search
-- **Secondary:** Web Search → Search benchmarking and evaluation
-- **Secondary:** Web Search → Query analysis and query processing
-- **Secondary:** Privacy, Fairness, Interpretability → Model and algorithm transparency
-
-### Abstract
-
-Does a valid robust tail-risk certificate identify a better diversified ranking when the intent prior is estimated? Not necessarily. For finite-intent VRisk, fixed-ranking L1 error ε changes risk by at most min{1, ε/(2β)}, sharply, while a standard count radius can collapse robust CVaR to minimax. Even with a perfectly estimated prior and valid coverage, the resulting saturated minimizer and upper-bound gate can incur regret arbitrarily close to one. This separates certificate validity from decision usefulness.
-
-A frozen-proposal audit across retrieval and recommendation benchmarks supports the distinction. Exact same-prior comparison accepts 17.9% of proposals in the primary NTCIR synthetic-prior experiment, while the evaluated real-estimator settings certify no intervention and matched robust-versus-minimax effects are mostly negligible. Validity, informativeness, and decision benefit are therefore distinct properties.
-
-### Internal Automated Review — Do Not Paste into CMT
-
-Round 6 panel score: **4/10 · soundness 3/4 · weak reject**.
-
-| Reviewer | Rating | Soundness | Presentation | Contribution | Recommendation |
-|---|---:|---:|---:|---:|---|
-| GPT-5.6 Sol | 5/10 | 3/4 | 3/4 | 2/4 | Weak reject |
-| Claude Fable 5 | 6/10 | 3/4 | 3/4 | 2/4 | Weak accept |
-| Cursor Grok 4.5 | 4/10 | 3/4 | 2/4 | 2/4 | Weak reject |
 
 ## CMT Registration Checklist
 
