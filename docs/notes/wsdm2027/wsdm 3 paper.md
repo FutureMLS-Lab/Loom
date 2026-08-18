@@ -1,12 +1,11 @@
-# WSDM 2027 CMT Registration: Remaining Three Papers
+# wsdm 3 paper
 
-This file contains the three papers currently not recommended for priority
-submission. The titles, abstracts, and subject areas are plain-text,
-copy-paste-ready CMT registration fields if these papers are registered.
+This file contains three WSDM papers. The titles, abstracts, and subject areas
+are plain-text, copy-paste-ready CMT registration fields.
 
 - Enter authors, conflicts, and other administrative metadata separately.
-- Internal automated reviews are included only for selection context; do not
-  paste them into CMT.
+- Internal automated reviews are included only for reference; do not paste
+  them into CMT.
 
 ## Registration Summary
 

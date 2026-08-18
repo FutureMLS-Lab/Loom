@@ -1,12 +1,11 @@
-# WSDM 2027 CMT Registration: Recommended Five Papers
+# wsdm 5 paper
 
-This file contains the five papers currently recommended for priority
-submission. The titles, abstracts, and subject areas are plain-text,
-copy-paste-ready CMT registration fields.
+This file contains five WSDM papers. The titles, abstracts, and subject areas
+are plain-text, copy-paste-ready CMT registration fields.
 
 - Enter authors, conflicts, and other administrative metadata separately.
-- Internal automated reviews are included only for selection context; do not
-  paste them into CMT.
+- Internal automated reviews are included only for reference; do not paste
+  them into CMT.
 - `wsdm-06` is still in Round 3. Its title is ready, but its abstract and review
   must be refreshed after delivery.
 
