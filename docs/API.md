@@ -45,6 +45,7 @@ the web console, loom-desktop, loom-app, OpenClaw agents, and your scripts.
 | `GET` | `/api/tasks/<slug>` | Meta + PLAN.md + markdown files + agent summary + worktree statuses |
 | `PUT` | `/api/tasks/<slug>/meta` `{title?, general_goal?, agent?, skills_path?}` | Rename / re-goal / switch agent |
 | `PUT` | `/api/tasks/<slug>/template` `{name, content}` | Write PLAN.md (or another task markdown) |
+| `GET` | `/api/tasks/<slug>/files?path=` | Browse the task tree — one directory, or one file's text |
 | `POST` | `/api/tasks/reorder` `{slugs}` | Persist sidebar order |
 | `DELETE` | `/api/tasks/<slug>` | Delete the task tree (unregisters its worktrees) |
 | `GET` | `/api/tasks/<slug>/diff` | Changes tab: uncommitted + committed diff per worktree |

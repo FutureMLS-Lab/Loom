@@ -1169,6 +1169,78 @@ def read_markdown_asset(base_dir: Path, relative: str) -> tuple[bytes, str] | No
         return None
 
 
+# Directories the file browser hides. These hold thousands of entries no one
+# opens by hand, and .git in particular would bury the worktree it belongs to.
+# Build output stays listed: after a run it is often the thing you want to read.
+_SKIP_BROWSE_DIRS = frozenset(
+    {
+        ".cache",
+        ".git",
+        ".hg",
+        ".mypy_cache",
+        ".next",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".svn",
+        ".tox",
+        "__pycache__",
+        "node_modules",
+    }
+)
+# Generous for source, small enough that a checkpoint cannot stall the server.
+MAX_TASK_TEXT_BYTES = 2 * 1024 * 1024
+
+
+def browse_task_dir(target: Path) -> list[dict[str, Any]]:
+    """One directory listing from the task tree, folders before files."""
+    if not target.is_dir():
+        return []
+    try:
+        entries = sorted(
+            target.iterdir(), key=lambda p: (p.is_file(), p.name.lower())
+        )
+    except OSError:
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in entries:
+        try:
+            is_dir = entry.is_dir()
+            if is_dir and entry.name in _SKIP_BROWSE_DIRS:
+                continue
+            out.append(
+                {
+                    "name": entry.name,
+                    "dir": is_dir,
+                    "size": 0 if is_dir else entry.stat().st_size,
+                }
+            )
+        except OSError:
+            continue
+    return out
+
+
+def read_task_text(target: Path) -> dict[str, Any]:
+    """A file's text, or why there is none to show.
+
+    What counts as text is decided by the bytes rather than by a list of
+    extensions, so an editor opening this can show a `.cu` or a file with no
+    suffix at all, and refuses only what it genuinely cannot display.
+    """
+    try:
+        size = target.stat().st_size
+    except OSError:
+        return {"body": "", "error": "unreadable"}
+    if size > MAX_TASK_TEXT_BYTES:
+        return {"body": "", "size": size, "error": "too large"}
+    try:
+        raw = target.read_bytes()
+    except OSError:
+        return {"body": "", "size": size, "error": "unreadable"}
+    if b"\x00" in raw:
+        return {"body": "", "size": size, "error": "binary"}
+    return {"body": raw.decode("utf-8", errors="replace"), "size": size}
+
+
 def list_task_markdown_files(project_root: Path, slug: str) -> list[str]:
     """Return relative paths of ``*.md`` files under the task root.
 

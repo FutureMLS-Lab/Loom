@@ -70,6 +70,7 @@ from loom.rud_task import (
     agent_default_model,
     agent_label,
     agent_model_options,
+    browse_task_dir,
     build_agent_command,
     create_task,
     delete_task,
@@ -94,6 +95,7 @@ from loom.rud_task import (
     read_project_notes,
     read_task_markdown_file,
     read_task_monitor,
+    read_task_text,
     read_template,
     rud_root,
     remove_task_worktree,
@@ -7254,6 +7256,42 @@ def make_handler(
                     )
                 else:
                     st, b, h = _json_bytes({"ok": True, "skills": ar.skill_catalog()})
+                self._send(st, b, h)
+                return
+
+            m_files = re.match(r"^/api/tasks/([^/]+)/files$", path)
+            if m_files:
+                # The task tree as an editor sees it: PLAN.md and task.json at
+                # the top, the worktree below. One directory per request, so a
+                # repository with a deep tree costs nothing until it is opened.
+                root, _pid = self._resolve_scope(parsed)
+                if root is None:
+                    self._bad_project()
+                    return
+                slug = m_files.group(1)
+                if not _SLUG_RE.match(slug):
+                    st, b, h = _json_bytes({"error": "invalid slug"}, 400)
+                    self._send(st, b, h)
+                    return
+                qs = parse_qs(parsed.query or "")
+                rel = (qs.get("path") or [""])[0].strip().lstrip("/")
+                base = task_root(root, slug)
+                target = path_under_task(base, rel) if rel else base
+                if target is None or not target.exists():
+                    st, b, h = _json_bytes({"ok": False, "error": "not found"}, 404)
+                elif target.is_dir():
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": True,
+                            "path": rel,
+                            "dir": True,
+                            "entries": browse_task_dir(target),
+                        }
+                    )
+                else:
+                    st, b, h = _json_bytes(
+                        {"ok": True, "path": rel, "dir": False, **read_task_text(target)}
+                    )
                 self._send(st, b, h)
                 return
 
