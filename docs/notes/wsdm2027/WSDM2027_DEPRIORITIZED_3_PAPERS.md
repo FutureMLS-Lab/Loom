@@ -1,134 +1,122 @@
-# WSDM 2027：当前建议暂不优先的三篇论文
+# WSDM 2027 CMT Registration: Remaining Three Papers
 
-更新时间：2026-08-18（PDT）
+This file contains the three papers currently not recommended for priority
+submission. The titles, abstracts, and subject areas are plain-text,
+copy-paste-ready CMT registration fields if these papers are registered.
 
-## 结论
+- Enter authors, conflicts, and other administrative metadata separately.
+- Internal automated reviews are included only for selection context; do not
+  paste them into CMT.
 
-在必须从八篇中只保留五篇的约束下，我建议当前暂不优先：
+## Registration Summary
 
-1. `wsdm-05`
-2. `wsdm-11`
-3. `wsdm-12`
+| ID | Status | Final round | Primary subject area |
+|---|---|---:|---|
+| `wsdm-05` | Delivered | 6 | Web Mining and Content Analysis → Web recommender systems and algorithms |
+| `wsdm-11` | Delivered | 5 | Foundation Models and Agentic Systems → Evaluation and benchmarking of foundation models in search/mining |
+| `wsdm-12` | Delivered | 8 | Web Mining and Content Analysis → Web recommender systems and algorithms |
 
-“暂不优先”表示它们相对于另外五篇具有更难在投稿前消除的核心风险，不表示
-研究工作没有价值，也不表示内部自动评分就是最终结论。
+## 1. wsdm-05
 
-## 1. `wsdm-05`
+**Status:** Delivered, Round 6
 
 ### Title
 
 When Does One Step Suffice? A Four-Gate Audit of Diffusion Recommendation Distillation
 
-### 论文在做什么
+### Subject Areas
 
-论文用 teacher competence、iterative benefit、one-call fidelity 和 serving
-value 四道门，审计扩散推荐器是否值得蒸馏成一步模型。实验发现 audited
-teachers 普遍不如 SASRec 和 DDIM-1；endpoint regression 有时保留平均指标，
-但无法复制 teacher 的具体 top-10 lists。
+- **Primary:** Web Mining and Content Analysis → Web recommender systems and algorithms
+- **Secondary:** Web Mining and Content Analysis → Scalable algorithms for mining web data, opinion mining and sentiment analysis
+- **Secondary:** Web Search → Search benchmarking and evaluation
+- **Secondary:** Privacy, Fairness, Interpretability → Model and algorithm transparency
 
-### 为什么当前暂不优先
+### Abstract
 
-- 主要负结论来自 common-harness 的 DiffuRec-style/DreamRec-style teachers，
-  不是经过验证的官方 checkpoints，容易被认为是 reimplementation artifact。
-- 原生 DiffuRec 只在 Amazon Beauty 上复现；现代 one-step 方法没有形成有效
-  的主对照。
-- 主文的 96-test family 与附录 20-test family 相互冲突，直接影响论文最重视
-  的 simultaneous decision counts。
-- 5,000 bootstrap resamples 对 96-test Bonferroni 极端 quantiles 可能不足。
-- 论文没有展示任何真实系统完整通过四道门，最终贡献主要是审计 checklist
-  和 checkpoint-specific negatives。
+A one-call deployment claim bundles four different statements: the teacher is competent, iterative sampling helps, the student preserves the teacher, and the result has serving value. We introduce a four-gate audit that tests these claims separately and scopes every decision to a checkpoint and protocol.
 
-### 什么情况可以重新进入五篇
+Using a common full-catalog harness over MovieLens-1M and Steam, together with a native Amazon Beauty DiffuRec reproduction, we compare diffusion teachers, iterative sampling, one-pass controls, and endpoint regression under matched evaluation. Utility-tuned SASRec outperforms the audited teachers in all 16 metric-level comparisons, and DDIM-1 outperforms the multi-step endpoint in 15 of 16; the remaining comparison is inconclusive. Endpoint regression sometimes preserves aggregate utility under simultaneous noninferiority tests, yet exact teacher top-10 set identity never exceeds 20.5%. The contribution is a falsifiable deployment contract and checkpoint-level evidence, not a broad claim that one step or many steps universally wins.
 
-- 明确并修复 20/96-test protocol 冲突，重新生成稳定的 simultaneous intervals；
-- 在官方/原生 DiffuRec、DreamRec 或 TA-Rec 类系统上完成至少一个可验证审计；
-- 证明主要 Gate 1/2 结论不是弱 teacher search 或 harness instability 造成的。
+### Internal Automated Review — Do Not Paste into CMT
 
-### 替补顺序
+Round 6 panel score: **4/10 · soundness 2/4 · weak reject**.
 
-如果 `wsdm-06` Round 3 不能完成或其 released-stack 结果使中心 claim 不再成立，
-`wsdm-05` 是当前三篇中的第一替补，因为其问题重要、实验投入大，而且部分统计
-问题仍可通过重新分析修复。
+| Reviewer | Rating | Soundness | Presentation | Contribution | Recommendation |
+|---|---:|---:|---:|---:|---|
+| GPT-5.6 Sol | 5/10 | 3/4 | 3/4 | 2/4 | Weak reject |
+| Claude Fable 5 | 5/10 | 3/4 | 3/4 | 2/4 | Borderline |
+| Cursor Grok 4.5 | 4/10 | 2/4 | 2/4 | 2/4 | Weak reject |
 
-## 2. `wsdm-11`
+## 2. wsdm-11
+
+**Status:** Delivered, Round 5
 
 ### Title
 
 Query-Term Repetition Repels LLM Selectors from Weak Result Cards: A Controlled Audit
 
-### 论文在做什么
+### Subject Areas
 
-论文在 ANTIQUE 的弱结果卡中增加查询词重复，测试 deterministic LLM selector
-是否更容易误选。四个模型上观察到的结果方向相反：重复使误选率下降
-2.3--6.2 个百分点。
+- **Primary:** Foundation Models and Agentic Systems → Evaluation and benchmarking of foundation models in search/mining
+- **Secondary:** Web Search → Search user behavior and log analysis; Search user interfaces and interaction
+- **Secondary:** Foundation Models and Agentic Systems → Retrieval, indexing, and ranking with foundation models
+- **Secondary:** Web Search → Query analysis and query processing
+- **Secondary:** Privacy, Fairness, Interpretability → Model and algorithm transparency
 
-### 为什么当前暂不优先
+### Abstract
 
-- 核心 treatment 同时用重复查询词替换 generic fillers，改变了 fluency、
-  lexical diversity 和 spamminess，尚未识别纯 frequency effect。
-- 只有一个人工 carrier、一个 repetition intensity 和一个 benchmark。
-- 没有完整报告每个 arm 的 absolute false-choice rates，实际效应大小难判断。
-- Warning 没有与原来真正产生 lure 的 same-query treatment 交叉，因此无法
-  支持对旧 hardened-prompt 结果的解释。
-- 在去掉未经独立 regrade 的 rewrite 结果后，剩余贡献是一项较窄且可能被认为
-  不意外的 synthetic display-cue negative finding。
+Implicit feedback is useful only when selection remains aligned with landing-page relevance. We audit one proposed surface intervention for deterministic LLM selectors: replacing generic metadata with repeated query terms in weak result cards. In paired result-card displays, lower-relevance cards contain either one copy or repeated copies of the same query terms, while answer content, landing page, judgment, card length, unique term set, topic, rank schedule, and all higher-relevance cards remain fixed.
 
-### 什么情况可以重新进入五篇
+Across four confirmatory selectors, repetition reduces false-choice rates by 2.3–6.2 percentage points, with Holm-adjusted p < .001 in every case. A short warning about repeated query words produces no detectable interaction with this effect and therefore does not explain an earlier hardened-prompt contrast. Exact frequency does not explain an earlier synthetic same-query effect that also changed topic and plausibility. We make no human-click claim, and we treat an earlier answer-rewrite audit without independent regrades as conditional evidence only.
 
-- 增加 filler-preserving、non-query repetition 和多剂量 factorial controls；
-- 报告所有模型与条件的 absolute arm levels；
-- 在自然 snippets 或第二个 collection 上复现；
-- 将 warning 与原 same-query lure treatment 直接交叉。
+### Internal Automated Review — Do Not Paste into CMT
 
-### 当前判断
+Round 5 panel score: **4/10 · soundness 3/4 · weak reject**.
 
-三篇暂不优先论文中，它最需要新的实验才能解决核心 identification 与贡献宽度
-问题，单靠改写难以显著降低风险。
+| Reviewer | Rating | Soundness | Presentation | Contribution | Recommendation |
+|---|---:|---:|---:|---:|---|
+| GPT-5.6 Sol | 5/10 | 2/4 | 3/4 | 2/4 | Weak reject |
+| Claude Fable 5 | 5/10 | 3/4 | 2/4 | 2/4 | Weak reject |
+| Cursor Grok 4.5 | 4/10 | 3/4 | 3/4 | 2/4 | Weak reject |
 
-## 3. `wsdm-12`
+## 3. wsdm-12
+
+**Status:** Delivered, Round 8
 
 ### Title
 
 How Small Can You Go? Spectral Bounds for Recommendation Subsets
 
-### 论文在做什么
+### Subject Areas
 
-论文给出 unweighted、same-identity recommendation graph edge subset 保持
-rank-\(r\) normalized-biadjacency projector 时必须保留的边数下界，并在真实
-图上比较该 floor 与启发式找到的 first identifiable witnesses。
+- **Primary:** Web Mining and Content Analysis → Web recommender systems and algorithms
+- **Secondary:** Web Mining and Content Analysis → Large-scale graph analysis
+- **Secondary:** Web Mining and Content Analysis → Scalable algorithms for mining web data, opinion mining and sentiment analysis
+- **Secondary:** Privacy, Fairness, Interpretability → Model and algorithm transparency
 
-### 为什么当前暂不优先
+### Abstract
 
-- 理论 floor 独立选择 user/item leverage support，忽略真实边可实现性和
-  projector orientation，因此在真实图上非常松。
-- 主实验没有运行论文自己定义的 attainability greedies，也没有直接优化
-  \(L_{\mathrm{sub}}\) 的 local search 或 exact/certified optimizer。
-- 所谓 lower-to-upper interval 的 upper endpoint 只是若干 generic heuristics
-  的最好结果，并不能有意义地 bracket 真正 optimum。
-- 所有核心比例依赖单一 \(\tau=0.25\) 与 \(10^{-3}\) identifiability threshold，
-  缺少敏感性分析。
-- 定理本身可能正确，但当前实证没有回答标题中的“实际能压到多小”。
+How many original-identity interactions are necessary—and how many are actually sufficient—to preserve a collaborative-filtering propagation subspace? We separate these questions. For a source graph's rank-r normalized-biadjacency frame, every unweighted edge subset incurs joint projector loss at least the source leverage mass outside its retained user and item coordinates. Requiring an identifiable cutoff adds a component-multiplicity floor. The combined floor is asymptotically attainable on a block-complete family.
 
-### 什么情况可以重新进入五篇
+Real recommendation graphs are different. We audit three public graphs at ranks 2, 4, and 8. At rank eight, the necessary floors retain at most 2.1% of edges, while the first observed identifiable witnesses require at least 33%. A connectivity-preserving construction also remains far above the floor. The theorem therefore rules out ultra-small subsets but does not predict the attainable projector-collapse budget on these graphs. We report a lower-to-upper interval rather than call the necessary floor tight. The result applies to unweighted same-identity subsets, not synthetic identities, reweighted sparsifiers, arbitrary finite codes, or ranking utility.
 
-- 将 RANK-\(r\)-COVER-GREEDY、DEGREE-LOSS-GREEDY 和直接 projector-loss
-  optimization 纳入同一 crossing audit；
-- 在小图上给出 exact 或 certified optimum；
-- 构造 feasibility-aware lower bound，限制为图中实际存在的边；
-- 报告多组 \(\tau\) 和 identifiability threshold 下的完整曲线。
+### Internal Automated Review — Do Not Paste into CMT
 
-### 当前判断
+Round 8 panel score: **4/10 · soundness 2/4 · weak reject**.
 
-它有一项定义清楚的理论下界，但论文当前最显眼的 10--100 倍 gap 更可能说明
-floor 和 tested heuristics 都不够强，而不是揭示真实 graph-subset complexity。
+| Reviewer | Rating | Soundness | Presentation | Contribution | Recommendation |
+|---|---:|---:|---:|---:|---|
+| GPT-5.6 Sol | 5/10 | 3/4 | 3/4 | 2/4 | Weak reject |
+| Claude Fable 5 | 5/10 | 3/4 | 3/4 | 2/4 | Weak reject |
+| Cursor Grok 4.5 | 4/10 | 2/4 | 2/4 | 2/4 | Weak reject |
 
-## 三篇的相对顺序
+## CMT Registration Checklist
 
-若只能从这三篇中恢复一篇：
+For each paper:
 
-1. 首先重新考虑 `wsdm-05`，前提是 `wsdm-06` 条件推荐失败，且统计协议能够修复；
-2. 其次考虑 `wsdm-12`，前提是能快速补上真正的 attainability attack；
-3. 最后考虑 `wsdm-11`，因为它的核心混杂和贡献宽度都依赖新的 factorial/
-   cross-collection experiments。
-
-完整的八篇比较依据见 `WSDM2027_8_PAPER_SELECTION_GUIDE.md`。
+- Copy the title exactly from the `Title` field.
+- Copy both abstract paragraphs into the CMT abstract field.
+- Select the listed primary subject area first, then the suggested secondary
+  areas that CMT permits.
+- Enter authors, affiliations, conflicts, and contact information separately.
+- Do not paste the internal automated-review section into CMT.
