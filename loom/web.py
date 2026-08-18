@@ -4,7 +4,7 @@ Three concerns after the agent-loop rewrite:
 
 1. **Task CRUD** - list / create / delete tasks (``<project>/.RUD/<slug>/``).
    Each new task auto-creates a git worktree at
-   ``<task>/work/<repo>`` on branch ``zhongzhu/<slug>`` (best-effort -
+   ``<task>/work/<repo>`` on branch ``loom/<slug>`` (best-effort -
    non-git project roots just skip the worktree step).
 2. **Project notes** - one ``<project>/.RUD/NOTES.md`` per project,
    served by ``GET/PUT /api/notes``.

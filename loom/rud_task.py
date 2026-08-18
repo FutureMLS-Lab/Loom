@@ -10,7 +10,7 @@ Layout per project root::
             PLAN.md         # the only per-task markdown file - Claude reads
                             # and rewrites it; the user edits it via the
                             # PLAN.md tab and the embedded view on Claude tab
-            work/<repo>/    # auto-created git worktree (branch zhongzhu/<slug>)
+            work/<repo>/    # auto-created git worktree (branch loom/<slug>)
 
 There is no worker / evaluator / runner anymore - the user drives Claude
 themselves via the tmux pane.  We do track which Claude session UUIDs each
@@ -1566,9 +1566,14 @@ def git_toplevel(path: Path) -> Path | None:
 
 
 def _branch_name_for(slug: str) -> str:
-    # Per charlie_skills.md the user wants branches under zhongzhu/<slug>.
+    """Task worktree branches live under a shared, tool-owned namespace.
+
+    ``loom/<slug>`` by default, so nobody's personal name is baked into a
+    collaborator's repository; set ``LOOM_BRANCH_PREFIX`` to taste.
+    """
+    prefix = (os.environ.get("LOOM_BRANCH_PREFIX") or "loom").strip().strip("/") or "loom"
     cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "-", slug).strip("-") or "task"
-    return f"zhongzhu/{cleaned[:80]}"
+    return f"{prefix}/{cleaned[:80]}"
 
 
 def direct_child_git_repos(parent: Path) -> list[Path]:

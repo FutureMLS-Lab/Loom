@@ -204,7 +204,7 @@ but not the installed package — point `LOOM_KERNEL_HUB_DIR` at a checkout's
     ├── monitor.json      # run-monitor state (only if used)
     ├── ar.json           # only for Factory (AR) tasks
     ├── rounds/round-NN/  # author notes, readiness reports, panel reviews
-    └── work/<repo>/…     # git worktree, branch zhongzhu/<slug>
+    └── work/<repo>/…     # git worktree, branch loom/<slug>
 
 ~/.loom/
 ├── web-projects.json     # registered project paths

@@ -80,4 +80,4 @@ def test_task_worktree_can_be_created_from_nested_code_root(tmp_path: Path) -> N
     worktree, branch, error = prepare_task_worktree_from(project, meta.slug, code)
     assert worktree is not None, error
     assert worktree == (project / ".RUD" / meta.slug / "work" / "code").resolve()
-    assert branch == "zhongzhu/nested-task"
+    assert branch == "loom/nested-task"

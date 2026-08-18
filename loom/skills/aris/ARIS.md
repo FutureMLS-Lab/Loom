@@ -32,7 +32,7 @@ For each cycle:
 
    ```bash
    # <SRC> = the repo you're optimizing; <TASK_WORK> = this task's work/ dir
-   git -C <SRC> worktree add <TASK_WORK>/exp-<short-idea-slug> -b zhongzhu/<slug>-exp-<short-idea-slug>
+   git -C <SRC> worktree add <TASK_WORK>/exp-<short-idea-slug> -b loom/<slug>-exp-<short-idea-slug>
    ```
 
    One idea = one worktree = one branch. Loom shows these in the Worktrees card
@@ -74,7 +74,7 @@ the history of what was tried):
 - [ ] <idea> — hypothesis · metric · effort · risk
 
 ## In progress
-- <idea> — worktree `work/exp-...` (branch zhongzhu/<slug>-exp-...) — status
+- <idea> — worktree `work/exp-...` (branch loom/<slug>-exp-...) — status
 
 ## Results
 | Idea | Change | Worktree/branch | Metric vs baseline | Verdict | Notes |

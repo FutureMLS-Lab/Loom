@@ -5371,7 +5371,7 @@ async function openWorktreeModal() {
   const modal = $('#worktree-modal');
   if (!modal) return;
   modal.hidden = false;
-  $('#wt-modal-branch').textContent = `zhongzhu/${STATE.slug}`;
+  $('#wt-modal-branch').textContent = `loom/${STATE.slug}`;
   $('#wt-modal-dest').textContent = `.RUD/${STATE.slug}/work/<repo>/`;
   const host = $('#wt-candidates');
   const status = $('#wt-status');
