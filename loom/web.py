@@ -387,6 +387,53 @@ def _available_skill_options(
     return options
 
 
+def _skill_summary(path: Path, limit: int = 140) -> str:
+    """A skill file's one-line pitch: its frontmatter ``description:`` when
+    it has one, else the first substantive line after the frontmatter."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    body_start = 0
+    if lines and lines[0].strip() == "---":
+        for i, line in enumerate(lines[1:], start=1):
+            if line.strip() == "---":
+                body_start = i + 1
+                break
+            if line.strip().lower().startswith("description:"):
+                desc = line.split(":", 1)[1].strip().strip("\"'")
+                if desc:
+                    return desc[:limit]
+    for line in lines[body_start:]:
+        text = line.strip().lstrip("#").strip()
+        if text and not text.startswith(("---", "<!--")):
+            return text[:limit]
+    return ""
+
+
+def _skills_shelf_text(
+    default_skills: Path, injected: str = "", limit: int = 40
+) -> str:
+    """The whole skill shelf as a menu: name, one-line pitch, path.
+
+    The same on-demand pattern the AR figure menu proved out, generalised:
+    the prompt carries a few hundred tokens of menu instead of every skill's
+    full text, and the agent reads the SKILL.md it needs when it needs it.
+    Skills already injected in full are marked so nobody reads them twice.
+    """
+    injected_paths = {
+        str(p.resolve()) for p in split_skills_paths(injected) if p.is_file()
+    }
+    lines: list[str] = []
+    for option in _available_skill_options(default_skills)[:limit]:
+        mark = " [already injected above]" if option["path"] in injected_paths else ""
+        summary = _skill_summary(Path(option["path"]))
+        lines.append(
+            f"- {option['label']}{mark} - {summary}\n    {option['path']}"
+        )
+    return "\n".join(lines)
+
+
 # --- HTTP response helpers --------------------------------------------------
 
 
@@ -2789,6 +2836,13 @@ Default skills from:
 Default skills:
 ---
 {skills or "(none)"}
+---
+
+The skill shelf - every packaged skill, on demand. When the work ahead
+matches one, READ its file at the listed path before improvising; do not
+paste it back into chat:
+---
+{_skills_shelf_text(default_skills or bundled_skills_path(), meta.skills_path) or "(none found)"}
 ---
 
 RUD workflow:
