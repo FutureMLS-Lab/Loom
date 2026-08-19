@@ -2536,7 +2536,12 @@ def run_reviewer(
             f"reviewing compiled PDF with Cursor panel: {', '.join(selected)}"
         )
 
-    with TemporaryDirectory(prefix="loom-ar-pdf-review-") as tmp:
+    # Cursor can leave short-lived files behind while an NFS-backed temporary
+    # directory is being removed. The review result is already in memory, so a
+    # cleanup race must never wedge the AR driver after every reviewer returned.
+    with TemporaryDirectory(
+        prefix="loom-ar-pdf-review-", ignore_cleanup_errors=True
+    ) as tmp:
         workspace = Path(tmp)
         review_pdf = workspace / "submission.pdf"
         try:
