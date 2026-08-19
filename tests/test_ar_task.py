@@ -1808,3 +1808,16 @@ def test_review_prompt_carries_the_reviewers_own_memory(tmp_path: Path) -> None:
     assert "do not anchor on your previous rating" in warm
     # Isolation still holds: no other reviewer's report is ever offered.
     assert "another review's report" in warm
+
+
+def test_final_gate_reject_grants_a_fresh_plateau_window() -> None:
+    # Rejecting at the final gate is a human's "keep going" - without the
+    # reset, the old plateau clock re-paused the loop after every single
+    # flat round, turning 20 granted rounds into one-round-per-approval.
+    state = _paper_state()
+    state["plateau_started_round"] = 5
+    state["stop_reason"] = "plateaued at round 5"
+    ar.record_gate(state, ar.GATE_FINAL, "reject", "keep going")
+    assert state["stage"] == ar.STAGE_LOOP
+    assert state["plateau_started_round"] == 0
+    assert state["stop_reason"] == ""

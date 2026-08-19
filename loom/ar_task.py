@@ -2685,6 +2685,12 @@ def record_gate(
             # whatever has already been done.
             state["stage"] = STAGE_LOOP
             state["max_rounds"] = _clamp_rounds(max_rounds(state) + DEFAULT_MAX_ROUNDS)
+            # The human just chose to keep going, usually with fresh
+            # instructions - that decision deserves a fresh grace window.
+            # Without this reset the plateau clock kept ticking from rounds
+            # ago and re-paused the loop after every single flat round.
+            state["plateau_started_round"] = 0
+            state["stop_reason"] = ""
     return state
 
 
