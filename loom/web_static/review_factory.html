@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Review Factory</title>
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
-  <link rel="stylesheet" href="/static/factory.css?v=20260812-5" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260818-1" />
   <style>
     /* Page-specific bits; the look comes from factory.css. */
     .rv-main { max-width: 980px; margin: 0 auto; padding: 32px 28px 96px; }
@@ -27,21 +27,74 @@
       background: var(--rf-bg-1); border: 1px solid var(--rf-line); border-radius: 10px;
       color: var(--rf-dim);
     }
+    /* One project = one clean line: big score, title, quiet meta. */
+    .rv-head { align-items: center; gap: 14px; }
+    .rv-score {
+      flex: none; width: 46px; height: 46px; border-radius: 12px;
+      display: grid; place-items: center;
+      font: 800 19px/1 system-ui; letter-spacing: -0.02em;
+      border: 1px solid var(--rf-line); color: var(--rf-faint); background: var(--rf-bg-2);
+    }
+    .rv-score small { font: 700 9px/1 system-ui; opacity: 0.7; margin-top: 1px; }
+    .rv-score--bad  { color: #b42318; background: #fee4e2; border-color: #fecdca; }
+    .rv-score--mid  { color: #b54708; background: #fef0c7; border-color: #fedf89; }
+    .rv-score--good { color: #067647; background: #dcfae6; border-color: #abefc6; }
+    .rv-title-wrap { min-width: 0; flex: 1; }
+    .rv-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+    .rv-when { font-size: 11px; color: var(--rf-faint); }
+    .rv-verdict { font: 700 11px system-ui; text-transform: capitalize; }
+    .rv-verdict--bad { color: #b42318; }
+    .rv-verdict--mid { color: #b54708; }
+    .rv-verdict--good { color: #067647; }
+    .rv-run {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 8px 10px; margin-top: 8px;
+      border: 1px solid var(--rf-line); border-radius: 10px; background: var(--rf-bg-2);
+      font-size: 12px;
+    }
+    .rv-run__stamp { color: var(--rf-faint); font-family: var(--rf-mono); font-size: 11px; }
+    .rv-run__spacer { flex: 1; }
+    .rv-run a { text-decoration: none; }
+    .rv-field-preview {
+      flex: 1; min-width: 200px; color: var(--rf-dim); font-size: 11.5px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .rv-or { margin-top: 14px; border-top: 1px dashed var(--rf-line); }
     @media (max-width: 780px) { .rv-new, .rv-reviewers { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
 
 <header class="rf-top">
-  <a class="rf-brand" href="/factory">
-    <span class="rf-brand__mark" aria-hidden="true"></span>
-    <span class="rf-brand__name">Review Factory</span>
+  <a class="rf-brand" href="/review-factory">
+    <svg class="rf-mark" width="28" height="28" viewBox="0 0 22 22" aria-hidden="true"><defs><linearGradient id="lg-review" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#059669"/><stop offset="1" stop-color="#0d9488"/></linearGradient></defs><rect width="22" height="22" rx="6" fill="url(#lg-review)"/><g fill="#fff"><rect x="10.3" y="5" width="1.4" height="10.4" rx="0.7"/><rect x="5" y="6.4" width="12" height="1.4" rx="0.7"/><path d="M4.4 11.4a2.7 2.7 0 0 0 5.4 0 l-2.7-4z"/><path d="M12.2 11.4a2.7 2.7 0 0 0 5.4 0 l-2.7-4z"/><rect x="7.6" y="15.8" width="6.8" height="1.4" rx="0.7"/></g></svg>
+    <span class="rf-brand__text">
+      <span class="rf-brand__name">Review Factory</span>
+      <span class="rf-brand__tag">three reviewers · lowest wins</span>
+    </span>
   </a>
+  <nav class="fx-switch" aria-label="Factory lines">
+    <a class="fx-switch__item fx-switch__item--paper" href="/paper-factory">
+      <svg width="14" height="14" viewBox="0 0 22 22" aria-hidden="true"><rect width="22" height="22" rx="6" fill="#4f46e5"/><g fill="#fff"><path d="M6.1 13.9 L13.2 6.8 a1.1 1.1 0 0 1 1.6 0 l0.4 0.4 a1.1 1.1 0 0 1 0 1.6 L8.1 15.9 l-2.8 0.8 z"/><rect x="5.6" y="17.2" width="10.8" height="1.4" rx="0.7" opacity=".8"/></g></svg>
+      <span>Paper</span>
+    </a>
+    <span class="fx-switch__item fx-switch__item--review fx-switch__item--on" aria-current="page">
+      <svg width="14" height="14" viewBox="0 0 22 22" aria-hidden="true"><rect width="22" height="22" rx="6" fill="#059669"/><g fill="#fff"><rect x="10.3" y="5" width="1.4" height="10.4" rx="0.7"/><rect x="5" y="6.4" width="12" height="1.4" rx="0.7"/><path d="M4.4 11.4a2.7 2.7 0 0 0 5.4 0 l-2.7-4z"/><path d="M12.2 11.4a2.7 2.7 0 0 0 5.4 0 l-2.7-4z"/><rect x="7.6" y="15.8" width="6.8" height="1.4" rx="0.7"/></g></svg>
+      <span>Review</span>
+    </span>
+    <a class="fx-switch__item fx-switch__item--rebuttal" href="/rebuttal-factory">
+      <svg width="14" height="14" viewBox="0 0 22 22" aria-hidden="true"><rect width="22" height="22" rx="6" fill="#e11d48"/><path fill="#fff" d="M11 3.8 L17.2 6.1 V10.6 C17.2 14.5 14.6 17 11 18.2 C7.4 17 4.8 14.5 4.8 10.6 V6.1 Z"/><path d="M8.1 10.9 l2.1 2.1 3.8-4.2" fill="none" stroke="#e11d48" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Rebuttal</span>
+    </a>
+    <span class="fx-switch__sep"></span>
+    <a class="fx-switch__item fx-switch__item--home" href="/factory" title="Research Factory portal">
+      <svg width="14" height="14" viewBox="0 0 22 22" aria-hidden="true"><rect width="22" height="22" rx="6" fill="#64748b"/><path d="M11 5.2 L17.4 10.6 H15.6 V16.4 H12.4 V12.8 H9.6 V16.4 H6.4 V10.6 H4.6 Z" fill="#fff"/></svg>
+      <span>Home</span>
+    </a>
+  </nav>
   <nav class="rf-top__nav">
     <span class="rf-stat rf-stat--info" id="stat-projects"><b>—</b> projects</span>
     <span class="rf-stat rf-stat--live" id="stat-running" hidden><b>—</b> running</span>
-    <a class="rf-btn rf-btn--ghost" href="/factory">Factory</a>
-    <a class="rf-btn rf-btn--ghost" href="/">Loom</a>
   </nav>
 </header>
 
@@ -59,20 +112,61 @@
   <section class="rf-section">
     <div class="rf-section__head">
       <h2>Review a paper</h2>
-      <span class="rf-hint">A directory on this host holding the PDF (and nothing secret).</span>
+      <span class="rf-hint">Paste a link — arXiv, OpenReview, or any public PDF — or a directory on this host.</span>
     </div>
     <div class="rv-new">
       <div>
-        <label for="new-path">Directory with the PDF</label>
-        <input type="text" id="new-path" placeholder="/path/to/paper-dir (main.pdf, or the newest *.pdf inside)" />
+        <label for="new-path">Paper URL or local directory</label>
+        <input type="text" id="new-path"
+               placeholder="https://arxiv.org/abs/… · https://openreview.net/forum?id=… · direct PDF link · /path/to/dir" />
       </div>
       <div>
         <label for="new-venue">Venue rubric</label>
         <select id="new-venue">
-          <option value="iclr">ICLR</option>
-          <option value="neurips">NeurIPS</option>
-          <option value="icml">ICML</option>
-          <option value="colm">COLM</option>
+          <optgroup label="Machine Learning">
+            <option value="iclr">ICLR</option>
+            <option value="neurips">NeurIPS</option>
+            <option value="icml">ICML</option>
+            <option value="aistats">AISTATS</option>
+            <option value="uai">UAI</option>
+            <option value="colm">COLM</option>
+          </optgroup>
+          <optgroup label="Computer Vision">
+            <option value="cvpr">CVPR</option>
+            <option value="iccv">ICCV</option>
+            <option value="eccv">ECCV</option>
+            <option value="wacv">WACV</option>
+          </optgroup>
+          <optgroup label="NLP & Speech">
+            <option value="acl">ACL</option>
+            <option value="emnlp">EMNLP</option>
+            <option value="naacl">NAACL</option>
+            <option value="coling">COLING</option>
+            <option value="icassp">ICASSP</option>
+            <option value="interspeech">INTERSPEECH</option>
+          </optgroup>
+          <optgroup label="AI (general)">
+            <option value="aaai">AAAI</option>
+            <option value="ijcai">IJCAI</option>
+          </optgroup>
+          <optgroup label="Data & Web">
+            <option value="kdd">KDD</option>
+            <option value="sigir">SIGIR</option>
+            <option value="www">TheWebConf (WWW)</option>
+            <option value="wsdm">WSDM</option>
+            <option value="vldb">VLDB</option>
+            <option value="icde">ICDE</option>
+            <option value="sigmod">SIGMOD</option>
+          </optgroup>
+          <optgroup label="Robotics">
+            <option value="icra">ICRA</option>
+            <option value="iros">IROS</option>
+            <option value="rss">RSS</option>
+            <option value="corl">CoRL</option>
+          </optgroup>
+          <optgroup label="Multimedia">
+            <option value="mm">ACM MM</option>
+          </optgroup>
         </select>
       </div>
       <button type="button" class="rf-btn rf-btn--primary" id="btn-create">Add project</button>
@@ -93,6 +187,6 @@
 
 <div class="rf-toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/review_factory.js?v=20260815-1"></script>
+<script src="/static/review_factory.js?v=20260817-5"></script>
 </body>
 </html>

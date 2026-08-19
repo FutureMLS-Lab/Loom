@@ -19,6 +19,9 @@ const S = {
   busy: false,
   graphSel: '',              // node the user clicked into, '' when nothing is
   graphHide: new Set(),      // relations switched off in the legend
+  venueIdeasQueued: '',      // studio slug waiting to turn its venue report into ideas
+  fleetPicked: new Set(),    // draft-ready papers selected for bulk approval
+  fleetEligible: new Set(),  // latest draft-ready slugs from the overview
   pane: '',                  // tmux target of the open paper's author
   paneFollow: false,         // whether to keep tailing it
   filePath: '',              // where the file browser is, under work/
@@ -90,6 +93,11 @@ function show(view) {
   for (const name of ['fleet', 'studio', 'paper']) {
     el(`view-${name}`).hidden = name !== view;
   }
+  if (view !== 'paper') {
+    // Leaving the paper view must detach the terminal - a hidden iframe
+    // would otherwise hold its PTY attach (and the tmux client) forever.
+    paneFrameSet('');
+  }
   if (changed) window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -117,6 +125,7 @@ function openPaper(slug, parent) {
   S.data = null;
   S.pane = ''; S.filePath = '';
   S.paperFp = '';
+  S.paneFollowTouched = false;
   show('paper');
   loadTask();
   openFiles('');
@@ -143,6 +152,44 @@ function stageBadge(paper) {
   if (paper.plateaued) return '<span class="rf-pill rf-pill--stuck">stalled</span>';
   if (paper.loop_running) return '<span class="rf-pill rf-pill--live">running</span>';
   return '<span class="rf-pill">idle</span>';
+}
+
+function syncFleetBulk() {
+  const bar = el('fleet-bulk');
+  const all = el('fleet-all-drafts');
+  const picked = el('fleet-picked');
+  const button = el('btn-fleet-rounds');
+  const eligibleCount = S.fleetEligible.size;
+  const selectedCount = [...S.fleetPicked].filter((slug) => S.fleetEligible.has(slug)).length;
+
+  bar.hidden = eligibleCount === 0;
+  all.checked = eligibleCount > 0 && selectedCount === eligibleCount;
+  all.indeterminate = selectedCount > 0 && selectedCount < eligibleCount;
+  picked.textContent = selectedCount
+    ? `${selectedCount} of ${eligibleCount} selected`
+    : `${eligibleCount} draft-ready`;
+  button.disabled = selectedCount === 0 || S.busy;
+  button.textContent = S.busy ? 'Starting…' : 'Start selected rounds';
+}
+
+function updateFleetEligibility(groups) {
+  S.fleetEligible = new Set(
+    groups.flatMap((studio) => (studio.children || [])
+      .filter((paper) => paper.stage === 'await_draft_review')
+      .map((paper) => paper.slug)),
+  );
+  S.fleetPicked = new Set(
+    [...S.fleetPicked].filter((slug) => S.fleetEligible.has(slug)),
+  );
+  syncFleetBulk();
+}
+
+function updateFleetSelectionDom() {
+  document.querySelectorAll('[data-fleet-pick]').forEach((box) => {
+    box.checked = S.fleetPicked.has(box.dataset.fleetPick);
+    box.closest('.rf-paper-item').classList.toggle('is-picked', box.checked);
+  });
+  syncFleetBulk();
 }
 
 async function loadFleet() {
@@ -178,6 +225,7 @@ async function loadFleet() {
   if ((d.orphans || []).length) {
     groups.push({ slug: '', title: 'Unattached papers', direction: '', children: d.orphans });
   }
+  updateFleetEligibility(groups);
   const host = el('fleet-list');
   // Same rule as the studio lists: identical data would rebuild identical
   // pixels, at the cost of hover state and text selection every six seconds.
@@ -189,17 +237,30 @@ async function loadFleet() {
     return;
   }
   host.innerHTML = groups.map((s) => {
-    const rows = (s.children || []).map((p) => `
-      <div class="rf-paper-row" data-paper="${esc(p.slug)}" data-parent="${esc(s.slug)}"
-           tabindex="0" role="button" aria-label="Open paper: ${esc(p.title)}">
-        <div>
-          <div class="rf-paper-row__title">${esc(p.title)}</div>
-          <div class="rf-paper-row__stage">${esc(p.stage_label)}${p.best_rating ? ` · best ${p.best_rating}/10` : ''}</div>
-        </div>
-        <span class="rf-stat"><b>${p.round}/${p.max_rounds}</b></span>
-        <span class="rf-stat"><b>$${(p.cost_usd || 0).toFixed(2)}</b></span>
-        ${stageBadge(p)}
-      </div>`).join('');
+    const rows = (s.children || []).map((p) => {
+      const ready = p.stage === 'await_draft_review';
+      const checked = ready && S.fleetPicked.has(p.slug);
+      const picker = ready
+        ? `<label class="rf-paper-select" title="Select ${esc(p.title)}">
+             <input type="checkbox" data-fleet-pick="${esc(p.slug)}"
+                    aria-label="Select draft-ready paper: ${esc(p.title)}"${checked ? ' checked' : ''} />
+           </label>`
+        : '<span class="rf-paper-select rf-paper-select--empty" aria-hidden="true"></span>';
+      return `
+        <div class="rf-paper-item${checked ? ' is-picked' : ''}">
+          ${picker}
+          <div class="rf-paper-row" data-paper="${esc(p.slug)}" data-parent="${esc(s.slug)}"
+               tabindex="0" role="button" aria-label="Open paper: ${esc(p.title)}">
+            <div>
+              <div class="rf-paper-row__title">${esc(p.title)}</div>
+              <div class="rf-paper-row__stage">${esc(p.stage_label)}${p.best_rating ? ` · best ${p.best_rating}/10` : ''}</div>
+            </div>
+            <span class="rf-stat"><b>${p.round}/${p.max_rounds}</b></span>
+            <span class="rf-stat"><b>$${(p.cost_usd || 0).toFixed(2)}</b></span>
+            ${stageBadge(p)}
+          </div>
+        </div>`;
+    }).join('');
     const head = s.slug
       ? `<div class="rf-studio__head" data-studio="${esc(s.slug)}"
               tabindex="0" role="button" aria-label="Open studio: ${esc(s.title)}">
@@ -224,6 +285,13 @@ async function loadFleet() {
     node.addEventListener('click', () => open(node));
     node.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(node); }
+    });
+  });
+  host.querySelectorAll('[data-fleet-pick]').forEach((box) => {
+    box.addEventListener('change', () => {
+      if (box.checked) S.fleetPicked.add(box.dataset.fleetPick);
+      else S.fleetPicked.delete(box.dataset.fleetPick);
+      updateFleetSelectionDom();
     });
   });
 }
@@ -963,7 +1031,19 @@ function drawLegend(all, workCount, ideaCount) {
 // terminal; repeating it here would mean a second place to get input handling
 // wrong, and watching is the thing you actually want from this page.
 
+// The iframe's src is the PTY attach: setting it connects, blanking it
+// detaches. about:blank (not removeAttribute) is what reliably unloads.
+function paneFrameSet(url) {
+  const view = el('pane-view');
+  if (!view) return;
+  const current = view.getAttribute('src') || '';
+  const want = url || 'about:blank';
+  if (current !== want && !(current === '' && !url)) view.setAttribute('src', want);
+}
+
 function renderPane() {
+  // The view is Loom's Agent Terminal page in an iframe - the real thing,
+  // typing and Esc included - not a read-only capture.
   const status = el('pane-status');
   const view = el('pane-view');
   el('btn-open-loom').href = S.slug
@@ -971,24 +1051,16 @@ function renderPane() {
     : '/';
   if (!S.pane) {
     view.hidden = true;
+    paneFrameSet('');
     status.textContent = 'No agent session yet — it starts when the author does.';
     return;
   }
-  status.textContent = S.paneFollow ? `Watching ${S.pane}` : `Session ${S.pane} — tick "live" to watch.`;
+  const live = S.paneFollow && S.view === 'paper';
+  paneFrameSet(live ? `/terminal?target=${encodeURIComponent(S.pane)}` : '');
+  status.textContent = S.paneFollow
+    ? `Live terminal on ${S.pane} — click it and type; Esc interrupts the agent.`
+    : `Session ${S.pane} — tick "live" for the interactive terminal.`;
   view.hidden = !S.paneFollow;
-}
-
-async function pollPane() {
-  if (S.paneFollow && S.pane && S.view === 'paper') {
-    try {
-      const d = await api(`/api/tmux/capture?target=${encodeURIComponent(S.pane)}&lines=60`);
-      const view = el('pane-view');
-      const atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 40;
-      view.textContent = d.text || '(the pane is empty)';
-      if (atBottom) view.scrollTop = view.scrollHeight;
-    } catch { /* the pane can die between polls; the next one will say so */ }
-  }
-  setTimeout(pollPane, 2000);
 }
 
 // ===== what the author wrote =====
@@ -1041,8 +1113,40 @@ function renderFiles(d) {
 
 // ===== skills =====
 
+// When a paper is open, the modal leads with what THIS paper was told and
+// which skills its author demonstrably reached for - the catalog below stays
+// the reference for everything on the shelf.
+async function renderPaperSkills() {
+  const host = el('skills-paper');
+  if (!host) return;
+  if (S.view !== 'paper' || !S.slug) { host.hidden = true; return; }
+  let d = null;
+  try { d = await api(taskPath(S.slug, '/skills-report')); }
+  catch { host.hidden = true; return; }
+  host.hidden = false;
+  const applied = (d.applied || []).map((a) =>
+    `<span class="rf-pill rf-pill--done" title="named in the author's round notes">`
+    + `${esc(a.name)} · r${(a.rounds || []).join(',r')}</span>`).join(' ')
+    || '<span class="rf-hint">none named in the author\'s notes yet</span>';
+  const selected = (d.selected || []).map((n) => `<span class="rf-pill">${esc(n)}</span>`).join(' ')
+    || '<span class="rf-hint">(bundled default)</span>';
+  const injected = (d.injected || []).map((s) =>
+    `<span class="rf-pill rf-pill--live" title="${esc(s.how || '')}">${esc(s.name)}</span>`).join(' ');
+  const figs = (d.figure_evidence || []).map((n) => `<span class="rf-pill rf-pill--idea">${esc(n)}</span>`).join(' ');
+  host.innerHTML = `
+    <h3>This paper · ${esc(d.venue || '')}</h3>
+    <p class="rf-hint">Paper skills — every paper carries ALL of these, injected into every author prompt:</p>
+    <div class="rf-edges">${injected}</div>
+    <p class="rf-hint">Task-selected skills (the pane's default prompt):</p>
+    <div class="rf-edges">${selected}</div>
+    <p class="rf-hint">Applied — skills the author named in its round notes:</p>
+    <div class="rf-edges">${applied}</div>
+    ${figs ? `<p class="rf-hint">Teasers on disk (figure-skill output):</p><div class="rf-edges">${figs}</div>` : ''}`;
+}
+
 async function openSkills() {
   el('skills-modal').hidden = false;
+  renderPaperSkills();
   const list = el('skills-list');
   try {
     const d = await api('/api/ar/skills');
@@ -1152,6 +1256,13 @@ function renderPaper(d, state) {
   setAction('btn-loop-stop', can.stop);
   setAction('btn-review-now', can.review);
   S.pane = d.pane || '';
+  // A running loop means the pane is where the action is - watch it by
+  // default; an explicit untick stays respected for this paper.
+  if (!S.paneFollowTouched) {
+    S.paneFollow = !!(d.loop && d.loop.running) && !!S.pane;
+    const box = el('pane-follow');
+    if (box) box.checked = S.paneFollow;
+  }
   renderPane();
 
   const at = STAGES.findIndex(([id]) => id === state.stage);
@@ -1322,6 +1433,47 @@ el('btn-refresh').addEventListener('click', async () => {
   }
 });
 
+el('fleet-all-drafts').addEventListener('change', (ev) => {
+  S.fleetPicked = ev.target.checked
+    ? new Set(S.fleetEligible)
+    : new Set();
+  updateFleetSelectionDom();
+});
+
+el('btn-fleet-rounds').addEventListener('click', async () => {
+  const slugs = [...S.fleetPicked].filter((slug) => S.fleetEligible.has(slug));
+  if (!slugs.length || S.busy) return;
+  const noun = slugs.length === 1 ? 'draft' : 'drafts';
+  if (!window.confirm(
+    `Approve ${slugs.length} ${noun} and start their author/reviewer rounds?`,
+  )) return;
+
+  S.busy = true;
+  syncFleetBulk();
+  const results = await Promise.all(slugs.map(async (slug) => {
+    try {
+      await api(taskPath(slug, '/gate'), {
+        method: 'POST',
+        body: JSON.stringify({ gate: 'draft', decision: 'approve', note: '' }),
+      });
+      return { slug, ok: true };
+    } catch (err) {
+      return { slug, ok: false, error: err.message };
+    }
+  }));
+  S.busy = false;
+
+  const succeeded = results.filter((result) => result.ok);
+  const failed = results.filter((result) => !result.ok);
+  succeeded.forEach((result) => S.fleetPicked.delete(result.slug));
+  if (succeeded.length) {
+    toast(`Started rounds for ${succeeded.length} paper${succeeded.length === 1 ? '' : 's'}.`);
+  }
+  failed.forEach((result) => toast(`${result.slug}: ${result.error}`, true));
+  await loadFleet();
+  syncFleetBulk();
+});
+
 el('studio-search-terms').addEventListener('input', () => {
   S.searchDirty = true;
   const state = (S.data && S.data.state) || {};
@@ -1404,6 +1556,7 @@ el('btn-goto-ideas').addEventListener('click', () => {
 });
 el('pane-follow').addEventListener('change', (ev) => {
   S.paneFollow = ev.target.checked;
+  S.paneFollowTouched = true;
   renderPane();
 });
 el('ideas-all').addEventListener('change', (ev) => {
@@ -1585,7 +1738,6 @@ el('btn-studio-create').addEventListener('click', async () => {
   readHash();
   loadFleet();
   startPolling();
-  pollPane();
   window.addEventListener('hashchange', readHash);
   document.addEventListener('keydown', (ev) => {
     // A modal owns Escape while it is open; clearing the graph selection

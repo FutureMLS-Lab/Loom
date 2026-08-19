@@ -14,11 +14,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Any
 
 from loom import ar_task as ar
+from loom import paper_fetch
 
 REGISTRY_VERSION = 1
 OUTPUT_SUBDIR = "review-output"
@@ -195,6 +197,43 @@ def register_project(
     return record
 
 
+def review_root() -> Path:
+    """Managed home for fetched papers: factories/review/<venue>/<paper>/.
+
+    Local directories register in place; only URL imports live here.
+    """
+    override = os.environ.get("LOOM_REVIEW_ROOT", "").strip()
+    return (
+        Path(override).expanduser()
+        if override
+        else Path.home() / ".loom" / "factories" / "review"
+    )
+
+
+def import_from_url(
+    url: str, *, title: str = "", venue: str = ""
+) -> dict[str, Any]:
+    """Fetch a paper off a public URL (arXiv, OpenReview, direct PDF) and
+    register the downloaded copy as a review project."""
+    clean = str(url or "").strip()
+    if not clean:
+        raise ValueError("a paper URL is required")
+    name = title.strip() or paper_fetch.probe_title(clean)
+    folder = (
+        paper_fetch.slugify(name)
+        or hashlib.sha256(clean.encode()).hexdigest()[:12]
+    )
+    dest = review_root() / (venue.strip().lower() or "unsorted") / folder
+    fetched = paper_fetch.fetch_paper_pdf(clean, dest / "paper.pdf")
+    record = register_project(
+        str(dest),
+        title=name or str(fetched.get("title") or "").strip() or dest.name,
+        venue=venue,
+    )
+    update_state(str(record["id"]), source_url=clean)
+    return record
+
+
 def unregister_project(project_id: str) -> bool:
     """Drop a project from the registry; its files stay on disk."""
     with _LOCK:
@@ -233,6 +272,229 @@ def list_projects() -> list[dict[str, Any]]:
     return out
 
 
+_RUN_NAME_RE = re.compile(r"^[0-9][0-9T.:Z\-]{7,39}$")
+RUN_FILES = ("review.md", "panel.json")
+
+
+def list_runs(project_id: str) -> list[dict[str, Any]]:
+    """Every persisted panel run for a project, newest first."""
+    source = _source_for(project_id)
+    if source is None:
+        return []
+    runs_dir = output_root(source) / "reviews"
+    out: list[dict[str, Any]] = []
+    if not runs_dir.is_dir():
+        return out
+    for entry in sorted(runs_dir.iterdir(), reverse=True):
+        if not entry.is_dir() or not _RUN_NAME_RE.match(entry.name):
+            continue
+        panel = _read_json(entry / "panel.json", {})
+        out.append(
+            {
+                "run": entry.name,
+                "scores": panel.get("scores") or {},
+                "headline": str(panel.get("headline") or ""),
+                "deciding_model": str(panel.get("deciding_model") or ""),
+                "models": panel.get("models") or [],
+                "has_review": (entry / "review.md").is_file(),
+            }
+        )
+    return out
+
+
+def run_file(project_id: str, run: str, name: str) -> Path | None:
+    """A run artifact's path, or None - names and run ids are whitelisted so
+    nothing outside the project's own review-output can be served."""
+    if name not in RUN_FILES or not _RUN_NAME_RE.match(str(run or "")):
+        return None
+    source = _source_for(project_id)
+    if source is None:
+        return None
+    path = output_root(source) / "reviews" / run / name
+    return path if path.is_file() else None
+
+
+def review_text(project_id: str, run: str = "") -> str:
+    """The assembled review.md of a run (latest when *run* is empty)."""
+    if not run:
+        state = read_state(project_id)
+        latest = state.get("latest_review") or {}
+        run = Path(str(latest.get("path") or "")).name
+    path = run_file(project_id, run, "review.md")
+    if path is None:
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+# --- Venue review forms --------------------------------------------------------
+#
+# Venues do not share one review form. The panel is told the venue's ACTUAL
+# form - its sections and its native score scales - so the report reads like
+# a review from that venue, not a generic one. The canonical '## Scores'
+# block stays mandatory on top: the factory's comparators (lowest-rating
+# reviewer decides) read it, whatever the venue's own scale is.
+#
+# Forms drift year to year; these are representative shapes per venue family,
+# and OpenReview-imported projects override them with the live form schema.
+
+_FORM_FAMILIES: dict[str, str] = {
+    "iclr": (
+        "## Summary - neutral restatement of the paper's claims\n"
+        "## Soundness - venue-native score 1-4 with one-line reason\n"
+        "## Presentation - venue-native score 1-4 with one-line reason\n"
+        "## Contribution - venue-native score 1-4 with one-line reason\n"
+        "## Strengths - itemised\n"
+        "## Weaknesses - itemised, each concrete and actionable\n"
+        "## Questions for the authors - what would change your score\n"
+        "## Limitations and ethics - flag concerns or state none\n"
+        "Native scales: rating 1-10, confidence 1-5."
+    ),
+    "neurips": (
+        "## Summary\n"
+        "## Quality - venue-native score 1-4 with reason\n"
+        "## Clarity - venue-native score 1-4 with reason\n"
+        "## Significance - venue-native score 1-4 with reason\n"
+        "## Originality - venue-native score 1-4 with reason\n"
+        "## Strengths\n"
+        "## Weaknesses\n"
+        "## Questions for the authors\n"
+        "## Limitations and ethics - authors must have addressed limitations; check it\n"
+        "Native scales: rating 1-10, confidence 1-5."
+    ),
+    "cvf": (
+        "## Paper summary - what the paper does, in the reviewer's own words\n"
+        "## Strengths - itemised\n"
+        "## Weaknesses - itemised; a CVF review lives or dies on concrete weaknesses\n"
+        "## Final rating justification - tie the verdict to the weaknesses\n"
+        "## Additional comments - presentation, figures, typos\n"
+        "Native scales: final rating 1-5 (1 strong reject, 2 reject, 3 borderline, "
+        "4 accept, 5 strong accept), confidence 1-5. State the 1-5 verdict inside "
+        "the justification section."
+    ),
+    "arr": (
+        "## Paper summary\n"
+        "## Summary of strengths\n"
+        "## Summary of weaknesses\n"
+        "## Comments, suggestions and typos - actionable, line-referenced where possible\n"
+        "Native scales (state each with a one-line reason): soundness 1-5, "
+        "excitement 1-5, overall assessment 1-5, confidence 1-5, "
+        "reproducibility 1-5."
+    ),
+    "aaai": (
+        "## Summary\n"
+        "## Novelty - venue-native score 1-5 with reason\n"
+        "## Soundness - venue-native score 1-5 with reason\n"
+        "## Impact - venue-native score 1-5 with reason\n"
+        "## Clarity - venue-native score 1-5 with reason\n"
+        "## Strengths\n"
+        "## Weaknesses\n"
+        "## Questions for the authors\n"
+        "Native scales: overall 1-10, confidence 1-5."
+    ),
+    "kdd": (
+        "## Summary\n"
+        "## Novelty - venue-native score 1-5 with reason\n"
+        "## Technical quality - venue-native score 1-5 with reason\n"
+        "## Significance for the field - venue-native score 1-5 with reason\n"
+        "## Strengths\n"
+        "## Weaknesses\n"
+        "## Reproducibility - data/code availability and clarity of setup\n"
+        "Native scales: overall 1-6, confidence 1-5."
+    ),
+    "db": (
+        "## Summary\n"
+        "## Three strong points - S1, S2, S3\n"
+        "## Three weak points - W1, W2, W3\n"
+        "## Detailed comments - D1, D2, ... keyed to the weak points\n"
+        "## Revision items - what a revision must fix to flip the verdict\n"
+        "Native scale: overall in {accept, weak accept, weak reject, reject}."
+    ),
+    "robotics": (
+        "## Summary\n"
+        "## Contribution to the field - venue-native score 1-5 with reason\n"
+        "## Strengths\n"
+        "## Weaknesses\n"
+        "## Comments on experiments and (if any) video/hardware evidence\n"
+        "Native scales: overall 1-5, confidence 1-5."
+    ),
+    "speech": (
+        "## Summary\n"
+        "## Technical correctness - venue-native score 1-5 with reason\n"
+        "## Novelty - venue-native score 1-5 with reason\n"
+        "## Experimental validation - venue-native score 1-5 with reason\n"
+        "## Strengths\n"
+        "## Weaknesses\n"
+        "Native scales: overall 1-5, confidence 1-5."
+    ),
+}
+
+_VENUE_FAMILY: dict[str, str] = {
+    "iclr": "iclr", "colm": "iclr", "aistats": "iclr", "uai": "iclr",
+    "corl": "iclr", "rss": "iclr",
+    "neurips": "neurips",
+    "icml": "neurips",
+    "cvpr": "cvf", "iccv": "cvf", "eccv": "cvf", "wacv": "cvf", "mm": "cvf",
+    "acl": "arr", "emnlp": "arr", "naacl": "arr", "coling": "arr",
+    "aaai": "aaai", "ijcai": "aaai",
+    "kdd": "kdd", "sigir": "kdd", "www": "kdd", "wsdm": "kdd",
+    "vldb": "db", "icde": "db", "sigmod": "db",
+    "icra": "robotics", "iros": "robotics",
+    "icassp": "speech", "interspeech": "speech",
+}
+
+
+def venue_form_text(venue: str) -> str:
+    """The venue's review-form block for the reviewer prompt, or ''."""
+    family = _VENUE_FAMILY.get(str(venue or "").strip().lower())
+    form = _FORM_FAMILIES.get(family or "")
+    if not form:
+        return ""
+    return (
+        f"=== venue review form: {ar.venue_label(venue)} ===\n"
+        "This venue's reviewers answer a specific form. Structure the BODY of "
+        "your review as exactly these sections, and state every venue-native "
+        "score where the section asks for it:\n"
+        f"{form}\n"
+        "Keep the canonical '## Scores' block required by the reviewer "
+        "instructions as well - the factory's comparators read it; map your "
+        "venue-native verdict onto it honestly.\n"
+        "=== end venue review form ==="
+    )
+
+
+def _live_form_text(state: dict[str, Any]) -> str:
+    """The live OpenReview form of this paper's own forum, when reachable.
+
+    Best-effort by design: needs the project to have come off an OpenReview
+    link and a cached sign-in. The live schema beats any static family."""
+    from loom import openreview_submit as ors
+
+    forum = paper_fetch.openreview_forum_id(str(state.get("source_url") or ""))
+    auth = ors.cached_auth()
+    if not forum or not auth:
+        return ""
+    try:
+        for inv in ors.reply_invitations(forum, auth["token"]):
+            if str(inv.get("id") or "").endswith("/Official_Review"):
+                rendered = ors.invitation_form_text(inv)
+                if rendered:
+                    return (
+                        "=== this paper's LIVE OpenReview review form (overrides "
+                        "the static venue form above) ===\n"
+                        f"{rendered}\n"
+                        "Write one review section per field above, using the "
+                        "field's own name as the '## ' heading and honouring "
+                        "its options/limits.\n"
+                        "=== end live form ==="
+                    )
+    except ValueError:
+        pass
+    return ""
+
+
 def _rubric_text(state: dict[str, Any]) -> str:
     rubric = str(state.get("rubric_path") or "").strip()
     if rubric:
@@ -251,8 +513,13 @@ def panel_review(paper_dir: Path, *, skill_text: str = "", **kwargs: Any) -> dic
     The Paper Factory's rounds call this with their own readiness result;
     standalone projects call it via :func:`run_project_review` with the
     structural gate bypassed (an external PDF has no LaTeX tree to check).
+    Whoever calls, the venue's own review form is appended here, so every
+    front reviews to the venue's actual requirements.
     """
     text = skill_text or ar.ar_skill_text(ar.SKILL_REVIEWER)
+    form = venue_form_text(str(kwargs.get("venue") or ar.DEFAULT_VENUE))
+    if form:
+        text = f"{text}\n\n{form}"
     return ar.run_reviewer(paper_dir, text, **kwargs)
 
 
@@ -266,9 +533,13 @@ def run_project_review(project_id: str, on_line: Any = None) -> dict[str, Any]:
     if pdf is None:
         return {"ok": False, "error": f"no PDF found under {source}"}
 
+    skill = _rubric_text(state)
+    live_form = _live_form_text(state)
+    if live_form:
+        skill = f"{skill}\n\n{live_form}"
     res = panel_review(
         source,
-        skill_text=_rubric_text(state),
+        skill_text=skill,
         venue=str(state.get("venue") or ar.DEFAULT_VENUE),
         build={"ok": True, "clean": True, "pdf": str(pdf)},
         # An external PDF has no sections/ tree; structural readiness is the

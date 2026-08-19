@@ -4,7 +4,7 @@ Three concerns after the agent-loop rewrite:
 
 1. **Task CRUD** - list / create / delete tasks (``<project>/.RUD/<slug>/``).
    Each new task auto-creates a git worktree at
-   ``<task>/work/<repo>`` on branch ``zhongzhu/<slug>`` (best-effort -
+   ``<task>/work/<repo>`` on branch ``loom/<slug>`` (best-effort -
    non-git project roots just skip the worktree step).
 2. **Project notes** - one ``<project>/.RUD/NOTES.md`` per project,
    served by ``GET/PUT /api/notes``.
@@ -38,13 +38,15 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote as _urlquote, unquote, urlparse
 
 from loom import agent_hooks
 from loom import ar_task as ar
 from loom import rebuttal_delivery as delivery
 from loom import rebuttal_task as rebuttal
 from loom import review_task as review
+from loom import paper_fetch
+from loom import openreview_submit
 from loom.openclaw import OpenClawClient, OpenClawConfig, openclaw_status
 from loom.paths import (
     AR_ROOT_ENV,
@@ -68,6 +70,7 @@ from loom.rud_task import (
     agent_default_model,
     agent_label,
     agent_model_options,
+    browse_task_dir,
     build_agent_command,
     create_task,
     delete_task,
@@ -92,6 +95,7 @@ from loom.rud_task import (
     read_project_notes,
     read_task_markdown_file,
     read_task_monitor,
+    read_task_text,
     read_template,
     rud_root,
     remove_task_worktree,
@@ -381,6 +385,53 @@ def _available_skill_options(
         default_resolved = ""
     options.sort(key=lambda o: (o["path"] != default_resolved, o["label"].lower()))
     return options
+
+
+def _skill_summary(path: Path, limit: int = 140) -> str:
+    """A skill file's one-line pitch: its frontmatter ``description:`` when
+    it has one, else the first substantive line after the frontmatter."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    body_start = 0
+    if lines and lines[0].strip() == "---":
+        for i, line in enumerate(lines[1:], start=1):
+            if line.strip() == "---":
+                body_start = i + 1
+                break
+            if line.strip().lower().startswith("description:"):
+                desc = line.split(":", 1)[1].strip().strip("\"'")
+                if desc:
+                    return desc[:limit]
+    for line in lines[body_start:]:
+        text = line.strip().lstrip("#").strip()
+        if text and not text.startswith(("---", "<!--")):
+            return text[:limit]
+    return ""
+
+
+def _skills_shelf_text(
+    default_skills: Path, injected: str = "", limit: int = 40
+) -> str:
+    """The whole skill shelf as a menu: name, one-line pitch, path.
+
+    The same on-demand pattern the AR figure menu proved out, generalised:
+    the prompt carries a few hundred tokens of menu instead of every skill's
+    full text, and the agent reads the SKILL.md it needs when it needs it.
+    Skills already injected in full are marked so nobody reads them twice.
+    """
+    injected_paths = {
+        str(p.resolve()) for p in split_skills_paths(injected) if p.is_file()
+    }
+    lines: list[str] = []
+    for option in _available_skill_options(default_skills)[:limit]:
+        mark = " [already injected above]" if option["path"] in injected_paths else ""
+        summary = _skill_summary(Path(option["path"]))
+        lines.append(
+            f"- {option['label']}{mark} - {summary}\n    {option['path']}"
+        )
+    return "\n".join(lines)
 
 
 # --- HTTP response helpers --------------------------------------------------
@@ -862,7 +913,7 @@ def _conversation_transcript_path(
 
 
 def _parse_conversation_transcript(path: Path, agent: str) -> list[dict[str, Any]]:
-    """Normalize Claude/Cursor JSONL into a small Happy-style message protocol."""
+    """Normalize Claude/Cursor JSONL into a small message protocol for clients."""
     try:
         stat = path.stat()
     except OSError:
@@ -2787,6 +2838,13 @@ Default skills:
 {skills or "(none)"}
 ---
 
+The skill shelf - every packaged skill, on demand. When the work ahead
+matches one, READ its file at the listed path before improvising; do not
+paste it back into chat:
+---
+{_skills_shelf_text(default_skills or bundled_skills_path(), meta.skills_path) or "(none found)"}
+---
+
 RUD workflow:
 1. Start from the General goal above and run a short deep-interview. Ask
    one high-leverage question at a time about scope, constraints,
@@ -3565,10 +3623,14 @@ class AgentActivityWatcher:
 
     POLL_SECONDS = 4.0
     RESCAN_SECONDS = 30.0
-    CAPTURE_LINES = 12
-    # Same confirmation the OpenClaw monitor uses: the working indicator
-    # flickers mid-turn, and a ring that blinks on every flicker is noise.
-    IDLE_CONFIRM = 3
+    # A short tail misses the working marker whenever the TUI floods the
+    # pane with tool output for a dozen seconds - the ring then flashed a
+    # false "finished" and cleared it on the next redraw. A deeper capture
+    # plus a longer confirmation makes a finish mean a real stop (~32s of
+    # sustained silence), at the cost of the blink arriving half a minute
+    # after the agent stops.
+    CAPTURE_LINES = 40
+    IDLE_CONFIRM = 8
 
     def __init__(self, registry: WebProjectRegistry) -> None:
         self.registry = registry
@@ -4213,6 +4275,51 @@ def _rebuttal_watch_agent(project_id: str) -> None:
         time.sleep(2)
 
 
+def _rebuttal_join_staged(
+    studio_id: str, claude_registry: Any
+) -> list[dict[str, Any]]:
+    """Register every staged quick-import package under a now-active studio.
+
+    A package is a directory holding the fetched submission.pdf; ones already
+    registered are recognised by source path. Each fresh one is registered and
+    its rebuttal agent started - after the policy approval there is nothing
+    left that needs a human hand.
+    """
+    staged_root = Path.home() / ".loom" / "factories" / "rebuttal" / studio_id
+    if not staged_root.is_dir():
+        return []
+    known = {
+        str(Path(str(p.get("source_path") or "")).resolve())
+        for p in rebuttal.list_projects()
+    }
+    joined: list[dict[str, Any]] = []
+    for package in sorted(staged_root.iterdir()):
+        if not package.is_dir() or not (package / "submission.pdf").is_file():
+            continue
+        if str(package.resolve()) in known:
+            continue
+        try:
+            payload = rebuttal.register_paper_for_studio(
+                studio_id, str(package)
+            )
+        except (ValueError, OSError) as exc:
+            joined.append({"dir": str(package), "error": str(exc)})
+            continue
+        project = payload.get("project") or {}
+        project_id = str(project.get("id") or "")
+        entry: dict[str, Any] = {
+            "project_id": project_id,
+            "title": str(project.get("title") or package.name),
+        }
+        if project_id and bool((project.get("manifest") or {}).get("ready")):
+            started = _rebuttal_start_agent(
+                project_id, CURSOR_DEFAULT_MODEL, claude_registry
+            )
+            entry["agent_started"] = bool(started.get("ok"))
+        joined.append(entry)
+    return joined
+
+
 def _rebuttal_start_agent(
     project_id: str,
     model: str,
@@ -4854,6 +4961,32 @@ def _sweep_stale_review_runs() -> int:
     return cleared
 
 
+def _ar_prior_panel_reviews(state: dict[str, Any], n: int) -> dict[str, str]:
+    """Each model's OWN report from round n-1, for reviewer continuity."""
+    rec = ar.round_record(state, n - 1) or {}
+    stored = rec.get("review") if isinstance(rec.get("review"), dict) else {}
+    out: dict[str, str] = {}
+    for item in stored.get("reviewers") or []:
+        model = str((item or {}).get("model") or "")
+        path = str((item or {}).get("path") or "")
+        if not model or not path:
+            continue
+        try:
+            out[model] = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+    return out
+
+
+def _ar_author_note_text(root: Path, slug: str, n: int) -> str:
+    try:
+        return ar.author_note_path_for(task_root(root, slug), n).read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return ""
+
+
 def _ar_review_job(root: Path, slug: str) -> None:
     """One out-of-band review, triggered from the panel rather than the loop."""
     state = ar.read_ar_state(root, slug)
@@ -4873,6 +5006,8 @@ def _ar_review_job(root: Path, slug: str) -> None:
         build=build,
         models=ar.CURSOR_REVIEWER_MODELS,
         on_line=log,
+        prior_reviews=_ar_prior_panel_reviews(state, max(1, n)),
+        author_note=_ar_author_note_text(root, slug, max(1, n)),
     )
     if not res.get("ok"):
         log(f"failed: {res.get('error')}")
@@ -5474,22 +5609,40 @@ class _ARLoopDriver:
         self._save(state)
         self._note(f"round {n} readiness passed - starting reviewer panel")
 
-        result = review.panel_review(
-            self._paper_dir(),
-            venue=str(state.get("venue") or ar.DEFAULT_VENUE),
-            round_n=n,
-            build=build,
-            readiness=readiness,
-            models=ar.CURSOR_REVIEWER_MODELS,
-            on_line=_ar_logger(self.project_root, self.slug, ar.JOB_REVIEW),
-        )
+        def _panel() -> dict[str, Any]:
+            return review.panel_review(
+                self._paper_dir(),
+                venue=str(state.get("venue") or ar.DEFAULT_VENUE),
+                round_n=n,
+                build=build,
+                readiness=readiness,
+                models=ar.CURSOR_REVIEWER_MODELS,
+                on_line=_ar_logger(self.project_root, self.slug, ar.JOB_REVIEW),
+                # Rebuttal dynamics: each reviewer re-reads its OWN prior
+                # report and the author's response, then re-scores the pages.
+                prior_reviews=_ar_prior_panel_reviews(state, n),
+                author_note=_ar_author_note_text(self.project_root, self.slug, n),
+            )
+
+        result = _panel()
+        if not result.get("ok"):
+            # A panel failure is usually transient (a CLI exec hiccup, a
+            # timeout, one reviewer dying); killing the whole loop over one
+            # blink stranded papers overnight. One retry, then stop for real.
+            self._note(
+                f"round {n} review failed ({result.get('error')}) - "
+                "retrying once in 30s"
+            )
+            if self._stop.wait(30):
+                return
+            result = _panel()
         state = self._state()
         rec = ar.ensure_round(state, n)
         if not result.get("ok"):
             self.last_error = str(result.get("error") or "review failed")
             rec["review_error"] = self.last_error
             self._save(state)
-            self._note(f"round {n} review failed: {self.last_error}")
+            self._note(f"round {n} review failed twice: {self.last_error}")
             self.stop()
             return
 
@@ -5520,6 +5673,12 @@ class _ARLoopDriver:
             "reviewers": stored_reviewers,
         }
         rec.pop("review_error", None)
+        # A round that reviewed fine outdates any earlier manual-review
+        # failure; a stale top-level error would keep an "error" pill on a
+        # perfectly healthy paper.
+        if str(state.get("review_status") or "") == "error":
+            state["review_status"] = "done"
+            state["review_error"] = ""
         state["cost_usd"] = round(
             float(state.get("cost_usd") or 0.0) + float(result.get("cost") or 0.0), 4
         )
@@ -6548,6 +6707,205 @@ def make_handler(
                 "claude_cwd": str(cwd),
             }
 
+        def _rebuttal_quick_import(
+            self, body: dict[str, Any]
+        ) -> tuple[int, bytes, list[tuple[str, str]]]:
+            url = str(body.get("url") or "").strip()
+            forum = paper_fetch.openreview_forum_id(url)
+            if not forum:
+                raise ValueError(
+                    "paste an openreview.net forum link (…?id=<forum>)"
+                )
+            info = paper_fetch.fetch_openreview_forum(forum)
+            conference, year = paper_fetch.venue_of_submission(
+                info.get("submission") or {}
+            )
+            if not conference or not year:
+                raise ValueError(
+                    "could not read the venue off this submission - create "
+                    "the Conference Studio by hand, then add this link there"
+                )
+
+            # One studio per conference cycle: reuse it when it exists.
+            studio = next(
+                (
+                    s
+                    for s in rebuttal.list_studios()
+                    if str(s.get("conference") or "").lower() == conference.lower()
+                    and int(s.get("year") or 0) == year
+                ),
+                None,
+            )
+            created = False
+            if studio is None:
+                group = str(
+                    (info.get("submission") or {}).get("domain")
+                    or f"{conference}.cc/{year}/Conference"
+                )
+                payload = rebuttal.register_studio(
+                    conference,
+                    year,
+                    f"https://openreview.net/group?id={_urlquote(group)}",
+                )
+                studio = payload.get("studio") or payload
+                created = True
+            studio_id = str(studio.get("id") or "")
+
+            # The paper package lands on disk either way; registration waits
+            # for the human policy gate when the studio is not active yet.
+            fetched = paper_fetch.materialize_rebuttal_package(
+                url, Path.home() / ".loom" / "factories" / "rebuttal" / studio_id
+            )
+            state = rebuttal.read_studio(studio_id)
+            if str(state.get("stage")) == rebuttal.STUDIO_STAGE_ACTIVE:
+                project = rebuttal.register_paper_for_studio(
+                    studio_id, str(fetched["dir"]), title=str(fetched.get("title") or "")
+                )
+                project_id = str((project.get("project") or {}).get("id") or "")
+                if project_id and bool(
+                    ((project.get("project") or {}).get("manifest") or {}).get("ready")
+                ):
+                    started = _rebuttal_start_agent(
+                        project_id, CURSOR_DEFAULT_MODEL, claude_registry
+                    )
+                    project["agent_start"] = started
+                return _json_bytes(
+                    {
+                        "ok": True,
+                        "studio_id": studio_id,
+                        "project_id": project_id,
+                        "title": fetched.get("title") or "",
+                        "message": "paper registered - the rebuttal agent is on it",
+                    },
+                    201,
+                )
+
+            # Fresh (or unapproved) studio: kick policy discovery so the only
+            # human step left is the approval.
+            if not str(state.get("active_job") or ""):
+                state["active_job"] = rebuttal.JOB_POLICY
+                state["stage"] = rebuttal.STUDIO_STAGE_POLICY_DRAFT
+                state["error"] = ""
+                state["policy_approved_at"] = ""
+                rebuttal.append_log(
+                    state, "quick import: started official policy discovery"
+                )
+                rebuttal.write_studio(studio_id, state)
+                _ar_run_async(
+                    _rebuttal_policy_job, studio_id, _ar_headless_model(None)
+                )
+            return _json_bytes(
+                {
+                    "ok": True,
+                    "studio_id": studio_id,
+                    "staged_dir": str(fetched["dir"]),
+                    "title": fetched.get("title") or "",
+                    "created_studio": created,
+                    "message": (
+                        f"{conference} {year} policy is being discovered - "
+                        "approve it once and the paper joins and starts by itself"
+                    ),
+                },
+                202,
+            )
+
+        def _review_submit_openreview(
+            self, project_id: str, body: dict[str, Any]
+        ) -> tuple[int, bytes, list[tuple[str, str]]]:
+            """Fill the venue's Official_Review form from the panel report.
+
+            Dry run by default; ``confirm: true`` posts. Only projects that
+            were imported off an OpenReview forum link know their forum, and
+            only an account holding the reviewer role can sign the form.
+            """
+            auth = openreview_submit.cached_auth()
+            if not auth:
+                return _json_bytes(
+                    {"ok": False, "error": "not signed in to OpenReview"}, 401
+                )
+            state = review.read_state(project_id)
+            forum = paper_fetch.openreview_forum_id(str(state.get("source_url") or ""))
+            if not forum:
+                return _json_bytes(
+                    {
+                        "ok": False,
+                        "error": (
+                            "this project was not imported from an OpenReview "
+                            "forum link, so there is no forum to submit to"
+                        ),
+                    },
+                    400,
+                )
+            latest = state.get("latest_review") or {}
+            review_md = review.review_text(project_id)
+            if not latest or not review_md:
+                return _json_bytes(
+                    {"ok": False, "error": "run the reviewer panel first"}, 409
+                )
+            try:
+                invitation = openreview_submit.review_invitation(
+                    forum, auth["token"]
+                )
+                if invitation is None:
+                    raise ValueError(
+                        "no open Official_Review invitation this account can "
+                        "sign - are you an assigned reviewer of this paper, "
+                        "and is the review window open?"
+                    )
+                signature = openreview_submit.pick_reviewer_signature(invitation)
+                content, mapping = openreview_submit.build_review_content(
+                    invitation,
+                    review_md,
+                    latest.get("scores") or {},
+                    headline=str(latest.get("headline") or ""),
+                )
+            except ValueError as exc:
+                return _json_bytes({"ok": False, "error": str(exc)}, 400)
+            fields = [
+                {
+                    "field": name,
+                    "chars": len(str(value.get("value"))),
+                    "preview": str(value.get("value"))[:160],
+                }
+                for name, value in content.items()
+            ]
+            if not body.get("confirm"):
+                return _json_bytes(
+                    {
+                        "ok": True,
+                        "dry_run": True,
+                        "forum": forum,
+                        "invitation": str(invitation.get("id") or ""),
+                        "signature": signature,
+                        "fields": fields,
+                        "mapping": mapping,
+                        "user": auth["username"],
+                    }
+                )
+            try:
+                note_id = openreview_submit.post_reply(
+                    auth["token"],
+                    str(invitation.get("id") or ""),
+                    signature,
+                    forum,
+                    forum,  # a review replies to the submission note itself
+                    content,
+                )
+            except ValueError as exc:
+                return _json_bytes({"ok": False, "error": str(exc)}, 400)
+            review.update_state(
+                project_id,
+                openreview_review={
+                    "at": review._now(),
+                    "forum": forum,
+                    "invitation": str(invitation.get("id") or ""),
+                    "signature": signature,
+                    "note_id": note_id,
+                    "by": auth["username"],
+                },
+            )
+            return _json_bytes({"ok": True, "note_id": note_id, "fields": fields})
+
         # ===== GET =====
 
         def do_GET(self) -> None:  # noqa: N802
@@ -6569,8 +6927,14 @@ def make_handler(
                 "/review-factory.html",
                 "/rebuttal-factory",
                 "/rebuttal-factory.html",
+                "/terminal",
+                "/terminal.html",
             ):
-                if path.startswith("/rebuttal-factory"):
+                if path.startswith("/terminal"):
+                    # The Agent Terminal as its own page: the factory pages
+                    # iframe it to reuse the exact attach/input protocol.
+                    name = "terminal.html"
+                elif path.startswith("/rebuttal-factory"):
                     name = "rebuttal_factory.html"
                 elif path.startswith("/review-factory"):
                     name = "review_factory.html"
@@ -6814,8 +7178,54 @@ def make_handler(
                     )
                 else:
                     st, b, h = _json_bytes(
-                        {"ok": True, "project": record, "state": state}
+                        {
+                            "ok": True,
+                            "project": record,
+                            "state": state,
+                            "runs": review.list_runs(project_id),
+                        }
                     )
+                self._send(st, b, h)
+                return
+
+            m_review_file = re.match(
+                r"^/api/review/projects/([0-9a-f]{12})/runs/"
+                r"([0-9][0-9T.:Z\-]{7,39})/(review\.md|panel\.json)$",
+                path,
+            )
+            if m_review_file:
+                project_id, run, name = m_review_file.groups()
+                file_path = review.run_file(project_id, run, name)
+                if file_path is None:
+                    st, b, h = _json_bytes({"ok": False, "error": "no such report"}, 404)
+                    self._send(st, b, h)
+                    return
+                data = file_path.read_bytes()
+                headers = [
+                    (
+                        "Content-Type",
+                        "text/markdown; charset=utf-8"
+                        if name.endswith(".md")
+                        else "application/json; charset=utf-8",
+                    ),
+                    ("Content-Length", str(len(data))),
+                    ("Cache-Control", "no-store"),
+                ]
+                qs = parse_qs(parsed.query or "")
+                if (qs.get("dl") or [""])[0]:
+                    # Download names carry the run stamp so two reports of the
+                    # same paper don't overwrite each other in ~/Downloads.
+                    headers.append(
+                        (
+                            "Content-Disposition",
+                            f'attachment; filename="review-{run}-{name}"',
+                        )
+                    )
+                self._send(200, data, headers)
+                return
+
+            if path == "/api/openreview/auth":
+                st, b, h = _json_bytes(openreview_submit.auth_status())
                 self._send(st, b, h)
                 return
 
@@ -6950,6 +7360,27 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
+            m_ar_skills_report = re.match(
+                r"^/api/tasks/([a-zA-Z0-9][a-zA-Z0-9_-]*)/ar/skills-report$", path
+            )
+            if m_ar_skills_report:
+                root, pid = self._resolve_scope(parsed)
+                if root is None:
+                    self._bad_project()
+                    return
+                slug = m_ar_skills_report.group(1)
+                state = ar.read_ar_state(root, slug)
+                if not state:
+                    st, b, h = _json_bytes(
+                        {"ok": False, "error": "this task has no AR state"}, 404
+                    )
+                else:
+                    st, b, h = _json_bytes(
+                        {"ok": True, **ar.paper_skills_report(root, slug, state)}
+                    )
+                self._send(st, b, h)
+                return
+
             if path == "/api/ar/skills":
                 # What the agents are told, readable from the outside. One
                 # skill's body when asked for, otherwise the catalogue.
@@ -6964,6 +7395,42 @@ def make_handler(
                     )
                 else:
                     st, b, h = _json_bytes({"ok": True, "skills": ar.skill_catalog()})
+                self._send(st, b, h)
+                return
+
+            m_files = re.match(r"^/api/tasks/([^/]+)/files$", path)
+            if m_files:
+                # The task tree as an editor sees it: PLAN.md and task.json at
+                # the top, the worktree below. One directory per request, so a
+                # repository with a deep tree costs nothing until it is opened.
+                root, _pid = self._resolve_scope(parsed)
+                if root is None:
+                    self._bad_project()
+                    return
+                slug = m_files.group(1)
+                if not _SLUG_RE.match(slug):
+                    st, b, h = _json_bytes({"error": "invalid slug"}, 400)
+                    self._send(st, b, h)
+                    return
+                qs = parse_qs(parsed.query or "")
+                rel = (qs.get("path") or [""])[0].strip().lstrip("/")
+                base = task_root(root, slug)
+                target = path_under_task(base, rel) if rel else base
+                if target is None or not target.exists():
+                    st, b, h = _json_bytes({"ok": False, "error": "not found"}, 404)
+                elif target.is_dir():
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": True,
+                            "path": rel,
+                            "dir": True,
+                            "entries": browse_task_dir(target),
+                        }
+                    )
+                else:
+                    st, b, h = _json_bytes(
+                        {"ok": True, "path": rel, "dir": False, **read_task_text(target)}
+                    )
                 self._send(st, b, h)
                 return
 
@@ -7014,6 +7481,72 @@ def make_handler(
                 # Host-wide on purpose: the point is to surface an agent that
                 # finished in a project you are not currently looking at.
                 st, b, h = _json_bytes(activity_watcher.snapshot())
+                self._send(st, b, h)
+                return
+
+            if path == "/api/factories/approvals":
+                # One inbox for every human gate on the floor, so "what is
+                # waiting on me" is a single glance instead of three pages.
+                items: list[dict[str, Any]] = []
+                ar_pid = ""
+                for project in pr.list_projects():
+                    if project.get("path") == str(ar.ar_root()):
+                        ar_pid = str(project.get("id") or "")
+                        break
+                if ar_pid:
+                    try:
+                        overview = self._ar_overview(Path(str(ar.ar_root())), ar_pid)
+                        papers = list(overview.get("orphans") or [])
+                        for studio in overview.get("studios") or []:
+                            papers.extend(studio.get("children") or [])
+                        for paper in papers:
+                            stage = str(paper.get("stage") or "")
+                            if stage == ar.STAGE_AWAIT_DRAFT_REVIEW:
+                                items.append({
+                                    "factory": "paper", "gate": "draft",
+                                    "id": paper.get("slug"), "project": ar_pid,
+                                    "title": paper.get("title"),
+                                    "detail": "draft ready for your review",
+                                })
+                            elif stage == ar.STAGE_AWAIT_FINAL_REVIEW:
+                                items.append({
+                                    "factory": "paper", "gate": "final",
+                                    "id": paper.get("slug"), "project": ar_pid,
+                                    "title": paper.get("title"),
+                                    "detail": (
+                                        f"{paper.get('round')}/{paper.get('max_rounds')} rounds"
+                                        f" · best {paper.get('best_rating')}/10"
+                                    ),
+                                })
+                    except Exception:  # noqa: BLE001 - inbox is best-effort
+                        pass
+                try:
+                    for record in rebuttal.list_projects():
+                        pid = str(record.get("id") or "")
+                        state = rebuttal.read_state(pid)
+                        stage = str(state.get("stage") or "")
+                        title = str(record.get("title") or pid)
+                        if stage == rebuttal.STAGE_RESPONSES:
+                            items.append({
+                                "factory": "rebuttal", "gate": "validate",
+                                "id": pid, "title": title,
+                                "detail": "responses drafted - validate, then approve",
+                            })
+                        elif stage == rebuttal.STAGE_VALIDATED:
+                            items.append({
+                                "factory": "rebuttal", "gate": "content",
+                                "id": pid, "title": title,
+                                "detail": "validation passed - content approval (Gate 1)",
+                            })
+                        elif stage == rebuttal.STAGE_AWAIT_DELIVERY_APPROVAL:
+                            items.append({
+                                "factory": "rebuttal", "gate": "delivery",
+                                "id": pid, "title": title,
+                                "detail": "delivery preflight passed (Gate 2)",
+                            })
+                except Exception:  # noqa: BLE001
+                    pass
+                st, b, h = _json_bytes({"ok": True, "items": items})
                 self._send(st, b, h)
                 return
 
@@ -7853,6 +8386,14 @@ def make_handler(
                                 409,
                             )
                         else:
+                            # Quick imports staged their packages while the
+                            # policy was pending; approval is the last human
+                            # step, so they join and start on their own now.
+                            joined = _rebuttal_join_staged(
+                                studio_id, claude_registry
+                            )
+                            if joined:
+                                payload["joined_papers"] = joined
                             st, b, h = _json_bytes(payload)
                     self._send(st, b, h)
                     return
@@ -7865,10 +8406,23 @@ def make_handler(
                         )
                     else:
                         try:
+                            paper_source = str(body.get("path") or "").strip()
+                            paper_title = str(body.get("title") or "")
+                            if paper_source.startswith(("http://", "https://")):
+                                # An OpenReview forum link: pull the submission
+                                # PDF and every official review into a managed
+                                # package, then import that like any directory.
+                                fetched = paper_fetch.materialize_rebuttal_package(
+                                    paper_source,
+                                    Path.home() / ".loom" / "factories"
+                                    / "rebuttal" / studio_id,
+                                )
+                                paper_source = str(fetched["dir"])
+                                paper_title = paper_title or str(fetched.get("title") or "")
                             payload = rebuttal.register_paper_for_studio(
                                 studio_id,
-                                str(body.get("path") or ""),
-                                title=str(body.get("title") or ""),
+                                paper_source,
+                                title=paper_title,
                             )
                         except (ValueError, OSError) as exc:
                             st, b, h = _json_bytes(
@@ -7918,12 +8472,20 @@ def make_handler(
 
             if path == "/api/review/projects":
                 try:
-                    payload = review.register_project(
-                        str(body.get("path") or ""),
-                        title=str(body.get("title") or ""),
-                        venue=str(body.get("venue") or ""),
-                        rubric_path=str(body.get("rubric_path") or ""),
-                    )
+                    url_value = str(body.get("url") or "").strip()
+                    if url_value:
+                        payload = review.import_from_url(
+                            url_value,
+                            title=str(body.get("title") or ""),
+                            venue=str(body.get("venue") or ""),
+                        )
+                    else:
+                        payload = review.register_project(
+                            str(body.get("path") or ""),
+                            title=str(body.get("title") or ""),
+                            venue=str(body.get("venue") or ""),
+                            rubric_path=str(body.get("rubric_path") or ""),
+                        )
                 except ValueError as exc:
                     st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
                 except OSError as exc:
@@ -7953,10 +8515,42 @@ def make_handler(
                         review.update_state(project_id, status="running", error="")
                         _ar_run_async(_review_run_job, project_id)
                         st, b, h = _json_bytes({"ok": True, "status": "running"}, 202)
+                elif action == "submit-openreview":
+                    st, b, h = self._review_submit_openreview(project_id, body)
                 else:
                     st, b, h = _json_bytes(
                         {"ok": False, "error": f"unknown review action {action!r}"}, 404
                     )
+                self._send(st, b, h)
+                return
+
+            if path == "/api/openreview/login":
+                try:
+                    result = openreview_submit.login(
+                        str(body.get("username") or ""),
+                        str(body.get("password") or ""),
+                    )
+                    st, b, h = _json_bytes(result)
+                except ValueError as exc:
+                    st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
+                self._send(st, b, h)
+                return
+
+            if path == "/api/openreview/logout":
+                st, b, h = _json_bytes(openreview_submit.logout())
+                self._send(st, b, h)
+                return
+
+            if path == "/api/rebuttal/quick-import":
+                # One OpenReview forum link does everything derivable: venue
+                # and year come off the submission itself, the studio is
+                # found or created (policy discovery kicked off), and the
+                # paper package is fetched. Only the policy approval stays
+                # human - by design.
+                try:
+                    st, b, h = self._rebuttal_quick_import(body)
+                except ValueError as exc:
+                    st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
                 self._send(st, b, h)
                 return
 
@@ -8053,6 +8647,115 @@ def make_handler(
                         if result.get("ok")
                         else result,
                         200 if result.get("ok") else 500,
+                    )
+                    self._send(st, b, h)
+                    return
+
+                if action == "submit-openreview":
+                    # The human's confirm click is the trigger; a dry run
+                    # first shows exactly what would land where.
+                    auth = openreview_submit.cached_auth()
+                    if not auth:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": "not signed in to OpenReview"},
+                            401,
+                        )
+                        self._send(st, b, h)
+                        return
+                    if str(state.get("stage") or "") in (
+                        rebuttal.STAGE_INTAKE,
+                        rebuttal.STAGE_CONCERNS,
+                    ):
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": "responses are not written yet"},
+                            409,
+                        )
+                        self._send(st, b, h)
+                        return
+                    source = rebuttal._source_for(project_id)
+                    forum_file = source / "forum.json" if source else None
+                    if forum_file is None or not forum_file.is_file():
+                        st, b, h = _json_bytes(
+                            {
+                                "ok": False,
+                                "error": (
+                                    "no forum.json in the source package - only "
+                                    "papers imported from an OpenReview link "
+                                    "carry the note ids replies must target"
+                                ),
+                            },
+                            400,
+                        )
+                        self._send(st, b, h)
+                        return
+                    try:
+                        forum_info = json.loads(
+                            forum_file.read_text(encoding="utf-8")
+                        )
+                        responses = {
+                            rid: rebuttal.response_body(project_id, rid)
+                            for rid in (state.get("responses") or {})
+                        }
+                        plan = openreview_submit.build_plan(
+                            forum_info, responses, auth["token"]
+                        )
+                    except (ValueError, OSError) as exc:
+                        st, b, h = _json_bytes(
+                            {"ok": False, "error": str(exc)}, 400
+                        )
+                        self._send(st, b, h)
+                        return
+                    preview = [
+                        {
+                            k: item.get(k)
+                            for k in (
+                                "reviewer_id",
+                                "reviewer_label",
+                                "replyto",
+                                "characters",
+                                "error",
+                            )
+                            if item.get(k) is not None
+                        }
+                        for item in plan["items"]
+                    ]
+                    if not body.get("confirm"):
+                        st, b, h = _json_bytes(
+                            {
+                                "ok": True,
+                                "dry_run": True,
+                                "forum": plan["forum"],
+                                "invitation": plan["invitation"],
+                                "signature": plan["signature"],
+                                "items": preview,
+                                "user": auth["username"],
+                            }
+                        )
+                        self._send(st, b, h)
+                        return
+                    results = openreview_submit.execute_plan(plan, auth["token"])
+                    posted = sum(1 for r in results if r.get("ok"))
+                    state = rebuttal.read_state(project_id)
+                    state["openreview_submission"] = {
+                        "at": rebuttal._now(),
+                        "forum": plan["forum"],
+                        "invitation": plan["invitation"],
+                        "signature": plan["signature"],
+                        "by": auth["username"],
+                        "results": results,
+                    }
+                    rebuttal.append_log(
+                        state,
+                        f"OpenReview: posted {posted}/{len(results)} replies "
+                        f"as {plan['signature']}",
+                    )
+                    rebuttal.write_state(project_id, state)
+                    st, b, h = _json_bytes(
+                        {
+                            "ok": posted == len(results) and posted > 0,
+                            "results": results,
+                            "project": rebuttal.project_payload(project_id),
+                        }
                     )
                     self._send(st, b, h)
                     return

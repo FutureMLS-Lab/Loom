@@ -316,10 +316,10 @@ def test_create_task_auto_creates_worktree(tmp_path: Path) -> None:
     assert wt is not None
     assert wt == task_root(repo, meta.slug) / "work" / "myrepo"
     assert (wt / "README.md").is_file()
-    # Branch follows the zhongzhu/<slug> convention.
+    # Branch follows the loom/<slug> convention.
     reloaded = read_meta(repo, meta.slug)
     assert reloaded is not None
-    assert reloaded.branch == f"zhongzhu/{meta.slug}"
+    assert reloaded.branch == f"loom/{meta.slug}"
     assert reloaded.worktree_path == str(wt)
 
 
@@ -435,7 +435,7 @@ def test_prepare_task_worktree_from_child_repo(tmp_path: Path) -> None:
     wt, branch, msg = prepare_task_worktree_from(container, meta.slug, child)
     assert wt is not None, msg
     assert wt == task_root(container, meta.slug) / "work" / "xorl-internal"
-    assert branch == f"zhongzhu/{meta.slug}"
+    assert branch == f"loom/{meta.slug}"
 
 
 def test_multiple_worktrees_per_task(tmp_path: Path) -> None:
@@ -458,7 +458,7 @@ def test_multiple_worktrees_per_task(tmp_path: Path) -> None:
     after1 = read_meta(container, meta.slug)
     assert after1.worktrees == [str(wt1)]
     assert after1.worktree_path == str(wt1)
-    assert after1.branch == f"zhongzhu/{meta.slug}"
+    assert after1.branch == f"loom/{meta.slug}"
     assert len(after1.branches) == 1
 
     wt2, _, _ = prepare_task_worktree_from(container, meta.slug, container / "xorl-sglang")
@@ -467,14 +467,14 @@ def test_multiple_worktrees_per_task(tmp_path: Path) -> None:
     after2 = read_meta(container, meta.slug)
     assert sorted(after2.worktrees) == sorted([str(wt1), str(wt2)])
     assert len(after2.branches) == len(after2.worktrees)
-    # Every worktree gets the SAME branch name (zhongzhu/<slug>) - branches
+    # Every worktree gets the SAME branch name (loom/<slug>) - branches
     # are scoped per repo so there's no collision.
-    expected_branch = f"zhongzhu/{meta.slug}"
+    expected_branch = f"loom/{meta.slug}"
     assert after2.branches == [expected_branch, expected_branch]
     # Primary stays as the first one (xorl-internal was added first).
     assert after2.worktree_path == str(wt1)
     assert list_task_worktrees(container, meta.slug)  # populated
-    # Verify each git repo really has its own independent zhongzhu/<slug>
+    # Verify each git repo really has its own independent loom/<slug>
     # branch (proves the "same name across repos" guarantee).
     for repo_root in (container / "xorl-internal", container / "xorl-sglang"):
         result = subprocess.run(
@@ -598,7 +598,7 @@ def test_list_task_worktree_statuses(tmp_path: Path) -> None:
     statuses = list_task_worktree_statuses(container, meta.slug)
     assert len(statuses) == 2
     for s in statuses:
-        assert s["branch"] == f"zhongzhu/{meta.slug}"
+        assert s["branch"] == f"loom/{meta.slug}"
         assert s["clean"] is True
 
 

@@ -347,6 +347,20 @@ def venue_entry(venue_id: str) -> dict[str, Any]:
     return VENUES[0]
 
 
+def venue_label(venue_id: str) -> str:
+    """The venue's display name, honouring venues we have no template for.
+
+    The Paper Factory only writes for templated venues, but the Review
+    Factory sits its panel in front of anything - a CVPR PDF must not be
+    reviewed under an ICLR letterhead just because the catalog fell back.
+    """
+    v = str(venue_id or "").strip()
+    for entry in VENUES:
+        if entry["id"] == v.lower():
+            return str(entry["label"])
+    return v.upper() if v else str(VENUES[0]["label"])
+
+
 def direction_label(state: dict[str, Any]) -> str:
     """Human-readable direction, preferring the user's custom text."""
     custom = str(state.get("custom_direction") or "").strip()
@@ -2447,24 +2461,53 @@ def _cursor_pdf_review_prompt(
     pdf_path: Path,
     venue: str,
     round_n: int,
+    prior_review: str = "",
+    author_response: str = "",
 ) -> str:
-    """Prompt one independent reviewer to judge only the compiled PDF."""
+    """Prompt one independent reviewer to judge only the compiled PDF.
+
+    From round two on, the reviewer also receives ITS OWN previous report and
+    the author's response note - the rebuttal dynamic of a real venue - but
+    never another reviewer's report, and never the LaTeX source.
+    """
+    continuity = ""
+    if prior_review.strip():
+        response_block = (
+            f"=== the author's response note for this revision ===\n"
+            f"{author_response.strip()}\n"
+            f"=== end author response ===\n\n"
+            if author_response.strip()
+            else ""
+        )
+        continuity = (
+            f"=== your own review of the previous revision (round {round_n - 1}) ===\n"
+            f"{prior_review.strip()}\n"
+            f"=== end previous review ===\n\n"
+            f"{response_block}"
+            "You have reviewed this submission before; the report above is your "
+            "own. The author's note claims what changed - treat claims as "
+            "claims and verify each against the PDF itself. Acknowledge what "
+            "is genuinely fixed, keep pressing what is not, and raise anything "
+            "new. Score the CURRENT pages on their merits; do not anchor on "
+            "your previous rating in either direction.\n\n"
+        )
     return (
         f"{skill_text}\n\n"
         "=== end reviewer instructions ===\n\n"
-        f"Venue: {venue_entry(venue).get('label')}\n"
+        f"Venue: {venue_label(venue)}\n"
         f"Review round: {round_n}\n\n"
         "You are one member of a three-model independent reviewer panel. Use the "
         "full reasoning budget configured by your model and think deeply before "
         "returning the report. Do not reveal private chain-of-thought; return only "
         "the required review.\n\n"
+        f"{continuity}"
         "The sole paper artifact for this review is the compiled PDF below:\n"
         f"{pdf_path}\n\n"
         "Open and inspect every page of that PDF. Judge both the scientific content "
         "and the rendered artifact (tables, figures, equations, clipping, legibility, "
         "and page-level presentation). The PDF is the source of truth. Do not search "
         "for, open, or infer from LaTeX source files, author notes, experiment code, "
-        "or another review. Review the submission cold and independently.\n\n"
+        "or another review's report. Review independently.\n\n"
         "Write your review now, in exactly the required markdown structure."
     )
 
@@ -2482,14 +2525,18 @@ def run_reviewer(
     models: list[str] | tuple[str, ...] | None = None,
     timeout: int = 900,
     on_line: Any = None,
+    prior_reviews: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Review a compiled PDF with the fixed three-model Cursor panel.
 
-    ``idea`` and ``author_note`` remain accepted for API compatibility, but are
-    deliberately not included: reviewers see the same PDF a human reviewer
-    would receive, not the author's framing or raw LaTeX.
+    ``idea`` is deliberately not included: reviewers see the same PDF a human
+    reviewer would receive, not the author's framing or raw LaTeX. From round
+    two, ``prior_reviews`` maps each model to its OWN previous report and
+    ``author_note`` carries the author's response - real rebuttal dynamics,
+    with cross-reviewer isolation intact (no reviewer ever sees another's
+    report).
     """
-    del idea, author_note
+    del idea
     build = build or {}
     pdf_value = str(build.get("pdf") or "").strip()
     pdf = Path(pdf_value) if pdf_value else paper_dir / "main.pdf"
@@ -2548,18 +2595,20 @@ def run_reviewer(
             shutil.copy2(pdf, review_pdf)
         except OSError as exc:
             return {"ok": False, "error": f"could not isolate compiled PDF: {exc}"}
-        prompt = _cursor_pdf_review_prompt(
-            skill_text,
-            pdf_path=review_pdf,
-            venue=venue,
-            round_n=round_n,
-        )
+        priors = prior_reviews or {}
         by_model: dict[str, dict[str, Any]] = {}
         with ThreadPoolExecutor(max_workers=len(selected)) as pool:
             futures = {
                 pool.submit(
                     _run_cursor_headless,
-                    prompt,
+                    _cursor_pdf_review_prompt(
+                        skill_text,
+                        pdf_path=review_pdf,
+                        venue=venue,
+                        round_n=round_n,
+                        prior_review=str(priors.get(model) or "")[:20000],
+                        author_response=str(author_note or "")[:12000],
+                    ),
                     model,
                     workspace,
                     timeout=timeout,
@@ -2688,6 +2737,12 @@ def record_gate(
             # whatever has already been done.
             state["stage"] = STAGE_LOOP
             state["max_rounds"] = _clamp_rounds(max_rounds(state) + DEFAULT_MAX_ROUNDS)
+            # The human just chose to keep going, usually with fresh
+            # instructions - that decision deserves a fresh grace window.
+            # Without this reset the plateau clock kept ticking from rounds
+            # ago and re-paused the loop after every single flat round.
+            state["plateau_started_round"] = 0
+            state["stop_reason"] = ""
     return state
 
 
@@ -3736,6 +3791,84 @@ def skill_catalog() -> list[dict[str, str]]:
     return out
 
 
+def paper_skills_report(
+    project_root: Path, slug: str, state: dict[str, Any]
+) -> dict[str, Any]:
+    """What THIS paper was told, and which skills it demonstrably reached for.
+
+    "Selected" is the task's own skills picker; "injected" is the always-on
+    AR set every round carries; "applied" is evidence, not guesswork - a
+    skill counts only when the author's own round notes name it.
+    """
+    from loom.rud_task import read_meta, split_skills_paths
+
+    meta = read_meta(project_root, slug)
+    selected = []
+    if meta is not None:
+        for path in split_skills_paths(getattr(meta, "skills_path", "") or ""):
+            selected.append(path.stem if path.name != "SKILL.md" else path.parent.name)
+
+    injected = [
+        {"name": "AR-AUTHOR", "how": "full text, every round prompt"},
+        {
+            "name": DEFAULT_TEASER_SKILL,
+            "how": "figure menu default - the prompt orders proactive use",
+        },
+    ]
+    injected += [
+        {"name": sk["name"], "how": "figure menu - read on demand"}
+        for sk in figure_skills()
+        if sk["name"] != DEFAULT_TEASER_SKILL
+    ]
+    injected.append(
+        {"name": "paper-rebuttal", "how": "named in the prompt for reviewer replies"}
+    )
+
+    # Evidence pass: the author's own notes, round by round.
+    names = {sk["name"] for sk in figure_skills()}
+    names.update({"paper-rebuttal", "checkbib"})
+    mentions: dict[str, list[int]] = {}
+    rounds = rounds_root(project_root, slug)
+    if rounds.is_dir():
+        for note in sorted(rounds.glob("round-*/" + AUTHOR_NOTE)):
+            try:
+                text = note.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            try:
+                n = int(note.parent.name.split("-")[1])
+            except (IndexError, ValueError):
+                n = -1
+            for name in names:
+                if name in text:
+                    mentions.setdefault(name, []).append(n)
+    applied = [
+        {"name": name, "rounds": sorted(set(ns))}
+        for name, ns in sorted(mentions.items())
+    ]
+    # Physical evidence: a page-one figure on disk (authors name it
+    # teaser/overview/figure1) proves the figure work happened even when
+    # the notes never name the skill that drew it.
+    figures_dir = paper_root(project_root, slug) / "figures"
+    figure_evidence = (
+        sorted(
+            f.name
+            for f in figures_dir.iterdir()
+            if f.is_file()
+            and any(k in f.name.lower() for k in ("teaser", "overview", "figure1", "fig1"))
+        )
+        if figures_dir.is_dir()
+        else []
+    )
+    return {
+        "venue": venue_label(str(state.get("venue") or DEFAULT_VENUE)),
+        "selected": selected,
+        "injected": injected,
+        "applied": applied,
+        "figure_evidence": figure_evidence,
+    }
+
+
 def skill_body(skill_id: str, limit: int = 60000) -> str:
     """The text of one catalogued skill, refusing anything not in the catalog."""
     for entry in skill_catalog():
@@ -3834,13 +3967,22 @@ abstract arc, introduction with its contribution list, related work with real
 citations, and a method section precise enough to reimplement from. Build out
 the full experiments structure - setup, baselines, metrics, main results,
 ablations, analysis - but leave every number as \\ARnum{{}}, every table
-commented out and every figure an \\ARfig{{}} placeholder. Do not run
+commented out and every RESULTS figure an \\ARfig{{}} placeholder. Do not run
 experiments yet.
+
+The one figure you DO draw now is Figure 1: the page-one teaser/overview is a
+conceptual picture of the method - it needs no experiment numbers, and the
+human judging this draft needs to see the paper's visual story. Draw it with
+the default teaser skill from the figure menu above and cite it from the
+introduction.
 
 When the draft compiles, write your summary to:
 {note}
 
-then stop. A human reviews the draft before the author/reviewer loop opens.
+End that note with a line `Skills used:` naming every skill you actually
+applied (e.g. `Skills used: teaser-figure-3`), or `Skills used: none`.
+
+Then stop. A human reviews the draft before the author/reviewer loop opens.
 """
 
 
@@ -3900,6 +4042,19 @@ The idea this paper must establish:
 Run the experiments first, then fold the real numbers into the paper, then
 rebuild the PDF. Never write a number an experiment did not produce.
 
+Evidence placement and focus - this is where revised papers quietly rot:
+- The MAIN BODY carries the story. Headline results, their tables and their
+  figures stay in the main sections; the appendix holds only what a reader
+  can skip (proofs, extra seeds, robustness sweeps, negative side probes).
+  Never answer a reviewer by exiling primary evidence to the appendix.
+- When the reviewer challenges your core claim, do NOT bury it under many
+  small defensive probes. Choose: run ONE adequately-powered decisive
+  experiment that settles it, or honestly reframe the claim to what the
+  evidence supports. A pile of underpowered side studies makes the paper
+  longer and weaker at the same time.
+- Every time you move material into the appendix, justify it in one line of
+  your completion note.
+
 When you answer the reviewer point by point, read and follow the rebuttal
 methodology first: {ar_skills_dir() / SKILL_REBUTTAL}
 
@@ -3912,6 +4067,10 @@ measured results and the bibliography must go beyond the template seeds.
 
 When the round is finished, write your summary to:
 {note}
+
+End that note with a line `Skills used:` naming every figure/rebuttal/other
+skill you actually applied this round (e.g. `Skills used: teaser-figure-3,
+results-figure-1`), or `Skills used: none`.
 
 Writing that file is how Loom knows the round is over and hands the paper to
 the deterministic readiness gate. Only a passing gate hands the PDF to the
@@ -3984,6 +4143,8 @@ Before signalling completion again, make the whole submission complete:
 Do not ask the reviewers to evaluate unfinished work. When and only when every
 failure above is fixed, write a NEW completion note to:
 {note}
+
+End it with the same `Skills used:` line naming the skills you applied.
 
 Writing that file is the final action. Loom will rerun the deterministic gate;
 the reviewer panel runs only after it passes.

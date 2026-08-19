@@ -89,3 +89,43 @@ def test_run_project_review_persists_the_report(registry, monkeypatch):
     assert json.loads((run_dir / "panel.json").read_text())["headline"] == "solid"
     listed = review.list_projects()
     assert listed[0]["rating"] == 6
+
+
+def test_venue_label_honours_untemplated_venues():
+    assert ar.venue_label("iclr") == "ICLR"
+    assert ar.venue_label("cvpr") == "CVPR"   # no template, still not ICLR letterhead
+    assert ar.venue_label("") == ar.venue_label(ar.DEFAULT_VENUE)
+
+
+def test_venue_form_text_is_venue_true():
+    cvf = review.venue_form_text("cvpr")
+    assert "Paper summary" in cvf
+    assert "1 strong reject" in cvf and "5 strong accept" in cvf
+    iclr = review.venue_form_text("iclr")
+    assert "rating 1-10" in iclr
+    assert "Soundness" in iclr
+    db = review.venue_form_text("vldb")
+    assert "Three weak points" in db
+    # The canonical Scores block survives whatever the venue's scale is.
+    for text in (cvf, iclr, db):
+        assert "'## Scores'" in text
+    assert review.venue_form_text("not-a-venue") == ""
+
+
+def test_all_catalog_venues_have_a_form():
+    # Every venue offered in the Review Factory picker must map to a family.
+    for venue in review._VENUE_FAMILY:
+        assert review.venue_form_text(venue), venue
+
+
+def test_panel_review_appends_the_venue_form(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run_reviewer(paper_dir, skill_text, **kwargs):
+        captured["skill_text"] = skill_text
+        return {"ok": True}
+
+    monkeypatch.setattr(ar, "run_reviewer", fake_run_reviewer)
+    review.panel_review(tmp_path, skill_text="BASE RUBRIC", venue="cvpr")
+    assert captured["skill_text"].startswith("BASE RUBRIC")
+    assert "venue review form: CVPR" in captured["skill_text"]

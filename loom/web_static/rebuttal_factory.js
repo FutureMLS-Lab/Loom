@@ -216,6 +216,9 @@ function openPaper(id, studioId = '') {
   writeHash(`paper/${encodeURIComponent(id)}`);
   show('paper');
   loadPaper();
+  const orPlan = el('or-plan');
+  if (orPlan) { orPlan.innerHTML = ''; el('or-status').textContent = ''; el('btn-or-submit').disabled = true; }
+  orRefreshAuth();
 }
 
 function readHash() {
@@ -246,12 +249,19 @@ function projectBadge(project) {
   return `<span class="rb-pill">${esc(project.stage || 'intake')}</span>`;
 }
 
-function paperRow(project, studioId = '') {
+function paperRow(project, studioId = '', ordinal = 0, conference = '') {
+  const num = ordinal ? `<span class="rb-ordinal">${ordinal}</span>` : '';
+  const conf = conference
+    ? `<span class="rb-pill rb-pill--conf" ${studioId ? `data-studio-open="${esc(studioId)}" role="link" tabindex="0"` : ''}
+        title="${studioId ? 'open this conference’s policy studio' : 'conference policy this paper answers under'}">${esc(conference)}</span>`
+    : '';
   return `<article class="rb-project" data-paper="${esc(project.id)}" data-studio="${esc(studioId)}">
+    ${num}
     <div>
       <h3>${esc(project.title || project.id)}</h3>
       <p>${esc(project.source_path || '')}</p>
     </div>
+    ${conf}
     <span class="rb-count">${esc(plural(Number(project.reviewers || 0), 'reviewer'))}</span>
     <span class="rb-count">${esc(plural(Number(project.responses || 0), 'response'))}</span>
     ${projectBadge(project)}
@@ -282,40 +292,50 @@ async function loadFleet() {
   el('stat-cost').innerHTML = `<b>$${spent.toFixed(2)}</b> spent`;
   if (R.view !== 'fleet') return;
 
-  const host = el('studio-list');
-  if (!R.studios.length && !orphanProjects.length) {
-    host.innerHTML = '<div class="rb-card">No Conference Studios yet. Start one above.</div>';
-    return;
+  // Papers first: every rebuttal is its own numbered line, whatever studio
+  // holds its policy. The studios keep the policy machinery below.
+  const paperHost = el('paper-list');
+  const confOf = {};
+  R.studios.forEach((studio) => { confOf[studio.id] = studio.title || studio.id; });
+  const count = el('fleet-paper-count');
+  if (count) count.textContent = plural(R.projects.length, 'paper');
+  if (!R.projects.length) {
+    paperHost.innerHTML =
+      '<div class="rb-card">No Paper Rebuttals yet. Approve a conference policy below, then add papers under it.</div>';
+  } else {
+    paperHost.innerHTML = R.projects.map((project, i) =>
+      paperRow(
+        project,
+        project.studio_id || '',
+        i + 1,
+        project.studio_id ? confOf[project.studio_id] || '' : 'flat import',
+      )).join('');
+    paperHost.querySelectorAll('[data-paper]').forEach((node) => {
+      node.addEventListener('click', () => openPaper(node.dataset.paper, node.dataset.studio));
+    });
+    paperHost.querySelectorAll('[data-studio-open]').forEach((pill) => {
+      pill.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        openStudio(pill.dataset.studioOpen);
+      });
+    });
   }
-  const studios = R.studios.map((studio) => {
-    const badge = studio.active_job
-      ? `<span class="rb-pill rb-pill--live">${esc(studio.active_job)} running</span>`
-      : studio.policy_approved
-        ? '<span class="rb-pill rb-pill--ready">policy approved</span>'
-        : studio.error
-          ? '<span class="rb-pill rb-pill--bad">policy blocked</span>'
-          : `<span class="rb-pill">${esc(studio.stage)}</span>`;
-    return `<article class="rb-project" data-studio="${esc(studio.id)}">
-      <div>
-        <h3>${esc(studio.title)}</h3>
-        <p>${esc(studio.cfp_url || '')}</p>
-      </div>
-      <span class="rb-count">${esc(plural(Number(studio.papers || 0), 'paper'))}</span>
-      <span class="rb-count">${esc(studio.rebuttal_deadline || 'deadline unknown')}</span>
-      ${badge}
-    </article>`;
-  }).join('');
-  const legacy = orphanProjects.length
-    ? `<div class="rb-section-head"><div><h2>Legacy flat imports</h2><p>Assign new papers through a Conference Studio.</p></div></div>
-       ${orphanProjects.map((project) => paperRow(project)).join('')}`
-    : '';
-  host.innerHTML = studios + legacy;
-  host.querySelectorAll('[data-studio]:not([data-paper])').forEach((node) => {
-    node.addEventListener('click', () => openStudio(node.dataset.studio));
-  });
-  host.querySelectorAll('[data-paper]').forEach((node) => {
-    node.addEventListener('click', () => openPaper(node.dataset.paper, node.dataset.studio));
-  });
+
+  // Studios shrink to chips beside "Start a Conference Studio": one per
+  // conference cycle, colored by policy state, click to manage or add papers.
+  const chips = el('studio-chips');
+  if (chips) {
+    chips.innerHTML = R.studios.map((studio) => {
+      const cls = studio.policy_approved ? 'is-approved' : (studio.error ? 'is-blocked' : '');
+      const mark = studio.policy_approved ? '✓ ' : (studio.active_job ? '… ' : '');
+      return `<button type="button" class="rb-studio-chip ${cls}" data-studio="${esc(studio.id)}"
+        title="${esc(studio.policy_approved ? 'policy approved — open to add papers' : `stage: ${studio.stage}`)}">
+        ${mark}${esc(studio.title)} · ${esc(String(studio.papers || 0))}</button>`;
+    }).join('');
+    chips.querySelectorAll('[data-studio]').forEach((node) => {
+      node.addEventListener('click', () => openStudio(node.dataset.studio));
+    });
+  }
 }
 
 async function createStudio() {
@@ -502,6 +522,13 @@ async function loadStudio() {
   try {
     const payload = await api(`/api/rebuttal/studios/${encodeURIComponent(R.studioId)}`);
     if (R.studioId === payload.studio.id) renderStudio(payload.studio);
+    // A quick import staged this paper's package on disk; hand its path to
+    // the add-paper box so approval -> Add Paper is the whole remaining path.
+    if (R.stagedPaperPath) {
+      const box = el('paper-import-path');
+      if (box && !box.value) box.value = R.stagedPaperPath;
+      R.stagedPaperPath = '';
+    }
   } catch (error) {
     toast(error.message, true);
   }
@@ -556,11 +583,13 @@ async function approveStudioPolicy() {
 async function addPaper() {
   const path = el('paper-import-path').value.trim();
   if (!path) {
-    el('paper-import-status').textContent = 'An absolute Paper materials path is required.';
+    el('paper-import-status').textContent = 'A materials path or an OpenReview forum link is required.';
     return;
   }
   setButton('btn-add-paper', false, 'importing');
-  el('paper-import-status').textContent = 'Scanning Paper package…';
+  el('paper-import-status').textContent = /^https?:\/\//i.test(path)
+    ? 'Fetching the forum — submission PDF and every official review…'
+    : 'Scanning Paper package…';
   const payload = await studioAct('add-paper', {
     path,
     title: el('paper-import-title').value.trim(),
@@ -1225,6 +1254,66 @@ el('btn-refresh').addEventListener('click', () => {
   if (R.view === 'paper') loadPaper();
 });
 el('btn-studio-back').addEventListener('click', openFleet);
+
+/* ---- quick import: one OpenReview link -> studio + policy job + package -- */
+async function quickAuthRefresh() {
+  const row = el('quick-login-row');
+  const state = el('quick-or-state');
+  try {
+    const auth = await api('/api/openreview/auth');
+    if (auth.logged_in) {
+      row.hidden = true;
+      return true;
+    }
+    row.hidden = false;
+    state.textContent = 'required — OpenReview blocks anonymous fetches from this host';
+    return false;
+  } catch { return false; }
+}
+el('btn-quick-or-login').addEventListener('click', async () => {
+  const username = el('quick-or-user').value.trim();
+  const password = el('quick-or-pass').value;
+  const status = el('quick-status');
+  if (!username || !password) { status.textContent = 'Email and password are required.'; return; }
+  status.textContent = 'Signing in to OpenReview…';
+  try {
+    await api('/api/openreview/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+    el('quick-or-pass').value = '';
+    status.textContent = 'Signed in — imports will ride this session.';
+    await quickAuthRefresh();
+  } catch (error) { status.textContent = error.message; }
+});
+quickAuthRefresh();
+
+el('btn-quick-import').addEventListener('click', async () => {
+  const url = el('quick-url').value.trim();
+  const status = el('quick-status');
+  if (!url) { status.textContent = 'Paste an OpenReview forum link first.'; return; }
+  setButton('btn-quick-import', false, 'importing');
+  status.textContent = 'Fetching the forum, deriving the venue…';
+  try {
+    const d = await api('/api/rebuttal/quick-import', {
+      method: 'POST', body: JSON.stringify({ url }),
+    });
+    el('quick-url').value = '';
+    status.textContent = d.message || '';
+    toast(d.message || 'Imported.');
+    if (d.project_id) {
+      openPaper(d.project_id, d.studio_id);
+    } else if (d.studio_id) {
+      R.stagedPaperPath = d.staged_dir || '';
+      openStudio(d.studio_id);
+    }
+  } catch (error) {
+    status.textContent = error.message;
+    toast(error.message, true);
+  } finally {
+    setButton('btn-quick-import', true);
+  }
+});
+el('quick-url').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') { ev.preventDefault(); el('btn-quick-import').click(); }
+});
 el('btn-paper-back').addEventListener('click', () => {
   if (R.studioId) openStudio(R.studioId);
   else openFleet();
@@ -1269,6 +1358,77 @@ el('btn-delivery-approve').addEventListener('click', async () => {
 });
 el('btn-policy-save').addEventListener('click', savePaperPolicy);
 el('btn-forget').addEventListener('click', forgetPaper);
+
+/* ---- OpenReview submission --------------------------------------------------
+   Sign in once (password -> token, cached server-side under 0600), dry-run
+   the plan, then a separate explicit confirm posts the replies. */
+async function orRefreshAuth() {
+  try {
+    const auth = await api('/api/openreview/auth');
+    const signedIn = !!auth.logged_in;
+    el('or-auth-state').textContent = signedIn ? `signed in as ${auth.user}` : 'not signed in';
+    el('or-username').parentElement.hidden = signedIn;
+    el('or-password').parentElement.hidden = signedIn;
+    el('btn-or-login').hidden = signedIn;
+    el('btn-or-logout').hidden = !signedIn;
+    return signedIn;
+  } catch { return false; }
+}
+el('btn-or-login').addEventListener('click', async () => {
+  const username = el('or-username').value.trim();
+  const password = el('or-password').value;
+  if (!username || !password) { el('or-status').textContent = 'Email and password are required.'; return; }
+  el('or-status').textContent = 'Signing in…';
+  try {
+    await api('/api/openreview/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+    el('or-password').value = '';
+    el('or-status').textContent = '';
+    await orRefreshAuth();
+  } catch (error) { el('or-status').textContent = error.message; }
+});
+el('btn-or-logout').addEventListener('click', async () => {
+  await api('/api/openreview/logout', { method: 'POST', body: '{}' });
+  el('btn-or-submit').disabled = true;
+  await orRefreshAuth();
+});
+function orRenderPlan(payload) {
+  const rows = (payload.items || []).map((item) => item.error
+    ? `<article class="rb-project"><div><h3>${esc(item.reviewer_id)}</h3><p>${esc(item.error)}</p></div><span class="rb-pill rb-pill--bad">skipped</span></article>`
+    : `<article class="rb-project"><div><h3>${esc(item.reviewer_id)} → ${esc(item.reviewer_label || '')}</h3><p>replyto ${esc(item.replyto)}</p></div><span class="rb-count">${esc(String(item.characters))} chars</span></article>`).join('');
+  el('or-plan').innerHTML = `<p class="rb-status">forum <b>${esc(payload.forum)}</b> · invitation <b>${esc(payload.invitation)}</b> · signing as <b>${esc(payload.signature)}</b></p>${rows}`;
+}
+el('btn-or-preview').addEventListener('click', async () => {
+  if (!(await orRefreshAuth())) { el('or-status').textContent = 'Sign in to OpenReview first.'; return; }
+  el('or-status').textContent = 'Building the plan…';
+  try {
+    const payload = await api(`/api/rebuttal/projects/${encodeURIComponent(R.paperId)}/submit-openreview`, {
+      method: 'POST', body: '{}',
+    });
+    orRenderPlan(payload);
+    const good = (payload.items || []).filter((item) => !item.error).length;
+    el('or-status').textContent = good
+      ? `Dry run only — nothing posted. ${good} repl${good === 1 ? 'y' : 'ies'} ready.`
+      : 'Nothing postable — see the plan below.';
+    el('btn-or-submit').disabled = !good;
+    el('btn-or-submit').title = good ? '' : 'preview produced no postable replies';
+  } catch (error) { el('or-status').textContent = error.message; el('btn-or-submit').disabled = true; }
+});
+el('btn-or-submit').addEventListener('click', async () => {
+  if (!window.confirm('Post these replies to the PUBLIC OpenReview forum now? This cannot be undone.')) return;
+  el('or-status').textContent = 'Posting…';
+  try {
+    const payload = await api(`/api/rebuttal/projects/${encodeURIComponent(R.paperId)}/submit-openreview`, {
+      method: 'POST', body: JSON.stringify({ confirm: true }),
+    });
+    const ok = (payload.results || []).filter((r) => r.ok).length;
+    const bad = (payload.results || []).filter((r) => r.error);
+    el('or-status').textContent = `Posted ${ok}/${(payload.results || []).length} replies.`
+      + (bad.length ? ` Failed: ${bad.map((r) => `${r.reviewer_id} (${r.error})`).join('; ')}` : '');
+    el('btn-or-submit').disabled = true;
+    if (ok) toast(`OpenReview: ${ok} replies posted.`);
+    loadPaper();
+  } catch (error) { el('or-status').textContent = error.message; }
+});
 el('agent-live').addEventListener('change', (event) => {
   R.agentLive = event.target.checked;
   R.agentLiveTouched = true;

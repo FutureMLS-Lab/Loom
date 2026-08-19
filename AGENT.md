@@ -202,7 +202,7 @@ Both clients speak to the same server and token from step 4/5:
 
 - **[loom-desktop](https://github.com/FutureMLS-Lab/loom-desktop)** — macOS
   dock and console: live task pills, inline chat, terminal and diffs.
-- **[loom-app](https://github.com/FutureMLS-Lab/loom-app)** — Happy-inspired
+- **[loom-app](https://github.com/FutureMLS-Lab/loom-app)** — an Expo
   mobile and web client.
 
 Give each the base URL (`https://loom.example.com`, the Tailscale IP, or the

@@ -1614,6 +1614,26 @@ def test_ar_skill_text_missing_file() -> None:
     assert ar.ar_skill_text("NOPE.md") == ""
 
 
+def test_author_prompts_demand_the_teaser_and_name_their_skills(tmp_path: Path) -> None:
+    # The draft is skeleton-only EXCEPT Figure 1: the conceptual teaser is
+    # drawn at the draft so the human gate sees the visual story, and every
+    # completion note must name the skills it applied so the per-paper
+    # skills report fills from evidence rather than guesswork.
+    state = _paper_state()
+    draft = ar.author_draft_prompt(tmp_path, tmp_path / "manuscript", state)
+    assert "The one figure you DO draw now is Figure 1" in draft
+    assert "every RESULTS figure an \\ARfig{} placeholder" in draft
+    assert "Skills used:" in draft
+
+    rnd = ar.author_round_prompt(tmp_path, tmp_path / "manuscript", state, 2)
+    assert "Skills used:" in rnd
+
+    repair = ar.author_readiness_repair_prompt(
+        tmp_path, tmp_path / "manuscript", state, 2, {"ready": False, "failed": []}
+    )
+    assert "Skills used:" in repair
+
+
 def test_author_prompts_carry_the_contract(tmp_path: Path) -> None:
     state = _paper_state(venue="icml")
     task_dir = tmp_path / "task"
@@ -1753,3 +1773,51 @@ def test_sweep_stale_jobs_unwedges_interrupted_work(tmp_path: Path) -> None:
 def test_every_venue_template_is_vendored() -> None:
     missing = [v["id"] for v in ar.VENUES if not ar.venue_is_available(v["id"])]
     assert not missing, f"run scripts/fetch_paper_styles.py for: {missing}"
+
+
+def test_round_prompt_defends_the_main_body(tmp_path: Path) -> None:
+    # The failure mode this guards: reviewers demand rigor, the author
+    # responds with defensive side probes and appendix exile, and the paper
+    # gets longer and weaker at once.
+    rnd = ar.author_round_prompt(tmp_path, tmp_path / "manuscript", _paper_state(), 2)
+    assert "The MAIN BODY carries the story" in rnd
+    assert "ONE adequately-powered decisive" in rnd
+    assert "exiling primary evidence" in rnd or "exile" in rnd
+
+
+def test_review_prompt_carries_the_reviewers_own_memory(tmp_path: Path) -> None:
+    # Rebuttal dynamics: from round two each reviewer re-reads its OWN prior
+    # report and the author's response, then re-scores the current pages.
+    pdf = tmp_path / "submission.pdf"
+    cold = ar._cursor_pdf_review_prompt(
+        "RUBRIC", pdf_path=pdf, venue="iclr", round_n=1
+    )
+    assert "previous review" not in cold
+    warm = ar._cursor_pdf_review_prompt(
+        "RUBRIC",
+        pdf_path=pdf,
+        venue="iclr",
+        round_n=3,
+        prior_review="Rating: 4. The baselines are missing.",
+        author_response="Added the baselines in Table 2.",
+    )
+    assert "your own review of the previous revision (round 2)" in warm
+    assert "The baselines are missing." in warm
+    assert "Added the baselines in Table 2." in warm
+    assert "verify each against the PDF" in warm
+    assert "do not anchor on your previous rating" in warm
+    # Isolation still holds: no other reviewer's report is ever offered.
+    assert "another review's report" in warm
+
+
+def test_final_gate_reject_grants_a_fresh_plateau_window() -> None:
+    # Rejecting at the final gate is a human's "keep going" - without the
+    # reset, the old plateau clock re-paused the loop after every single
+    # flat round, turning 20 granted rounds into one-round-per-approval.
+    state = _paper_state()
+    state["plateau_started_round"] = 5
+    state["stop_reason"] = "plateaued at round 5"
+    ar.record_gate(state, ar.GATE_FINAL, "reject", "keep going")
+    assert state["stage"] == ar.STAGE_LOOP
+    assert state["plateau_started_round"] == 0
+    assert state["stop_reason"] == ""

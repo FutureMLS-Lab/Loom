@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent Terminal</title>
+  <link rel="stylesheet" href="/static/vendor/xterm.css?v=5.5.0" />
+  <style>
+    /* A single-purpose widget page: THE terminal, nothing else. Loom's main
+       console and the factory pages both embed it by iframe, so the exact
+       same attach/input protocol serves every front. */
+    html, body { height: 100%; margin: 0; background: #0d1117; }
+    body { display: flex; flex-direction: column; font: 12px system-ui, sans-serif; }
+    #bar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 5px 10px; color: #8b949e; background: #010409;
+      border-bottom: 1px solid #21262d; user-select: none;
+      flex: none; white-space: nowrap; overflow: hidden;
+    }
+    #state { width: 8px; height: 8px; border-radius: 50%; background: #f85149; flex: none; }
+    #state.on { background: #3fb950; }
+    #target { overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, monospace; }
+    #hint { margin-left: auto; color: #484f58; }
+    #btn-zh {
+      flex: none; border: 1px solid #30363d; border-radius: 6px;
+      background: transparent; color: #8b949e; font: 600 11px system-ui;
+      padding: 2px 8px; cursor: pointer;
+    }
+    #btn-zh[aria-expanded="true"], #btn-zh:hover { color: #e6edf3; border-color: #8b949e; }
+    #term { flex: 1; min-height: 0; padding: 4px 0 0 6px; }
+    #term .xterm { height: 100%; }
+    /* Chinese / long-text compose: a real textarea, so the IME composes
+       natively instead of fighting xterm's hidden input. */
+    #compose {
+      display: flex; gap: 8px; align-items: flex-end;
+      padding: 7px 10px; background: #010409; border-top: 1px solid #21262d;
+      flex: none;
+    }
+    #compose[hidden] { display: none; }
+    #compose textarea {
+      flex: 1; resize: none; max-height: 168px;
+      background: #0d1117; color: #e6edf3;
+      border: 1px solid #30363d; border-radius: 8px;
+      padding: 7px 10px; font: 13px/1.45 system-ui, sans-serif;
+    }
+    #compose textarea:focus { outline: none; border-color: #58a6ff; }
+    #compose button {
+      flex: none; border: 1px solid #238636; border-radius: 8px;
+      background: #238636; color: #fff; font: 600 12px system-ui;
+      padding: 8px 14px; cursor: pointer;
+    }
+    #compose button:hover { background: #2ea043; }
+    #keys {
+      display: flex; gap: 6px; padding: 6px 10px; flex: none;
+      background: #010409; border-top: 1px solid #21262d; overflow-x: auto;
+    }
+    #keys button {
+      flex: none; min-width: 40px; padding: 4px 10px;
+      border: 1px solid #30363d; border-radius: 6px;
+      background: #161b22; color: #c9d1d9; font: 600 12px ui-monospace, monospace;
+      cursor: pointer;
+    }
+    #keys button:active { background: #30363d; }
+  </style>
+</head>
+<body>
+<div id="bar">
+  <span id="state"></span>
+  <span id="target"></span>
+  <button type="button" id="btn-zh" aria-expanded="false"
+          title="Chinese / long-text input (reliable IME; Enter to send, Shift+Enter for newline)">中 输入</button>
+  <span id="hint">wheel scrolls history · type to steer · Esc interrupts</span>
+</div>
+<div id="term"></div>
+<div id="compose" hidden>
+  <textarea id="compose-input" rows="1"
+            placeholder="中文/长文本 — Enter 发送，Shift+Enter 换行"
+            autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+  <button type="button" id="compose-send">Send</button>
+</div>
+<div id="keys">
+  <button type="button" data-key="&#27;">Esc</button>
+  <button type="button" data-key="&#3;">⌃C</button>
+  <button type="button" data-key="&#27;[A">↑</button>
+  <button type="button" data-key="&#27;[B">↓</button>
+  <button type="button" data-key="&#27;[D">←</button>
+  <button type="button" data-key="&#27;[C">→</button>
+  <button type="button" data-key="&#9;">Tab</button>
+  <button type="button" data-key="&#13;">⏎</button>
+</div>
+
+<script src="/static/vendor/xterm.js?v=5.5.0"></script>
+<script src="/static/vendor/addon-fit.js?v=0.10.0"></script>
+<script>
+(function () {
+  'use strict';
+  var target = new URLSearchParams(location.search).get('target') || '';
+  document.getElementById('target').textContent = target || 'no pane';
+  if (!target) return;
+
+  var term = new Terminal({
+    convertEol: false,
+    cursorBlink: true,
+    fontSize: 12.5,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+    theme: { background: '#0d1117', foreground: '#e6edf3', cursor: '#58a6ff' },
+    scrollback: 4000,
+  });
+  var fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(document.getElementById('term'));
+  try { fit.fit(); } catch (e) {}
+
+  var streamId = '';
+  var abort = null;
+  var retryTimer = null;
+  var stateDot = document.getElementById('state');
+
+  // tmux enables app-mouse modes that would swallow scroll/select in the
+  // browser; drop exactly those set/reset sequences. (Same trade-off as the
+  // main console: clicks don't reach the TUI, everything else does.)
+  var MOUSE = { 1000: 1, 1001: 1, 1002: 1, 1003: 1, 1005: 1, 1006: 1, 1015: 1, 1016: 1 };
+  function stripMouse(u8) {
+    var n = u8.length, out = new Uint8Array(n), w = 0, i = 0;
+    while (i < n) {
+      if (i + 3 < n && u8[i] === 0x1b && u8[i + 1] === 0x5b && u8[i + 2] === 0x3f) {
+        var j = i + 3, params = '';
+        while (j < n && ((u8[j] >= 0x30 && u8[j] <= 0x39) || u8[j] === 0x3b)) {
+          params += String.fromCharCode(u8[j]); j++;
+        }
+        if (j < n && (u8[j] === 0x68 || u8[j] === 0x6c)) {
+          var nums = params.split(';').filter(Boolean).map(Number);
+          if (nums.length && nums.every(function (x) { return MOUSE[x]; })) { i = j + 1; continue; }
+        }
+      }
+      out[w++] = u8[i++];
+    }
+    return out.subarray(0, w);
+  }
+
+  // --- input: queue keystrokes, send bare Esc alone so the TUI sees a real
+  // interrupt instead of a half-glued escape sequence.
+  var queue = [], sending = false, scrolledUp = false;
+  function pump() {
+    if (sending) return;
+    sending = true;
+    var ready = Promise.resolve();
+    if (scrolledUp) {
+      // Typing while scrolled: leave tmux copy-mode BEFORE the first key,
+      // or it would move the copy cursor instead of reaching the agent.
+      scrolledUp = false;
+      ready = fetch('/api/tmux/scroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: target, dir: 'bottom' }),
+      }).catch(function () {});
+    }
+    ready.then(function step() {
+      if (!queue.length) { sending = false; return; }
+      var chunk = '', bareEsc = false;
+      while (queue.length) {
+        var next = queue[0];
+        if (next === '\x1b') {
+          if (chunk) break;
+          queue.shift(); chunk = next; bareEsc = true; break;
+        }
+        if (chunk && chunk.length + next.length > 4000) break;
+        queue.shift(); chunk += next;
+      }
+      if (!chunk) { sending = false; return; }
+      var body = streamId
+        ? { url: '/api/tmux/stream-input', payload: { stream_id: streamId, text: chunk } }
+        : { url: '/api/tmux/send-literal', payload: { target: target, text: chunk } };
+      fetch(body.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body.payload),
+      }).catch(function () {}).finally(function () {
+        setTimeout(step, bareEsc ? 40 : 0);
+      });
+    });
+  }
+  term.onData(function (d) { queue.push(d); pump(); });
+
+  // --- scrolling: full-screen TUIs live on the alternate screen, which has
+  // no scrollback, so the wheel scrolls tmux's OWN history via copy-mode.
+  // Batched so one flick becomes one request, not thirty.
+  var wheelLines = 0, wheelTimer = null;
+  document.getElementById('term').addEventListener('wheel', function (e) {
+    e.preventDefault();
+    wheelLines += (e.deltaY < 0 ? -3 : 3) * Math.max(1, Math.min(3, Math.abs(Math.round(e.deltaY / 100))));
+    if (wheelTimer) return;
+    wheelTimer = setTimeout(function () {
+      var lines = wheelLines; wheelLines = 0; wheelTimer = null;
+      if (!lines) return;
+      if (lines < 0) scrolledUp = true;
+      fetch('/api/tmux/scroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          target: target,
+          dir: lines < 0 ? 'up' : 'down',
+          lines: Math.min(50, Math.abs(lines)),
+        }),
+      }).catch(function () {});
+    }, 60);
+  }, { passive: false });
+
+  // --- Chinese / long-text compose: text goes through tmux's paste buffer
+  // (send-text), which delivers multi-byte input in one piece.
+  var zhBtn = document.getElementById('btn-zh');
+  var compose = document.getElementById('compose');
+  var composeInput = document.getElementById('compose-input');
+  function composeOpen(open) {
+    compose.hidden = !open;
+    zhBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) { composeGrow(); composeInput.focus(); }
+    else { term.focus(); }
+  }
+  function composeGrow() {
+    composeInput.style.height = 'auto';
+    composeInput.style.height = Math.min(composeInput.scrollHeight, 168) + 'px';
+  }
+  function composeSend() {
+    var text = composeInput.value;
+    if (!text.trim()) return;
+    composeInput.value = '';
+    composeGrow();
+    fetch('/api/tmux/send-text', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target: target, text: text, submit: true }),
+    }).catch(function () {});
+    composeInput.focus();
+  }
+  zhBtn.addEventListener('click', function () { composeOpen(compose.hidden); });
+  composeInput.addEventListener('input', composeGrow);
+  composeInput.addEventListener('keydown', function (e) {
+    // Enter sends; Shift+Enter inserts a newline; the Enter that commits an
+    // IME composition has isComposing=true and must be left alone so Chinese
+    // input still works.
+    if (e.key === 'Enter' && !e.isComposing && !e.shiftKey) {
+      e.preventDefault();
+      composeSend();
+    }
+  });
+  document.getElementById('compose-send').addEventListener('click', composeSend);
+
+  // --- key bar: literal sequences through the same input pump as typing.
+  document.getElementById('keys').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-key]');
+    if (!btn) return;
+    queue.push(btn.dataset.key);
+    pump();
+  });
+
+  function setOn(on) { stateDot.className = on ? 'on' : ''; }
+
+  function connect() {
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    if (abort) { try { abort.abort(); } catch (e) {} }
+    var ctrl = new AbortController();
+    abort = ctrl;
+    try { fit.fit(); } catch (e) {}
+    fetch('/api/tmux/stream?target=' + encodeURIComponent(target)
+          + '&cols=' + (term.cols || 80) + '&rows=' + (term.rows || 24),
+      { signal: ctrl.signal, cache: 'no-store' })
+      .then(function (resp) {
+        if (!resp.ok || !resp.body) {
+          term.write('\r\n\x1b[2m[the pane is not alive - retrying]\x1b[0m\r\n');
+          throw new Error('attach failed');
+        }
+        streamId = resp.headers.get('X-Loom-Terminal-Stream') || '';
+        setOn(true);
+        var reader = resp.body.getReader();
+        return (function read() {
+          return reader.read().then(function (r) {
+            if (r.done) return null;
+            if (r.value && abort === ctrl) term.write(stripMouse(r.value));
+            return read();
+          });
+        })();
+      })
+      .catch(function () {})
+      .finally(function () {
+        if (abort !== ctrl) return;
+        setOn(false); streamId = '';
+        retryTimer = setTimeout(connect, 3000);  // the agent may restart the pane
+      });
+  }
+
+  // Resizing the frame means a new PTY geometry, which needs a re-attach.
+  var resizeTimer = null;
+  window.addEventListener('resize', function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      var before = term.cols + 'x' + term.rows;
+      try { fit.fit(); } catch (e) {}
+      if (term.cols + 'x' + term.rows !== before) connect();
+    }, 250);
+  });
+
+  connect();
+  term.focus();
+})();
+</script>
+</body>
+</html>

@@ -5,15 +5,37 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Paper Factory</title>
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
-  <link rel="stylesheet" href="/static/factory.css?v=20260816-1" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260818-1" />
 </head>
 <body>
 
 <header class="rf-top">
-  <a class="rf-brand" href="/factory">
-    <span class="rf-brand__mark" aria-hidden="true"></span>
-    <span class="rf-brand__name">Paper Factory</span>
+  <a class="rf-brand" href="/paper-factory">
+    <svg class="rf-mark" width="28" height="28" viewBox="0 0 22 22" aria-hidden="true"><defs><linearGradient id="lg-paper" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4f46e5"/><stop offset="1" stop-color="#818cf8"/></linearGradient></defs><rect width="22" height="22" rx="6" fill="url(#lg-paper)"/><g fill="#fff"><path d="M6.1 13.9 L13.2 6.8 a1.1 1.1 0 0 1 1.6 0 l0.4 0.4 a1.1 1.1 0 0 1 0 1.6 L8.1 15.9 l-2.8 0.8 z"/><rect x="5.6" y="17.2" width="10.8" height="1.4" rx="0.7" opacity=".8"/></g></svg>
+    <span class="rf-brand__text">
+      <span class="rf-brand__name">Paper Factory</span>
+      <span class="rf-brand__tag">idea → draft → rounds → delivered</span>
+    </span>
   </a>
+  <nav class="fx-switch" aria-label="Factory lines">
+    <span class="fx-switch__item fx-switch__item--paper fx-switch__item--on" aria-current="page">
+      <svg width="14" height="14" viewBox="0 0 22 22" aria-hidden="true"><rect width="22" height="22" rx="6" fill="#4f46e5"/><g fill="#fff"><path d="M6.1 13.9 L13.2 6.8 a1.1 1.1 0 0 1 1.6 0 l0.4 0.4 a1.1 1.1 0 0 1 0 1.6 L8.1 15.9 l-2.8 0.8 z"/><rect x="5.6" y="17.2" width="10.8" height="1.4" rx="0.7" opacity=".8"/></g></svg>
+      <span>Paper</span>
+    </span>
+    <a class="fx-switch__item fx-switch__item--review" href="/review-factory">
+      <svg width="14" height="14" viewBox="0 0 22 22" aria-hidden="true"><rect width="22" height="22" rx="6" fill="#059669"/><g fill="#fff"><rect x="10.3" y="5" width="1.4" height="10.4" rx="0.7"/><rect x="5" y="6.4" width="12" height="1.4" rx="0.7"/><path d="M4.4 11.4a2.7 2.7 0 0 0 5.4 0 l-2.7-4z"/><path d="M12.2 11.4a2.7 2.7 0 0 0 5.4 0 l-2.7-4z"/><rect x="7.6" y="15.8" width="6.8" height="1.4" rx="0.7"/></g></svg>
+      <span>Review</span>
+    </a>
+    <a class="fx-switch__item fx-switch__item--rebuttal" href="/rebuttal-factory">
+      <svg width="14" height="14" viewBox="0 0 22 22" aria-hidden="true"><rect width="22" height="22" rx="6" fill="#e11d48"/><path fill="#fff" d="M11 3.8 L17.2 6.1 V10.6 C17.2 14.5 14.6 17 11 18.2 C7.4 17 4.8 14.5 4.8 10.6 V6.1 Z"/><path d="M8.1 10.9 l2.1 2.1 3.8-4.2" fill="none" stroke="#e11d48" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Rebuttal</span>
+    </a>
+    <span class="fx-switch__sep"></span>
+    <a class="fx-switch__item fx-switch__item--home" href="/factory" title="Research Factory portal">
+      <svg width="14" height="14" viewBox="0 0 22 22" aria-hidden="true"><rect width="22" height="22" rx="6" fill="#64748b"/><path d="M11 5.2 L17.4 10.6 H15.6 V16.4 H12.4 V12.8 H9.6 V16.4 H6.4 V10.6 H4.6 Z" fill="#fff"/></svg>
+      <span>Home</span>
+    </a>
+  </nav>
   <nav class="rf-top__nav">
     <span class="rf-stat rf-stat--info" id="stat-studios"><b>—</b> studios</span>
     <span class="rf-stat rf-stat--info" id="stat-papers"><b>—</b> papers</span>
@@ -22,8 +44,6 @@
     <span class="rf-stat rf-stat--info" id="stat-cost"><b>—</b> spent</span>
     <button type="button" class="rf-btn rf-btn--ghost" id="btn-skills">Skills</button>
     <button type="button" class="rf-btn rf-btn--ghost" id="btn-refresh">Refresh</button>
-    <a class="rf-btn rf-btn--ghost" href="/rebuttal-factory">Rebuttal</a>
-    <a class="rf-btn rf-btn--ghost" href="/">Loom</a>
   </nav>
 </header>
 
@@ -48,6 +68,15 @@
     <div class="rf-section__head">
       <h2>Studios</h2>
       <span class="rf-hint">A studio owns a direction and the papers spawned from it.</span>
+    </div>
+    <div class="rf-fleet-bulk" id="fleet-bulk" hidden>
+      <label class="rf-check">
+        <input type="checkbox" id="fleet-all-drafts" />
+        select all draft-ready papers
+      </label>
+      <span class="rf-hint" id="fleet-picked">none selected</span>
+      <button type="button" class="rf-btn rf-btn--primary rf-btn--sm"
+              id="btn-fleet-rounds" disabled>Start selected rounds</button>
     </div>
     <div class="rf-fleet" id="fleet-list">
       <div class="rf-empty">Loading the fleet…</div>
@@ -242,7 +271,7 @@
       </div>
     </div>
     <p class="rf-hint" id="pane-status"></p>
-    <pre class="rf-pane" id="pane-view" hidden></pre>
+    <iframe class="rf-pane-frame" id="pane-view" title="Agent terminal — type to steer, Esc interrupts" hidden></iframe>
   </section>
 
   <section class="rf-section">
@@ -322,6 +351,7 @@
       <h2 id="skills-modal-title">Skills</h2>
       <button type="button" class="rf-x" id="btn-skills-close" aria-label="Close">×</button>
     </div>
+    <div class="rf-skills-paper" id="skills-paper" hidden></div>
     <p class="rf-hint">
       An agent's behaviour is mostly these instructions, and every one of them
       reaches its agent automatically — nothing here needs enabling. Each entry

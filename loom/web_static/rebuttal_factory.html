@@ -4,26 +4,43 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Auto Rebuttal Factory</title>
-  <link rel="stylesheet" href="/static/rebuttal_factory.css?v=20260814-1" />
+  <link rel="stylesheet" href="/static/rebuttal_factory.css?v=20260817-8" />
 </head>
 <body>
 
 <header class="rb-top">
   <a class="rb-brand" href="/rebuttal-factory">
-    <span class="rb-brand__mark" aria-hidden="true">R</span>
+    <svg class="rb-brand__mark" width="31" height="31" viewBox="0 0 22 22" aria-hidden="true" style="background:linear-gradient(135deg,#e11d48,#f97316)"><path fill="#fff" d="M11 3.8 L17.2 6.1 V10.6 C17.2 14.5 14.6 17 11 18.2 C7.4 17 4.8 14.5 4.8 10.6 V6.1 Z"/><path d="M8.1 10.9 l2.1 2.1 3.8-4.2" fill="none" stroke="#e11d48" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
     <span>
       <b>Auto Rebuttal Factory</b>
       <small>Acceptance-first · evidence-bounded</small>
     </span>
   </a>
+  <nav class="fx-switch" aria-label="Factory lines">
+    <a class="fx-switch__item fx-switch__item--paper" href="/paper-factory">
+      <svg width="14" height="14" viewBox="0 0 22 22" aria-hidden="true"><rect width="22" height="22" rx="6" fill="#4f46e5"/><g fill="#fff"><path d="M6.1 13.9 L13.2 6.8 a1.1 1.1 0 0 1 1.6 0 l0.4 0.4 a1.1 1.1 0 0 1 0 1.6 L8.1 15.9 l-2.8 0.8 z"/><rect x="5.6" y="17.2" width="10.8" height="1.4" rx="0.7" opacity=".8"/></g></svg>
+      <span>Paper</span>
+    </a>
+    <a class="fx-switch__item fx-switch__item--review" href="/review-factory">
+      <svg width="14" height="14" viewBox="0 0 22 22" aria-hidden="true"><rect width="22" height="22" rx="6" fill="#059669"/><g fill="#fff"><rect x="10.3" y="5" width="1.4" height="10.4" rx="0.7"/><rect x="5" y="6.4" width="12" height="1.4" rx="0.7"/><path d="M4.4 11.4a2.7 2.7 0 0 0 5.4 0 l-2.7-4z"/><path d="M12.2 11.4a2.7 2.7 0 0 0 5.4 0 l-2.7-4z"/><rect x="7.6" y="15.8" width="6.8" height="1.4" rx="0.7"/></g></svg>
+      <span>Review</span>
+    </a>
+    <span class="fx-switch__item fx-switch__item--rebuttal fx-switch__item--on" aria-current="page">
+      <svg width="14" height="14" viewBox="0 0 22 22" aria-hidden="true"><rect width="22" height="22" rx="6" fill="#e11d48"/><path fill="#fff" d="M11 3.8 L17.2 6.1 V10.6 C17.2 14.5 14.6 17 11 18.2 C7.4 17 4.8 14.5 4.8 10.6 V6.1 Z"/><path d="M8.1 10.9 l2.1 2.1 3.8-4.2" fill="none" stroke="#e11d48" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Rebuttal</span>
+    </span>
+    <span class="fx-switch__sep"></span>
+    <a class="fx-switch__item fx-switch__item--home" href="/factory" title="Research Factory portal">
+      <svg width="14" height="14" viewBox="0 0 22 22" aria-hidden="true"><rect width="22" height="22" rx="6" fill="#64748b"/><path d="M11 5.2 L17.4 10.6 H15.6 V16.4 H12.4 V12.8 H9.6 V16.4 H6.4 V10.6 H4.6 Z" fill="#fff"/></svg>
+      <span>Home</span>
+    </a>
+  </nav>
   <nav class="rb-nav">
     <span id="stat-studios"><b>—</b> studios</span>
     <span id="stat-papers"><b>—</b> papers</span>
     <span id="stat-ready"><b>—</b> ready</span>
     <span id="stat-cost"><b>—</b> spent</span>
     <button type="button" class="rb-btn rb-btn--ghost" id="btn-refresh">Refresh</button>
-    <a class="rb-btn rb-btn--ghost" href="/factory">Research Factory</a>
-    <a class="rb-btn rb-btn--ghost" href="/">Loom</a>
   </nav>
 </header>
 
@@ -39,50 +56,75 @@
     </p>
   </section>
 
-  <section class="rb-import">
+  <section class="rb-import rb-quick">
     <div class="rb-section-head">
       <div>
-        <h2>Start a Conference Studio</h2>
-        <p>Step 1 is always official rebuttal-policy discovery and human approval.</p>
+        <h2>Paste the OpenReview link. That's the whole job.</h2>
+        <p>Venue and year are read off the submission itself; the Conference Studio is found or created, official policy discovery runs, and the paper package (PDF + every official review) is fetched. You approve the policy once — the paper joins and the rebuttal agent starts by itself.</p>
       </div>
+      <div class="rb-studio-chips" id="studio-chips"></div>
     </div>
-    <div class="rb-import-grid">
+    <div class="rb-import-grid rb-import-grid--paper" id="quick-login-row">
       <label class="rb-field">
-        <span>Conference</span>
-        <input type="text" id="studio-conference" placeholder="NeurIPS" />
+        <span>OpenReview email <em id="quick-or-state">required — OpenReview blocks anonymous fetches from this host</em></span>
+        <input type="email" id="quick-or-user" autocomplete="username" placeholder="you@lab.org" />
       </label>
       <label class="rb-field">
-        <span>Year</span>
-        <input type="number" id="studio-year" min="2000" max="2100" value="2027" />
+        <span>Password <em>exchanged for a token, never stored</em></span>
+        <input type="password" id="quick-or-pass" autocomplete="current-password" />
       </label>
-      <label class="rb-field rb-field--wide">
-        <span>Call for Papers URL</span>
-        <input type="url" id="studio-cfp-url" placeholder="https://conference.org/call-for-papers" />
-      </label>
-      <label class="rb-field rb-field--wide">
-        <span>Rebuttal policy URL <em>optional</em></span>
-        <input type="url" id="studio-policy-url" placeholder="https://conference.org/author-guidelines" />
-      </label>
+      <button type="button" class="rb-btn" id="btn-quick-or-login">Sign in</button>
     </div>
-    <div class="rb-import-options">
-      <button type="button" class="rb-btn rb-btn--primary" id="btn-create-studio">Start a Conference Studio</button>
+    <div class="rb-import-grid rb-import-grid--paper">
+      <label class="rb-field rb-field--wide">
+        <span>OpenReview forum link</span>
+        <input type="url" id="quick-url" placeholder="https://openreview.net/forum?id=…" />
+      </label>
+      <button type="button" class="rb-btn rb-btn--primary" id="btn-quick-import">Import</button>
     </div>
-    <p class="rb-status" id="studio-create-status"></p>
+    <p class="rb-status" id="quick-status"></p>
+    <details class="rb-advanced">
+      <summary>Manual setup — venues that are not on OpenReview</summary>
+      <div class="rb-import-grid">
+        <label class="rb-field">
+          <span>Conference</span>
+          <input type="text" id="studio-conference" placeholder="NeurIPS" />
+        </label>
+        <label class="rb-field">
+          <span>Year</span>
+          <input type="number" id="studio-year" min="2000" max="2100" value="2027" />
+        </label>
+        <label class="rb-field rb-field--wide">
+          <span>Call for Papers URL</span>
+          <input type="url" id="studio-cfp-url" placeholder="https://conference.org/call-for-papers" />
+        </label>
+        <label class="rb-field rb-field--wide">
+          <span>Rebuttal policy URL <em>optional</em></span>
+          <input type="url" id="studio-policy-url" placeholder="https://conference.org/author-guidelines" />
+        </label>
+      </div>
+      <div class="rb-import-options">
+        <button type="button" class="rb-btn rb-btn--primary" id="btn-create-studio">Start a Conference Studio</button>
+      </div>
+      <p class="rb-status" id="studio-create-status"></p>
+    </details>
   </section>
 
   <section class="rb-section">
     <div class="rb-section-head">
       <div>
-        <h2>Conference Studios</h2>
-        <p>Each Studio owns one approved policy and all Paper Rebuttals for that conference.</p>
+        <h2>Paper Rebuttals</h2>
+        <p>Every paper is its own line. The conference policy it answers under is a property of the paper, not a folder around it.</p>
       </div>
+      <span class="rb-count" id="fleet-paper-count"></span>
     </div>
-    <div class="rb-projects" id="studio-list"></div>
+    <div class="rb-projects" id="paper-list"></div>
   </section>
+
 </main>
 
 <main class="rb-main" id="view-studio" hidden>
-  <button type="button" class="rb-back" id="btn-studio-back">← All Conference Studios</button>
+  <button type="button" class="rb-back" id="btn-studio-back">← Back to papers</button>
 
   <section class="rb-project-head">
     <div>
@@ -170,8 +212,8 @@
     </div>
     <div class="rb-import-grid rb-import-grid--paper">
       <label class="rb-field rb-field--wide">
-        <span>Paper materials directory</span>
-        <input type="text" id="paper-import-path" placeholder="/absolute/path/to/paper-and-reviews" />
+        <span>Paper materials directory, or an OpenReview link</span>
+        <input type="text" id="paper-import-path" placeholder="/absolute/path/to/paper-and-reviews · https://openreview.net/forum?id=…" />
       </label>
       <label class="rb-field">
         <span>Paper title <em>optional</em></span>
@@ -319,7 +361,7 @@
     <div class="rb-section-head">
       <div>
         <h2>Validation and handoff</h2>
-        <p>Loom never posts externally. Approval marks the on-disk package paste-ready.</p>
+        <p>Approval marks the on-disk package paste-ready. Nothing posts externally without your explicit confirm below.</p>
       </div>
     </div>
     <div class="rb-validation" id="validation"></div>
@@ -335,6 +377,35 @@
       <span class="rb-count" id="delivery-phase">not started</span>
     </div>
     <div class="rb-delivery" id="delivery"></div>
+  </section>
+
+  <section class="rb-section" id="openreview-section">
+    <div class="rb-section-head">
+      <div>
+        <h2>Submit to OpenReview</h2>
+        <p>Posts each approved response as an official reply on the paper's forum, signed as Authors. Preview first; nothing fires without your confirm.</p>
+      </div>
+      <span class="rb-count" id="or-auth-state">not signed in</span>
+    </div>
+    <div class="rb-import-grid rb-import-grid--paper" id="or-login-row">
+      <label class="rb-field">
+        <span>OpenReview email</span>
+        <input type="email" id="or-username" autocomplete="username" placeholder="you@lab.org" />
+      </label>
+      <label class="rb-field">
+        <span>Password <em>exchanged for a token, never stored</em></span>
+        <input type="password" id="or-password" autocomplete="current-password" />
+      </label>
+      <button type="button" class="rb-btn" id="btn-or-login">Sign in</button>
+      <button type="button" class="rb-btn rb-btn--ghost" id="btn-or-logout" hidden>Sign out</button>
+    </div>
+    <div class="rb-import-options">
+      <button type="button" class="rb-btn" id="btn-or-preview">Preview submission</button>
+      <button type="button" class="rb-btn rb-btn--danger" id="btn-or-submit" disabled
+              title="preview first">Confirm — post replies to OpenReview</button>
+    </div>
+    <p class="rb-status" id="or-status"></p>
+    <div id="or-plan"></div>
   </section>
 </main>
 
@@ -371,6 +442,6 @@
   referrerpolicy="no-referrer"
   onerror="window.__loomMathJaxFailed=true;window.dispatchEvent(new Event('loom:mathjax-error'))"
 ></script>
-<script defer src="/static/rebuttal_factory.js?v=20260814-1"></script>
+<script defer src="/static/rebuttal_factory.js?v=20260817-8"></script>
 </body>
 </html>

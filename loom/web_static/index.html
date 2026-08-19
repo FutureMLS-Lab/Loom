@@ -33,14 +33,6 @@
         <span class="btn__label-full">Code root</span>
         <span class="btn__label-short" aria-hidden="true">Root</span>
       </button>
-      <a class="btn btn--ghost" href="/factory" title="Research Factory — a dedicated view of the AR pipeline">
-        <span class="btn__label-full">Factory</span>
-        <span class="btn__label-short" aria-hidden="true">AR</span>
-      </a>
-      <a class="btn btn--ghost" href="/rebuttal-factory" title="Auto Rebuttal Factory — reviewer response workflow">
-        <span class="btn__label-full">Rebuttal</span>
-        <span class="btn__label-short" aria-hidden="true">RB</span>
-      </a>
       <button type="button" class="btn btn--primary" id="btn-create-open">
         <span class="btn__label-full">Create Task</span>
         <span class="btn__label-short" aria-hidden="true">+ Task</span>
@@ -53,6 +45,11 @@
     <span class="offline-bar__dot" aria-hidden="true"></span>
     <span class="offline-bar__text">Can't reach the Loom server. Anything below is the last data loaded — agents in tmux keep running.</span>
     <button type="button" class="btn btn--sm" id="btn-offline-retry">Retry</button>
+  </div>
+
+  <div class="server-bar">
+    <span class="server-bar__hint">Loom</span>
+    <select id="server-switch" class="server-switch" aria-label="Loom server" title="Switch to another Loom"></select>
   </div>
 
   <nav class="project-bar" aria-label="Registered repositories">
@@ -557,7 +554,7 @@
       <div class="modal-card__header">
         <div>
           <h2 id="worktree-modal-title">Create worktree</h2>
-          <p>Pick a git repo to base the task's worktree on. The new branch is <code id="wt-modal-branch">zhongzhu/…</code>; the worktree lands at <code id="wt-modal-dest">…/work/&lt;repo&gt;/</code>.</p>
+          <p>Pick a git repo to base the task's worktree on. The new branch is <code id="wt-modal-branch">loom/…</code>; the worktree lands at <code id="wt-modal-dest">…/work/&lt;repo&gt;/</code>.</p>
         </div>
         <button type="button" class="icon-btn" id="btn-wt-close" aria-label="Close">×</button>
       </div>
