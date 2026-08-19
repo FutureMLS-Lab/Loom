@@ -5593,26 +5593,40 @@ class _ARLoopDriver:
         self._save(state)
         self._note(f"round {n} readiness passed - starting reviewer panel")
 
-        result = review.panel_review(
-            self._paper_dir(),
-            venue=str(state.get("venue") or ar.DEFAULT_VENUE),
-            round_n=n,
-            build=build,
-            readiness=readiness,
-            models=ar.CURSOR_REVIEWER_MODELS,
-            on_line=_ar_logger(self.project_root, self.slug, ar.JOB_REVIEW),
-            # Rebuttal dynamics: each reviewer re-reads its OWN prior report
-            # and the author's response, then re-scores the current pages.
-            prior_reviews=_ar_prior_panel_reviews(state, n),
-            author_note=_ar_author_note_text(self.project_root, self.slug, n),
-        )
+        def _panel() -> dict[str, Any]:
+            return review.panel_review(
+                self._paper_dir(),
+                venue=str(state.get("venue") or ar.DEFAULT_VENUE),
+                round_n=n,
+                build=build,
+                readiness=readiness,
+                models=ar.CURSOR_REVIEWER_MODELS,
+                on_line=_ar_logger(self.project_root, self.slug, ar.JOB_REVIEW),
+                # Rebuttal dynamics: each reviewer re-reads its OWN prior
+                # report and the author's response, then re-scores the pages.
+                prior_reviews=_ar_prior_panel_reviews(state, n),
+                author_note=_ar_author_note_text(self.project_root, self.slug, n),
+            )
+
+        result = _panel()
+        if not result.get("ok"):
+            # A panel failure is usually transient (a CLI exec hiccup, a
+            # timeout, one reviewer dying); killing the whole loop over one
+            # blink stranded papers overnight. One retry, then stop for real.
+            self._note(
+                f"round {n} review failed ({result.get('error')}) - "
+                "retrying once in 30s"
+            )
+            if self._stop.wait(30):
+                return
+            result = _panel()
         state = self._state()
         rec = ar.ensure_round(state, n)
         if not result.get("ok"):
             self.last_error = str(result.get("error") or "review failed")
             rec["review_error"] = self.last_error
             self._save(state)
-            self._note(f"round {n} review failed: {self.last_error}")
+            self._note(f"round {n} review failed twice: {self.last_error}")
             self.stop()
             return
 
