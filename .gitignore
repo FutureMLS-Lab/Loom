@@ -9,3 +9,7 @@ K8S.md
 # Machine-local Kernel Lab cluster profiles live under ~/.config/loom and must
 # never be copied into this repository.
 /loom/kernel_hub/env.*.local
+# Local runtime state and tool caches
+.RUD/
+.pytest_cache/
+.ruff_cache/

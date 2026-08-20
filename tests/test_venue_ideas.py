@@ -60,6 +60,34 @@ def test_normalize_venue_report_bounds_and_drops_empty_titles() -> None:
     assert len(report["summary"]) == 2000
 
 
+def test_operator_venue_url_leads_the_research_prompt(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_run(prompt, model="", timeout=0, on_line=None):
+        captured["prompt"] = prompt
+        return {"ok": True, "text": _REPORT_JSON, "cost": 0.0}
+
+    monkeypatch.setattr(ar, "_run_headless", fake_run)
+
+    with_url = ar.new_studio_state(
+        direction="multimodal",
+        venue="wacv",
+        venue_url="https://wacv.example/awards ",
+        venue_kickoff=True,
+    )
+    assert with_url["venue_url"] == "https://wacv.example/awards"
+    assert with_url["venue_kickoff"] is True
+    assert ar.new_studio_state(direction="multimodal")["venue_kickoff"] is False
+    assert ar.research_venue_cycle(with_url)["ok"]
+    assert "START HERE" in captured["prompt"]
+    assert "https://wacv.example/awards" in captured["prompt"]
+
+    without_url = ar.new_studio_state(direction="multimodal", venue="wacv")
+    assert ar.research_venue_cycle(without_url)["ok"]
+    assert "START HERE" not in captured["prompt"]
+    assert "Use your own web search" in captured["prompt"]
+
+
 def test_research_venue_cycle_parses_fenced_report(monkeypatch) -> None:
     state = ar.new_studio_state(direction="multimodal", venue="wacv")
     monkeypatch.setattr(
@@ -150,6 +178,40 @@ def test_venue_job_persists_report_and_cost(tmp_path: Path, monkeypatch) -> None
     assert state["venue_status"] == "done"
     assert state["venue_report"]["cycle"] == "WACV 2026"
     assert state["cost_usd"] == 0.5
+
+
+def test_venue_job_chains_idea_generation_server_side(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, slug = _studio(tmp_path)
+    ar.update_ar_state(
+        root, slug, venue_status="running", venue_chain_ideas=True
+    )
+    monkeypatch.setattr(
+        web.ar,
+        "research_venue_cycle",
+        lambda state, model="", on_line=None: {
+            "ok": True,
+            "report": ar.normalize_venue_report(
+                {"cycle": "WSDM 2026", "best_papers": [{"title": "Winner"}]}
+            ),
+            "cost": 0.1,
+        },
+    )
+    launched: list = []
+    monkeypatch.setattr(
+        web, "_ar_run_async", lambda fn, *args: launched.append((fn, args))
+    )
+
+    web._ar_venue_job(root, slug, "claude-test")
+
+    state = ar.read_ar_state(root, slug)
+    assert state["venue_status"] == "done"
+    assert state["venue_chain_ideas"] is False
+    assert state["ideas_status"] == "running"
+    assert launched == [
+        (web._ar_ideas_job, (root, slug, 6, "claude-test", ar.IDEA_SOURCE_VENUE))
+    ]
 
 
 def test_venue_job_records_error(tmp_path: Path, monkeypatch) -> None:

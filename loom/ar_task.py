@@ -314,6 +314,19 @@ VENUES: tuple[dict[str, Any], ...] = (
         "page_limit": 9,
         "invitation": "colmweb.org/COLM/{year}/Conference/-/Submission",
     },
+    {
+        "id": "wacv",
+        "label": "WACV",
+        "template": "wacv",
+        "aliases": [
+            "WACV",
+            "IEEE/CVF Winter Conference on Applications of Computer Vision",
+        ],
+        "page_limit": 8,
+        # WACV uses CMT rather than OpenReview; keep this empty so Loom does
+        # not fabricate an invitation id.
+        "invitation": "",
+    },
 )
 
 VENUE_IDS = frozenset(v["id"] for v in VENUES)
@@ -563,6 +576,8 @@ def new_studio_state(
     venue: str = DEFAULT_VENUE,
     mode: str = MODE_AUTO,
     seed_idea: str = "",
+    venue_url: str = "",
+    venue_kickoff: bool = False,
     max_rounds: Any = DEFAULT_MAX_ROUNDS,
 ) -> dict[str, Any]:
     d = (direction or "").strip().lower()
@@ -597,6 +612,8 @@ def new_studio_state(
         "search_suggest_status": "idle",
         "search_suggest_error": "",
         "venue_report": {},
+        "venue_url": venue_url.strip(),
+        "venue_kickoff": bool(venue_kickoff),
         "venue_status": "idle",
         "venue_error": "",
         "venue_updated_at": "",
@@ -950,6 +967,7 @@ SHARED_TEMPLATE = "_shared"
 TOKEN_TITLE = "@@TITLE@@"
 TOKEN_RUNNING_TITLE = "@@RUNNING_TITLE@@"
 TOKEN_KEYWORDS = "@@KEYWORDS@@"
+TOKEN_WACV_TRACK = "@@WACV_TRACK@@"
 
 
 def templates_paper_dir() -> Path:
@@ -1029,8 +1047,19 @@ def seed_paper_skeleton(
         return False, f"failed to seed skeleton: {exc}"
 
     title = str((idea or {}).get("title") or "").strip() or "Untitled AR Submission"
+    # Personalized Studio cards are bilingual ("中文 — English"). The UI keeps
+    # both halves, but pdfLaTeX venue templates cannot typeset CJK safely
+    # without adding a different font stack. Seed the manuscript with the
+    # English publication title while preserving the bilingual title in state.
+    if " — " in title:
+        english_title = title.rsplit(" — ", 1)[-1].strip()
+        if english_title:
+            title = english_title
     keywords = str((idea or {}).get("metric") or "").strip() or "machine learning"
     running = title if len(title) <= 60 else title[:57].rstrip() + "..."
+    wacv_track = str((idea or {}).get("wacv_track") or "algorithms").strip().lower()
+    if wacv_track not in {"algorithms", "applications", "datasets"}:
+        wacv_track = "algorithms"
     main = dest / "main.tex"
     try:
         text = main.read_text(encoding="utf-8")
@@ -1038,6 +1067,7 @@ def seed_paper_skeleton(
             text.replace(TOKEN_TITLE, _tex_escape(title))
             .replace(TOKEN_RUNNING_TITLE, _tex_escape(running))
             .replace(TOKEN_KEYWORDS, _tex_escape(keywords))
+            .replace(TOKEN_WACV_TRACK, wacv_track)
         )
         main.write_text(text, encoding="utf-8")
     except OSError as exc:
@@ -1758,13 +1788,30 @@ def research_venue_cycle(
     web search: award pages, accepted-paper lists, and trend write-ups. The
     reply is normalized and bounded before it is trusted.
     """
-    venue = str(venue_entry(str(state.get("venue") or DEFAULT_VENUE)).get("label"))
     direction = direction_label(state)
+    venue_url = str(state.get("venue_url") or "").strip()
+    if venue_url:
+        # The operator's URL names the venue. The catalog dropdown only picks
+        # a paper TEMPLATE and must never override which venue gets surveyed
+        # (a WSDM URL once lost to the dropdown's default ICLR).
+        venue = f"the venue that owns {venue_url}"
+        start_block = (
+            f"START HERE: the operator supplied this venue page - {venue_url}\n"
+            "That page decides which venue you survey; identify the venue from\n"
+            "the page itself and say its name in the `cycle` field. Crawl it and\n"
+            "the pages it links (awards, accepted papers, program) before\n"
+            "falling back to your own web search for anything missing.\n\n"
+        )
+    else:
+        venue = str(
+            venue_entry(str(state.get("venue") or DEFAULT_VENUE)).get("label")
+        )
+        start_block = "Use your own web search. "
     prompt = f"""You are surveying the most recent COMPLETED cycle of {venue} so a
 research studio can propose ideas that fit what this venue actually rewards.
 The studio's research direction is: {direction}.
 
-Use your own web search. For the last completed edition of {venue}, find:
+{start_block}For the last completed edition of {venue}, find:
 1. the best paper / honorable mention winners;
 2. papers highlighted as orals or award candidates (up to 12);
 3. the hottest topics of that cycle - recurring themes across accepted papers,
@@ -2536,7 +2583,12 @@ def run_reviewer(
             f"reviewing compiled PDF with Cursor panel: {', '.join(selected)}"
         )
 
-    with TemporaryDirectory(prefix="loom-ar-pdf-review-") as tmp:
+    # Cursor can leave short-lived files behind while an NFS-backed temporary
+    # directory is being removed. The review result is already in memory, so a
+    # cleanup race must never wedge the AR driver after every reviewer returned.
+    with TemporaryDirectory(
+        prefix="loom-ar-pdf-review-", ignore_cleanup_errors=True
+    ) as tmp:
         workspace = Path(tmp)
         review_pdf = workspace / "submission.pdf"
         try:

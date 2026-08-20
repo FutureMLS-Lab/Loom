@@ -418,46 +418,32 @@ function paperMiningState(state, papers) {
 function venueResearchState(state) {
   const status = String(state.venue_status || '');
   const report = state.venue_report || {};
-  if (status === 'running') return 'deep-researching the venue\u2019s last cycle\u2026';
+  if (status === 'running') {
+    return state.venue_chain_ideas
+      ? 'deep-researching the last cycle\u2026 ideas will follow automatically'
+      : 'deep-researching the venue\u2019s last cycle\u2026';
+  }
   if (status === 'error') return `failed: ${state.venue_error || 'unknown error'}`;
   if (Object.keys(report).length) {
-    const queued = S.venueIdeasQueued === S.slug ? ' \u00b7 ideas queued next' : '';
-    return `report ready: ${report.cycle || 'last cycle'}${queued}`;
+    return `report ready: ${report.cycle || 'last cycle'}`;
   }
   return 'not researched yet';
-}
-
-// The "ideas from last cycle" button is one press for the whole chain: run the
-// venue research if the report is missing, then generate from it as soon as
-// the report lands. The queued flag carries the slug so switching studios
-// mid-research cannot fire ideas at the wrong one.
-async function maybeQueueVenueIdeas(state) {
-  if (S.venueIdeasQueued !== S.slug) return;
-  const status = String(state.venue_status || '');
-  if (status === 'running') return;
-  S.venueIdeasQueued = '';
-  if (status !== 'done' || !Object.keys(state.venue_report || {}).length) return;
-  if (state.ideas_status === 'running') return;
-  await act(S.slug, 'ideas', {
-    count: Number(el('studio-count').value || 6),
-    source: 'venue',
-  }, 'Venue idea generation');
-  loadTask();
 }
 
 function renderStudio(d, state) {
   el('studio-title').textContent = d.title || S.slug;
   el('studio-eyebrow').textContent =
     `Studio · ${String(state.venue || '').toUpperCase()} · ${d.direction_label || ''}`;
-  el('studio-sub').textContent = state.seed_idea
-    || `Mining ${d.direction_label} and proposing ideas grounded in what it finds.`;
+  el('studio-sub').textContent = state.venue_kickoff
+    ? `Researching what ${String(state.venue || '').toUpperCase()} rewarded last cycle and proposing ideas from it.`
+    : (state.seed_idea
+      || `Mining ${d.direction_label} and proposing ideas grounded in what it finds.`);
 
   const logs = d.logs || {};
   renderLog('papers-log', logs.papers, state.papers_status === 'running');
   renderLog('ideas-log', logs.ideas, state.ideas_status === 'running');
   renderLog('venue-log', logs.venue, state.venue_status === 'running');
   renderSearchSettings(d, state);
-  maybeQueueVenueIdeas(state);
 
   const papers = state.papers || [];
   const ideas = state.ideas || [];
@@ -540,14 +526,17 @@ function renderSteps(state, papers, ideas) {
   const spawned = ideas.filter((i) => i.status === 'spawned').length;
   const running = (job) => state[`${job}_status`] === 'running';
   // A studio seeded from your own idea can go straight to step 2; pointing
-  // "current" at mining would say the opposite.
+  // "current" at mining would say the opposite. A last-cycle studio never
+  // mines arXiv at all, so that step disappears entirely.
   const seeded = state.mode === 'seed';
+  const venueStudio = Boolean(state.venue_kickoff);
 
   const steps = [
     {
       id: 'mine',
       done: papers.length > 0,
-      optional: seeded,
+      optional: seeded || venueStudio,
+      hidden: venueStudio,
       state: seeded && !papers.length && !state.papers_status
         ? 'optional — this studio starts from your idea'
         : paperMiningState(state, papers),
@@ -556,6 +545,7 @@ function renderSteps(state, papers, ideas) {
       id: 'ideas',
       done: ideas.length > 0,
       state: running('ideas') ? 'generating, a few minutes…'
+        : venueStudio && running('venue') ? 'waiting for the last-cycle report…'
         : ideas.length ? `${ideas.length} ideas`
         : (state.ideas_error || 'not run yet'),
     },
@@ -576,11 +566,16 @@ function renderSteps(state, papers, ideas) {
   steps.forEach((s, i) => {
     const node = document.querySelector(`.rf-step[data-step="${s.id}"]`);
     if (!node) return;
+    node.hidden = Boolean(s.hidden);
     node.classList.toggle('is-done', s.done);
     node.classList.toggle('is-current', i === current);
     const label = el(`step-${s.id}-state`);
     if (label) label.textContent = s.state;
   });
+  // Renumber the visible steps so a hidden one leaves no gap behind.
+  document.querySelectorAll('.rf-step:not([hidden]) .rf-step__n').forEach(
+    (badge, i) => { badge.textContent = String(i + 1); },
+  );
 
   // A step whose input does not exist yet cannot run, so say so on the button
   // rather than letting it be pressed and answer with an error.
@@ -599,16 +594,20 @@ function renderSteps(state, papers, ideas) {
     why: busy ? 'a Studio job is already running'
       : (!terms.length ? 'add or suggest search terms first' : 'select at least one arXiv category'),
   });
-  setAction('btn-ideas', {
-    ok: !busy && (papers.length > 0 || state.mode === 'seed'),
-    why: busy ? 'a job is already running' : 'mine the field first, or start the studio from your own idea',
-  });
   const hasVenueReport = Object.keys(state.venue_report || {}).length > 0;
+  setAction('btn-ideas', {
+    ok: !busy && (
+      venueStudio ? hasVenueReport : (papers.length > 0 || state.mode === 'seed')
+    ),
+    why: busy ? 'a job is already running'
+      : venueStudio ? 'run the last-cycle research first'
+      : 'mine the field first, or start the studio from your own idea',
+  });
   setAction('btn-ideas-venue', {
     ok: !busy,
     why: busy ? 'a job is already running' : '',
-    label: running('venue') ? 'Researching last cycle…'
-      : S.venueIdeasQueued === S.slug ? 'Ideas queued…'
+    label: running('venue')
+      ? (state.venue_chain_ideas ? 'Researching… ideas will follow' : 'Researching last cycle…')
       : hasVenueReport ? 'Ideas from last cycle' : 'Research last cycle → ideas',
   });
   const venueLabel = el('step-venue-state');
@@ -1507,8 +1506,7 @@ el('btn-ideas-venue').addEventListener('click', async () => {
       source: 'venue',
     }, 'Venue idea generation');
   } else {
-    const d = await act(S.slug, 'venue', {}, 'Venue research');
-    if (d) S.venueIdeasQueued = S.slug;
+    await act(S.slug, 'venue', { chain_ideas: true }, 'Venue research');
   }
   loadTask();
 });
@@ -1631,6 +1629,7 @@ el('btn-new-studio').addEventListener('click', () => {
     if (cat.default_max_rounds) el('new-rounds').value = cat.default_max_rounds;
   }
   el('studio-modal-status').textContent = '';
+  syncStudioModalMode();
   el('studio-modal').hidden = false;
   el('new-title').focus();
 });
@@ -1642,13 +1641,25 @@ el('new-title').addEventListener('keydown', (ev) => {
 el('new-direction').addEventListener('change', () => {
   el('new-custom-direction').hidden = el('new-direction').value !== 'custom';
 });
+// Last-cycle studios take their direction from what the venue rewarded, so
+// the Direction picker disappears in that mode; the Venue picker stays - it
+// is the one input the deep research cannot do without.
+function syncStudioModalMode() {
+  const mode = document.querySelector('input[name="new-mode"]:checked').value;
+  el('new-seed-label').textContent = mode === 'seed'
+    ? 'What the paper should be about'
+    : 'What the paper should be about (optional)';
+  const venueMode = mode === 'venue';
+  // The URL names the venue in this mode, so both catalog pickers disappear:
+  // direction comes from what the venue rewarded, the venue from the page.
+  el('new-direction').closest('.rf-row').hidden = venueMode;
+  el('new-custom-direction').hidden = venueMode
+    || el('new-direction').value !== 'custom';
+  el('new-venue-url-label').hidden = !venueMode;
+  el('new-venue-url').hidden = !venueMode;
+}
 document.querySelectorAll('input[name="new-mode"]').forEach((radio) => {
-  radio.addEventListener('change', () => {
-    const seeded = document.querySelector('input[name="new-mode"]:checked').value === 'seed';
-    el('new-seed-label').textContent = seeded
-      ? 'What the paper should be about'
-      : 'What the paper should be about (optional)';
-  });
+  radio.addEventListener('change', syncStudioModalMode);
 });
 el('btn-studio-create').addEventListener('click', async () => {
   const title = el('new-title').value.trim();
@@ -1662,27 +1673,43 @@ el('btn-studio-create').addEventListener('click', async () => {
   // runs the studio in auto mode, but the first job is the venue deep
   // research, and ideas chain from its report instead of an arXiv haul.
   const venueKickoff = mode === 'venue';
+  const venueUrl = el('new-venue-url').value.trim();
+  if (venueKickoff && !venueUrl) {
+    status.textContent = 'Paste the venue page URL — it decides which venue gets researched.';
+    return;
+  }
+  if (venueKickoff && !/^https?:\/\//.test(venueUrl)) {
+    status.textContent = 'The venue page must be an http(s) URL.';
+    return;
+  }
   status.textContent = 'Creating…';
   try {
     const { meta } = await api('/api/tasks', {
       method: 'POST',
       body: JSON.stringify({
         title, kind: 'ar', agent: 'cursor',
-        ar_direction: direction,
-        ar_custom_direction: el('new-custom-direction').value.trim(),
+        // In last-cycle mode the hidden Direction picker must not leak its
+        // stale value into the studio: the direction IS the venue's taste.
+        ar_direction: venueKickoff ? 'custom' : direction,
+        ar_custom_direction: venueKickoff
+          ? 'Open direction: follow whatever this venue rewarded in its last completed cycle.'
+          : el('new-custom-direction').value.trim(),
         ar_venue: el('new-venue').value,
         ar_mode: venueKickoff ? 'auto' : mode,
         ar_seed_idea: seed,
+        ar_venue_url: venueKickoff ? venueUrl : '',
+        ar_venue_kickoff: venueKickoff,
         ar_max_rounds: Number(el('new-rounds').value || 10),
       }),
     });
     el('studio-modal').hidden = true;
-    el('new-title').value = ''; el('new-seed').value = '';
+    el('new-title').value = ''; el('new-seed').value = ''; el('new-venue-url').value = '';
     openStudio(meta.slug);
     if (venueKickoff) {
-      const started = await act(meta.slug, 'venue', {}, 'Venue research');
+      const started = await act(
+        meta.slug, 'venue', { url: venueUrl, chain_ideas: true }, 'Venue research',
+      );
       if (started) {
-        S.venueIdeasQueued = meta.slug;
         toast('Deep-researching the venue\u2019s last cycle \u2014 ideas will follow automatically.');
       }
       loadTask();

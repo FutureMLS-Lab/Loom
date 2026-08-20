@@ -4829,10 +4829,15 @@ def _rebuttal_resume_delivery_watchers() -> int:
 
 
 def _ar_venue_job(root: Path, slug: str, model: str) -> None:
-    """Deep-research the venue's last completed cycle, then persist the report."""
+    """Deep-research the venue's last completed cycle, then persist the report.
+
+    Chaining lives here rather than in the browser: a page reload must not be
+    able to lose the "and then propose ideas from it" half of the kickoff.
+    """
     state = ar.read_ar_state(root, slug)
     log = _ar_logger(root, slug, ar.JOB_VENUE)
     res = ar.research_venue_cycle(state, model=model, on_line=log)
+    chain = bool(state.get("venue_chain_ideas"))
     if res.get("ok"):
         ar.update_ar_state(
             root,
@@ -4840,16 +4845,27 @@ def _ar_venue_job(root: Path, slug: str, model: str) -> None:
             venue_report=res.get("report") or {},
             venue_status="done",
             venue_error="",
+            venue_chain_ideas=False,
             venue_updated_at=_iso_now(),
             cost_usd=round(
                 float(state.get("cost_usd") or 0.0) + float(res.get("cost") or 0.0), 4
             ),
         )
         print(f"[ar] {slug}: venue-cycle report ready", flush=True)
+        if chain:
+            log("report ready - generating ideas from it")
+            ar.update_ar_state(root, slug, ideas_status="running", ideas_error="")
+            _ar_run_async(
+                _ar_ideas_job, root, slug, 6, model, ar.IDEA_SOURCE_VENUE
+            )
     else:
         log(f"failed: {res.get('error')}")
         ar.update_ar_state(
-            root, slug, venue_status="error", venue_error=str(res.get("error") or "")
+            root,
+            slug,
+            venue_status="error",
+            venue_error=str(res.get("error") or ""),
+            venue_chain_ideas=False,
         )
         print(f"[ar] {slug}: venue research failed - {res.get('error')}", flush=True)
 
@@ -6327,9 +6343,22 @@ def make_handler(
                         "ok": False,
                         "error": f"another Studio job is running: {busy[0]}",
                     }, 409
+                venue_url = str(body.get("url", "")).strip()
+                if venue_url and not venue_url.startswith(("http://", "https://")):
+                    return {
+                        "ok": False,
+                        "error": "venue URL must be an http(s) address",
+                    }, 400
                 meta = read_meta(root, slug)
                 model = str(body.get("model", "")).strip() or _ar_headless_model(meta)
-                ar.update_ar_state(root, slug, venue_status="running", venue_error="")
+                changes: dict[str, Any] = {
+                    "venue_status": "running",
+                    "venue_error": "",
+                    "venue_chain_ideas": bool(body.get("chain_ideas")),
+                }
+                if venue_url:
+                    changes["venue_url"] = venue_url
+                ar.update_ar_state(root, slug, **changes)
                 _ar_run_async(_ar_venue_job, root, slug, model)
                 return {"ok": True, "status": "running"}, 202
 
@@ -6354,7 +6383,13 @@ def make_handler(
                     return {"ok": True, "status": "running"}, 202
                 if str(state.get("venue_status")) == "running":
                     return {"ok": False, "error": "venue research is still running"}, 409
-                source = str(body.get("source", "")).strip() or ar.IDEA_SOURCE_PAPERS
+                source = str(body.get("source", "")).strip() or (
+                    # A last-cycle studio's natural grounding is its venue
+                    # report; plain "Generate ideas" should not demand arXiv.
+                    ar.IDEA_SOURCE_VENUE
+                    if state.get("venue_kickoff") and state.get("venue_report")
+                    else ar.IDEA_SOURCE_PAPERS
+                )
                 if source not in (ar.IDEA_SOURCE_PAPERS, ar.IDEA_SOURCE_VENUE):
                     return {"ok": False, "error": "unknown idea source"}, 400
                 if source == ar.IDEA_SOURCE_VENUE and not state.get("venue_report"):
@@ -6390,8 +6425,44 @@ def make_handler(
                 if not idea_ids:
                     return {"ok": False, "error": "select at least one idea"}, 400
                 spawned, errors = _ar_spawn_children(root, slug, state, idea_ids)
+                # Spawning used to stop at the draft gate and wait for a manual
+                # "Start the draft" per paper. Operators want a studio's picks to
+                # begin writing immediately, so kick off each freshly spawned
+                # paper's author loop here (same seed + start the draft action
+                # runs). Papers that fail to start are reported, not fatal.
+                started: list[str] = []
+                for item in spawned:
+                    child = str(item.get("slug") or "")
+                    if not child:
+                        continue
+                    try:
+                        cstate = ar.read_ar_state(root, child)
+                        paper_dir = ar.paper_root(root, child)
+                        if not (paper_dir / "main.tex").is_file():
+                            ok_seed, msg_seed = ar.seed_paper_skeleton(
+                                paper_dir,
+                                str(cstate.get("venue") or ar.DEFAULT_VENUE),
+                                cstate.get("idea"),
+                            )
+                            if ok_seed:
+                                ar.update_ar_state(
+                                    root, child, paper_dir=str(paper_dir)
+                                )
+                            else:
+                                errors.append(f"{child}: {msg_seed}")
+                                continue
+                        res = ar_manager.start(root, project_id, child)
+                        if res.get("ok"):
+                            started.append(child)
+                        else:
+                            errors.append(
+                                f"{child}: {res.get('error') or 'failed to start'}"
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(f"{child}: autostart failed: {exc}")
                 payload = self._ar_payload(root, project_id, slug)
                 payload["spawned"] = spawned
+                payload["started"] = started
                 payload["errors"] = errors
                 return payload, 200
 
@@ -9196,12 +9267,22 @@ def make_handler(
                 )
                 ar_state: dict[str, Any] | None = None
                 if kind == ar.KIND_AR:
+                    venue_url = str(body.get("ar_venue_url", "")).strip()
+                    if venue_url and not venue_url.startswith(("http://", "https://")):
+                        st, b, h = _json_bytes(
+                            {"error": "venue URL must be an http(s) address"},
+                            400,
+                        )
+                        self._send(st, b, h)
+                        return
                     ar_state = ar.new_studio_state(
                         direction=str(body.get("ar_direction", "")),
                         custom_direction=str(body.get("ar_custom_direction", "")),
                         venue=str(body.get("ar_venue", "")),
                         mode=str(body.get("ar_mode", "")),
                         seed_idea=str(body.get("ar_seed_idea", "")),
+                        venue_url=venue_url,
+                        venue_kickoff=bool(body.get("ar_venue_kickoff")),
                         max_rounds=body.get("ar_max_rounds", ar.DEFAULT_MAX_ROUNDS),
                     )
                     # AR asks for the paper's content, not a goal to interview

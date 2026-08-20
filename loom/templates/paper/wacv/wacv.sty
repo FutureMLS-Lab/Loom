@@ -1,0 +1,447 @@
+% WACV 2027 style, adapted from the official ICCV 2025 / WACV 2025 author kits.
+\NeedsTeXFormat{LaTeX2e}[1999/12/01]
+\ProvidesPackage{wacv}[2027 LaTeX class for IEEE WACV]
+
+\RequirePackage{times}
+\RequirePackage{xspace}
+\RequirePackage[dvipsnames]{xcolor}
+\RequirePackage{graphicx}
+\RequirePackage{amsmath}
+\RequirePackage{amssymb}
+\RequirePackage{booktabs}
+\RequirePackage[numbers,sort&compress]{natbib}
+\setlength{\bibsep}{1pt plus 1pt minus 1pt}
+
+\RequirePackage{silence}
+\hbadness=10000 \vbadness=10000 \vfuzz=30pt \hfuzz=30pt
+\WarningFilter{latexfont}{Font shape declaration}
+\WarningFilter{latex}{Font shape}
+\WarningFilter[rebuttal]{latex}{No \author given}
+\RequirePackage{etoolbox}
+
+\RequirePackage[format=plain,labelformat=simple,labelsep=period,font=small,compatibility=false]{caption}
+\RequirePackage[font=footnotesize,skip=3pt,subrefformat=parens]{subcaption}
+
+\newtoggle{wacvfinal}
+\newtoggle{wacvrebuttal}
+\newtoggle{wacvpagenumbers}
+\newtoggle{wacvalgorithms}
+\newtoggle{wacvapplications}
+\newtoggle{wacvdatasets}
+\toggletrue{wacvfinal}
+\togglefalse{wacvrebuttal}
+\togglefalse{wacvpagenumbers}
+\togglefalse{wacvalgorithms}
+\togglefalse{wacvapplications}
+\togglefalse{wacvdatasets}
+\DeclareOption{review}{\togglefalse{wacvfinal}\toggletrue{wacvpagenumbers}}
+\DeclareOption{rebuttal}{\togglefalse{wacvfinal}\toggletrue{wacvrebuttal}}
+\DeclareOption{pagenumbers}{\toggletrue{wacvpagenumbers}}
+\DeclareOption{applications}{\toggletrue{wacvapplications}}
+\DeclareOption{algorithms}{\toggletrue{wacvalgorithms}}
+\DeclareOption{datasets}{\toggletrue{wacvdatasets}}
+\DeclareOption*{\PackageWarning{wacv}{Unknown option `\CurrentOption'}}
+\ProcessOptions\relax
+
+\iftoggle{wacvrebuttal}{\ActivateWarningFilters[rebuttal]}{}
+
+\RequirePackage[hyphens]{url}
+\Urlmuskip=0mu plus 1mu\relax
+
+% Inlined everyshi support.
+\newcommand{\@EveryShipout@Hook}{}
+\newcommand{\@EveryShipout@AtNextHook}{}
+\newcommand*{\EveryShipout}[1]{\g@addto@macro\@EveryShipout@Hook{#1}}
+\newcommand*{\AtNextShipout}[1]{\g@addto@macro\@EveryShipout@AtNextHook{#1}}
+\newcommand{\@EveryShipout@Shipout}{%
+  \afterassignment\@EveryShipout@Test
+  \global\setbox\@cclv=%
+}
+\newcommand{\@EveryShipout@Test}{%
+  \ifvoid\@cclv\relax
+    \aftergroup\@EveryShipout@Output
+  \else
+    \@EveryShipout@Output
+  \fi
+}
+\newcommand{\@EveryShipout@Output}{%
+  \@EveryShipout@Hook
+  \@EveryShipout@AtNextHook
+  \gdef\@EveryShipout@AtNextHook{}%
+  \@EveryShipout@Org@Shipout\box\@cclv
+}
+\newcommand{\@EveryShipout@Org@Shipout}{}
+\newcommand*{\@EveryShipout@Init}{%
+  \message{ABD: EveryShipout initializing macros}%
+  \let\@EveryShipout@Org@Shipout\shipout
+  \let\shipout\@EveryShipout@Shipout
+}
+\AtBeginDocument{\@EveryShipout@Init}
+
+% Inlined simplified eso-pic support.
+\newcommand\LenToUnit[1]{#1\@gobble}
+\newcommand\AtPageUpperLeft[1]{%
+  \begingroup
+    \@tempdima=0pt\relax\@tempdimb=\ESO@yoffsetI\relax
+    \put(\LenToUnit{\@tempdima},\LenToUnit{\@tempdimb}){#1}%
+  \endgroup
+}
+\newcommand\AtPageLowerLeft[1]{\AtPageUpperLeft{%
+  \put(0,\LenToUnit{-\paperheight}){#1}}}
+\newcommand\AtPageCenter[1]{\AtPageUpperLeft{%
+  \put(\LenToUnit{.5\paperwidth},\LenToUnit{-.5\paperheight}){#1}}%
+}
+\newcommand\AtTextUpperLeft[1]{%
+  \begingroup
+    \setlength\@tempdima{1in}%
+    \ifodd\c@page
+      \advance\@tempdima\oddsidemargin
+    \else
+      \advance\@tempdima\evensidemargin
+    \fi
+    \@tempdimb=\ESO@yoffsetI\relax\advance\@tempdimb-1in\relax
+    \advance\@tempdimb-\topmargin
+    \advance\@tempdimb-\headheight\advance\@tempdimb-\headsep
+    \put(\LenToUnit{\@tempdima},\LenToUnit{\@tempdimb}){#1}%
+  \endgroup
+}
+\newcommand\AtTextLowerLeft[1]{\AtTextUpperLeft{%
+  \put(0,\LenToUnit{-\textheight}){#1}}}
+\newcommand\AtTextCenter[1]{\AtTextUpperLeft{%
+  \put(\LenToUnit{.5\textwidth},\LenToUnit{-.5\textheight}){#1}}}
+\newcommand{\ESO@HookI}{}
+\newcommand{\ESO@HookII}{}
+\newcommand{\ESO@HookIII}{}
+\newcommand{\AddToShipoutPicture}{%
+  \@ifstar{\g@addto@macro\ESO@HookII}{\g@addto@macro\ESO@HookI}}
+\newcommand{\ClearShipoutPicture}{\global\let\ESO@HookI\@empty}
+\newcommand\ESO@isMEMOIR[1]{}
+\@ifclassloaded{memoir}{\renewcommand\ESO@isMEMOIR[1]{#1}}{}
+\newcommand{\@ShipoutPicture}{%
+  \bgroup
+    \@tempswafalse
+    \ifx\ESO@HookI\@empty\else\@tempswatrue\fi
+    \ifx\ESO@HookII\@empty\else\@tempswatrue\fi
+    \ifx\ESO@HookIII\@empty\else\@tempswatrue\fi
+    \if@tempswa
+      \@tempdima=1in\@tempdimb=-\@tempdima
+      \advance\@tempdimb\ESO@yoffsetI
+      \ESO@isMEMOIR{%
+        \advance\@tempdima\trimedge
+        \advance\@tempdima\paperwidth
+        \advance\@tempdima-\stockwidth
+        \if@twoside\ifodd\c@page\else
+          \advance\@tempdima-2\trimedge
+          \advance\@tempdima-\paperwidth
+          \advance\@tempdima\stockwidth
+        \fi\fi
+        \advance\@tempdimb\trimtop}%
+      \unitlength=1pt
+      \global\setbox\@cclv\vbox{%
+        \vbox{\let\protect\relax
+          \pictur@(0,0)(\strip@pt\@tempdima,\strip@pt\@tempdimb)%
+            \ESO@HookIII\ESO@HookI\ESO@HookII
+            \global\let\ESO@HookII\@empty
+          \endpicture}%
+        \nointerlineskip
+        \box\@cclv}%
+    \fi
+  \egroup
+}
+\EveryShipout{\@ShipoutPicture}
+\RequirePackage{keyval}
+\newif\ifESO@dvips\ESO@dvipsfalse
+\newif\ifESO@texcoord\ESO@texcoordfalse
+
+\AtBeginDocument{%
+  \IfFileExists{color.sty}{%
+    \RequirePackage{color}
+    \let\ESO@color=\color\let\ESO@colorbox=\colorbox
+    \let\ESO@fcolorbox=\fcolorbox
+  }{}
+  \@ifundefined{Gin@driver}{}{%
+    \ifx\Gin@driver\@empty\else
+      \filename@parse{\Gin@driver}\def\reserved@a{dvips}%
+      \ifx\filename@base\reserved@a\ESO@dvipstrue\fi
+    \fi
+  }%
+  \ifx\pdfoutput\undefined\else
+    \ifx\pdfoutput\relax\else
+      \ifcase\pdfoutput\else
+        \ESO@dvipsfalse
+      \fi
+    \fi
+  \fi
+}
+\ifESO@texcoord
+  \def\ESO@yoffsetI{0pt}\def\ESO@yoffsetII{-\paperheight}
+\else
+  \def\ESO@yoffsetI{\paperheight}\def\ESO@yoffsetII{0pt}
+\fi
+
+\typeout{WACV 8.5 x 11-Inch Proceedings Style `wacv.sty'.}
+
+\font\wacvtenhv=phvb at 8pt
+\font\elvbf=ptmb scaled 1100
+\font\tenbf=ptmb scaled 1000
+
+\setlength{\textheight}{8.875in}
+\setlength{\textwidth}{6.875in}
+\setlength{\columnsep}{0.3125in}
+\setlength{\topmargin}{0in}
+\setlength{\headheight}{0in}
+\setlength{\headsep}{0in}
+\setlength{\parindent}{1pc}
+\setlength{\oddsidemargin}{-0.1875in}
+\setlength{\evensidemargin}{-0.1875in}
+
+\iftoggle{wacvpagenumbers}{}{\pagestyle{empty}}
+
+\AtBeginDocument{%
+  \@ifclassloaded{article}{}{%
+    \PackageError{wacv}{Package only meant to be used with document class `article'}%
+      {Change document class to `article'.}
+  }
+  \@ifclasswith{article}{10pt}{}{%
+    \PackageWarningNoLine{wacv}{WACV requires 10-point fonts}
+  }
+  \@ifclasswith{article}{twocolumn}{}{%
+    \PackageWarningNoLine{wacv}{WACV requires a two-column layout}
+  }
+  \@ifclasswith{article}{letterpaper}{}{%
+    \PackageWarningNoLine{wacv}{WACV requires letter paper}
+  }
+  \iftoggle{wacvfinal}{%
+    \@ifpackageloaded{hyperref}{}{%
+      \PackageWarningNoLine{wacv}{Package hyperref is recommended}
+    }
+  }{%
+    \@ifpackageloaded{hyperref}{%
+      \@ifpackagewith{hyperref}{pagebackref}{}{%
+        \PackageWarningNoLine{wacv}{Use hyperref with pagebackref in review mode}
+      }
+    }{%
+      \PackageWarningNoLine{wacv}{Package hyperref is recommended}
+    }
+  }
+}
+
+\def\@maketitle{%
+  \newpage
+  \null
+  \iftoggle{wacvrebuttal}{\vspace*{-.3in}}{\vskip .375in}
+  \begin{center}
+    \iftoggle{wacvrebuttal}{{\large\bf\@title\par}}{{\Large\bf\@title\par}}
+    \iftoggle{wacvrebuttal}{\vspace*{-22pt}}{\vspace*{24pt}}{%
+      \large
+      \lineskip .5em
+      \begin{tabular}[t]{c}
+        \iftoggle{wacvfinal}{%
+          \@author
+        }{%
+          \iftoggle{wacvrebuttal}{}{%
+            \iftoggle{wacvalgorithms}{%
+              Anonymous \confName {\color[rgb]{.9,.1,.1}\fbox{Algorithms Track}} submission
+            }{%
+              \iftoggle{wacvapplications}{%
+                Anonymous \confName {\color[rgb]{.3,.6,.3}\fbox{Applications Track}} submission
+              }{%
+                \iftoggle{wacvdatasets}{%
+                  Anonymous \confName {\color[rgb]{.3,.3,.6}\fbox{Datasets Track}} submission
+                }{%
+                  \textbf{ERROR: select algorithms, applications, or datasets}
+                }
+              }
+            }\\
+            \vspace*{1pt}\\
+            Paper ID \wacvPaperID
+          }
+        }
+      \end{tabular}
+      \par
+    }
+    \vskip .5em
+    \vspace*{12pt}
+  \end{center}
+}
+
+\def\abstract{%
+  \iftoggle{wacvpagenumbers}{}{\thispagestyle{empty}}
+  \centerline{\large\bf Abstract}%
+  \vspace*{12pt}\noindent
+  \it\ignorespaces
+}
+\def\endabstract{\vspace*{12pt}}
+
+\def\affiliation#1{\gdef\@affiliation{#1}}
+\gdef\@affiliation{}
+
+\def\wacvsection{\@startsection{section}{1}{\z@}%
+  {-10pt plus -2pt minus -2pt}{7pt}{\large\bf}}
+\def\wacvssect#1{\wacvsection*{#1}}
+\def\wacvsect#1{\wacvsection{\texorpdfstring{\hskip -1em.~}{}#1}}
+\def\section{\@ifstar\wacvssect\wacvsect}
+
+\def\wacvsubsection{\@startsection{subsection}{2}{\z@}%
+  {-8pt plus -2pt minus -2pt}{5pt}{\elvbf}}
+\def\wacvssubsect#1{\wacvsubsection*{#1}}
+\def\wacvsubsect#1{\wacvsubsection{\texorpdfstring{\hskip -1em.~}{}#1}}
+\def\subsection{\@ifstar\wacvssubsect\wacvsubsect}
+
+\def\wacvsubsubsection{\@startsection{subsubsection}{3}{\z@}%
+  {-6pt plus -2pt minus -2pt}{3pt}{\tenbf}}
+\def\wacvssubsubsect#1{\wacvsubsubsection*{#1}}
+\def\wacvsubsubsect#1{\wacvsubsubsection{\texorpdfstring{\hskip -1em.~}{}#1}}
+\def\subsubsection{\@ifstar\wacvssubsubsect\wacvsubsubsect}
+
+\iftoggle{wacvfinal}{%
+  \makeatletter
+  \providecommand{\@LN}[2]{}
+  \makeatother
+}{%
+  \makeatletter
+  \newbox\wacvrulerbox
+  \newcount\wacvrulercount
+  \newdimen\wacvruleroffset
+  \newdimen\cv@lineheight
+  \newdimen\cv@boxheight
+  \newbox\cv@tmpbox
+  \newcount\cv@refno
+  \newcount\cv@tot
+  \newcount\cv@tmpc@
+  \newcount\cv@tmpc
+  \def\fillzeros[#1]#2{%
+    \cv@tmpc@=#2\relax
+    \ifnum\cv@tmpc@<0 \cv@tmpc@=-\cv@tmpc@\fi
+    \cv@tmpc=1
+    \loop
+      \ifnum\cv@tmpc@<10
+      \else
+        \divide\cv@tmpc@ by 10
+        \advance\cv@tmpc by 1
+      \fi
+      \ifnum\cv@tmpc@=10 \cv@tmpc@=11\fi
+      \ifnum\cv@tmpc@>10
+    \repeat
+    \ifnum#2<0 \advance\cv@tmpc1 -\fi
+    \loop
+      \ifnum\cv@tmpc<#1 0\advance\cv@tmpc1\fi
+      \ifnum\cv@tmpc<#1
+    \repeat
+    \cv@tmpc@=#2\relax
+    \ifnum\cv@tmpc@<0 \cv@tmpc@=-\cv@tmpc@\fi
+    \the\cv@tmpc@
+  }
+  \makeatother
+
+  \RequirePackage[switch,mathlines]{lineno}
+  \renewcommand\linenumberfont{%
+    \wacvtenhv
+    \iftoggle{wacvalgorithms}{\color[rgb]{.9,.1,.1}}{%
+      \iftoggle{wacvdatasets}{\color[rgb]{.3,.3,.6}}{\color[rgb]{.3,.6,.3}}}}
+  \renewcommand\thelinenumber{\fillzeros[3]{\arabic{linenumber}}}
+  \setlength{\linenumbersep}{.75cm}
+  \RequirePackage{etoolbox}
+
+  \newcommand*\linenomathpatch[1]{%
+    \expandafter\pretocmd\csname #1\endcsname{\linenomath}{}{}%
+    \expandafter\pretocmd\csname #1*\endcsname{\linenomath}{}{}%
+    \expandafter\apptocmd\csname end#1\endcsname{\endlinenomath}{}{}%
+    \expandafter\apptocmd\csname end#1*\endcsname{\endlinenomath}{}{}%
+  }
+  \newcommand*\linenomathpatchAMS[1]{%
+    \expandafter\pretocmd\csname #1\endcsname{\linenomathAMS}{}{}%
+    \expandafter\pretocmd\csname #1*\endcsname{\linenomathAMS}{}{}%
+    \expandafter\apptocmd\csname end#1\endcsname{\endlinenomath}{}{}%
+    \expandafter\apptocmd\csname end#1*\endcsname{\endlinenomath}{}{}%
+  }
+  \expandafter\ifx\linenomath\linenomathWithnumbers
+    \let\linenomathAMS\linenomathWithnumbers
+    \patchcmd\linenomathAMS{\advance\postdisplaypenalty\linenopenalty}{}{}{}
+  \else
+    \let\linenomathAMS\linenomathNonumbers
+  \fi
+  \linenumbers
+  \AtBeginDocument{%
+    \linenomathpatch{equation}%
+    \linenomathpatchAMS{gather}%
+    \linenomathpatchAMS{multline}%
+    \linenomathpatchAMS{align}%
+    \linenomathpatchAMS{alignat}%
+    \linenomathpatchAMS{flalign}%
+  }
+
+  \def\wacvruler#1{%
+    \makevruler[12pt][#1][1][3][0.993\textheight]\usebox{\wacvrulerbox}}
+  \AddToShipoutPicture{%
+    \iftoggle{wacvalgorithms}{\color[rgb]{.9,.1,.1}}{%
+      \iftoggle{wacvdatasets}{\color[rgb]{.3,.3,.6}}{\color[rgb]{.3,.6,.3}}}
+    \def\pid{\parbox{1in}{\begin{center}\bf\sf
+      {\small\confName}\\\small\#\wacvPaperID\end{center}}}
+    \AtTextUpperLeft{%
+      \put(\LenToUnit{-65pt},\LenToUnit{45pt}){\pid}
+      \put(\LenToUnit{\textwidth-12pt},\LenToUnit{45pt}){\pid}
+    }
+    \AtTextUpperLeft{%
+      \put(0,\LenToUnit{1cm}){\parbox{\textwidth}{\centering\wacvtenhv
+        \confName~\confYear~Submission \#\wacvPaperID.
+        \iftoggle{wacvalgorithms}{\fbox{Algorithms Track.}}{%
+          \iftoggle{wacvapplications}{\fbox{Applications Track.}}{%
+            \iftoggle{wacvdatasets}{\fbox{Datasets Track.}}{}}}
+        CONFIDENTIAL REVIEW COPY. DO NOT DISTRIBUTE.}}}
+    }
+  }
+}
+
+\renewcommand{\textfraction}{0.01}
+\renewcommand{\floatpagefraction}{0.99}
+\renewcommand{\topfraction}{0.99}
+\renewcommand{\bottomfraction}{0.99}
+\renewcommand{\dblfloatpagefraction}{0.99}
+\renewcommand{\dbltopfraction}{0.99}
+\setcounter{totalnumber}{99}
+\setcounter{topnumber}{99}
+\setcounter{bottomnumber}{99}
+
+\makeatletter
+\DeclareRobustCommand\onedot{\futurelet\@let@token\@onedot}
+\def\@onedot{\ifx\@let@token.\else.\null\fi\xspace}
+\def\eg{\emph{e.g}\onedot}
+\def\Eg{\emph{E.g}\onedot}
+\def\ie{\emph{i.e}\onedot}
+\def\Ie{\emph{I.e}\onedot}
+\def\cf{\emph{cf}\onedot}
+\def\Cf{\emph{Cf}\onedot}
+\def\etc{\emph{etc}\onedot}
+\def\vs{\emph{vs}\onedot}
+\def\wrt{w.r.t\onedot}
+\def\dof{d.o.f\onedot}
+\def\iid{i.i.d\onedot}
+\def\wolog{w.l.o.g\onedot}
+\def\etal{\emph{et al}\onedot}
+\makeatother
+
+\let\titleold\title
+\renewcommand{\title}[1]{\titleold{#1}\newcommand{\thetitle}{#1}}
+\def\maketitlesupplementary{%
+  \newpage
+  \twocolumn[
+    \centering
+    \Large
+    \textbf{\thetitle}\\
+    \vspace{0.5em}Supplementary Material\\
+    \vspace{1.0em}
+  ]
+}
+
+\AtEndPreamble{%
+  \usepackage[capitalize]{cleveref}
+  \crefname{section}{Sec.}{Secs.}
+  \Crefname{section}{Section}{Sections}
+  \Crefname{table}{Table}{Tables}
+  \crefname{table}{Tab.}{Tabs.}
+}
+
+\RequirePackage[shortlabels,inline]{enumitem}
+\setlist[itemize]{noitemsep,leftmargin=*,topsep=0em}
+\setlist[enumerate]{noitemsep,leftmargin=*,topsep=0em}

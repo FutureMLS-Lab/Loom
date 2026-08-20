@@ -19,7 +19,7 @@ flowchart TB
 
     subgraph LOOP["② Paper 工作台（每篇论文一个回合制状态机）"]
         direction TB
-        AUTHOR["Author Agent（Claude, tmux）<br/>做实验(slurm GPU) + 写 LaTeX"]
+        AUTHOR["Author Agent（Cursor, tmux）<br/>SSH 空闲 H100 做实验 + 写 LaTeX"]
         READY{"Readiness Gate<br/>确定性检查"}
         PANEL["Reviewer Panel<br/>三模型读编译后 PDF<br/>最低分定档"]
         STOP{"停止条件<br/>达标 / 满轮 / 平台期"}
@@ -60,7 +60,7 @@ flowchart TB
         I1["tmux Agent 池<br/>+ Web 实时面板"]
         I2["Web UI / API<br/>:8766 + 公网隧道"]
         I3["Hot Restart<br/>不断任务换代码"]
-        I4["slurm H100 集群"]
+        I4["GPU Scout<br/>轮询空闲 H100 + SSH 直跑"]
     end
 
     SPAWN --> DG["🧑 Draft Human Gate<br/>批准骨架稿"] --> LOOP
@@ -105,9 +105,11 @@ flowchart TB
 
 每一轮（round N）内部的固定节拍：
 
-1. **Author Agent**（Claude，常驻 tmux，工作在自己的 worktree）收到本轮 Prompt：
+1. **Author Agent**（Cursor Agent，当前默认 `gpt-5.6-sol-max-fast`，常驻 tmux，
+   工作在自己的 worktree）收到本轮 Prompt：
    上一轮的评审报告 + 方法论技能（AR-AUTHOR）+ 图片技能菜单 + GPU 集群使用规范。
-   它做实验（提交 slurm GPU 任务）、改论文、重编译，最后写 `author.md` 作为完成信号。
+   它做实验（读取 GPU Scout 后直接 SSH 到空闲 H100）、改论文、重编译，
+   最后写 `author.md` 作为完成信号。
 2. **Readiness Gate（确定性代码）**：编译必须干净；不允许任何 `\ARnum`/TODO/`??` 占位；
    各章节实质完整；page-one 总览图必须存在；所有被引用的图文件存在；引用无悬空。
    不合格 → 列出失败清单原样打回 Author，本轮重做，不消耗评审。
@@ -128,7 +130,8 @@ flowchart TB
 - `AR-STUDIO.md` / `AR-AUTHOR.md` / `AR-REVIEWER.md`：三种角色的完整方法论；
 - `figures/teaser-figure-1..4`、`results-figure-1..2`、`checkbib`：画图与查引用的具体做法
   （从纯代码矢量图到 AI 生成再到混合方案，多风格可选，作者按需取用）;
-- `GPU-RESOURCES.md`：集群使用规范（禁止登录节点跑模型、sbatch 模板、防 GPU 被占的 requeue 守卫）;
+- `GPU-RESOURCES.md`：集群使用规范（禁止登录节点跑模型；读取 GPU Scout 的实时空闲清单，
+  直接 SSH 到 compute node 并用 `CUDA_VISIBLE_DEVICES` 启动作业）;
 - `paper-rebuttal/SKILL.md`、`paper-rebuttal-delivery/SKILL.md`：rebuttal 起草与终稿交付的方法论。
 
 ## 5. 模块四：Rebuttal Factory（两级结构 + 双人工 Gate）
@@ -167,7 +170,9 @@ flowchart TB
   Agent 无感知；
 - **监控循环**：`delivery_monitor.py` 等看门狗把"Agent 完成 → 校验 → 验收 → 喂回失败报告"的
   节拍自动化，出结果或卡死才通知人；
-- **slurm H100 集群**：实验全部走 sbatch；登录节点只做聚合和画图。
+- **GPU Scout + H100 集群**：守护进程每分钟 SSH 各 compute node 读取真实
+  `nvidia-smi`，发布空闲 `node:gpu` 清单；Agent 不走不可靠的 Slurm 排队，
+  而是二次确认显存后直接 SSH 启动作业。登录节点只做聚合和画图。
 
 ---
 
@@ -206,3 +211,68 @@ Web/编排          loom/web.py
 论文实例          <factory-root>/.RUD/<paper-slug>/{ar.json, rounds/, work/manuscript/main.pdf}
 Rebuttal 实例     <paper-dir>/rebuttal-output/{state.json, responses/, delivery/attempts/<run>/deliverables/}
 ```
+
+---
+
+## 10. 对外项目介绍与当前状态（2026-08-17）
+
+### 10.1 可以怎样向另一个团队介绍
+
+**Loom Auto Research** 是一个面向长周期科研任务的 Agent 编排系统。它不是让一个
+聊天模型一次性“写论文”，而是把科研过程拆成可恢复、可审计的状态机：
+
+1. 从会议往届获奖论文、oral、热点和研究者已有能力中生成可证伪的选题；
+2. 每个选题孵化为隔离的代码与 LaTeX 工作区，由长期运行的 Cursor Agent 做实验和写作；
+3. Python Readiness Gate 先拦截编译错误、占位符、缺图和虚假完成；
+4. GPT、Claude、Grok 三个独立 reviewer 只读编译后的 PDF，按最低分推动下一轮修改；
+5. 稳定后进入 Delivered；投稿后还可进入 Rebuttal Factory，生成回复、修订稿和提交 bundle。
+
+项目的核心技术价值在于：
+
+- **可靠的长周期 Agent orchestration**：任务跨小时/天运行，进程、服务或会话重启后可从磁盘状态恢复；
+- **确定性控制 + 模型创造力**：状态转换、门禁、页数、哈希和完成条件由代码控制，模型只负责研究内容；
+- **跨模型 eval**：执行者与评审者隔离，三个模型只看最终 PDF，避免作者自评；
+- **真实计算闭环**：Agent 自己写实验代码，GPU Scout 分配实际空闲 H100，结果再写回论文；
+- **artifact-level verification**：批准绑定 PDF/文本哈希，任何修改都会令旧批准失效；
+- **human-in-the-loop**：系统可以全自动运行，但保留关键 Gate 和实时 tmux 面板供人检查或介入。
+
+### 10.2 当前实现和实跑规模
+
+| 项目状态 | 当前情况 |
+|---|---|
+| 产品形态 | Research Factory、Paper 工作台、Rebuttal Factory、Web UI/API、实时 tmux 面板 |
+| 会议支持 | ICLR、NeurIPS、ICML、COLM、WACV；WACV 支持 Algorithms/Applications/Datasets track |
+| 当前实验 | 同时运行 8 篇 WACV 2027 + 8 篇 WSDM 2027 paper |
+| 当前结果 | 截至本次快照，4/16 已 Delivered；其余处于第 1–7 轮 Author/Reviewer 循环 |
+| 实时状态 | `docs/notes/zhizhou/WACV_WSDM_PAPER_PROGRESS.md` 每分钟按实际状态更新 |
+| Rebuttal 验证 | 已在两篇 WACV rebuttal package 上跑通修订稿、一页回复、supplement、重编译和三模型图片验收 |
+| 运行基础设施 | 16 个长期 Agent pane、两套 autopilot、GPU Scout、可热重启的 8766 Web 服务 |
+
+这仍是一个研究原型，而不是“科研已被完全自动化”的结论。目前最重要的下一步是：
+系统化比较自动生成论文与人工基线的科学质量、减少 agent 过度扩展实验范围、提高 reviewer
+评分与人类专家评分的一致性，并把当前针对单个研究者的能力画像产品化为可复用 profile。
+
+### 10.3 可以直接发送的英文消息草稿
+
+> Hi [Name] — I wanted to ask whether there might be an opportunity to intern
+> with your team during the fall semester.
+>
+> I have been building **Loom Auto Research**, an agentic system for long-horizon
+> research workflows. It turns a venue and research direction into concrete
+> hypotheses, runs real experiments on GPUs, writes and compiles papers, and
+> iterates through an independent GPT/Claude/Grok PDF-review panel. A
+> deterministic state machine controls readiness checks, recovery, human gates,
+> and artifact hashes, so the system can run for days without treating an LLM's
+> claim of completion as ground truth. I also built a related rebuttal pipeline
+> that produces revised papers, one-page responses, supplements, and validated
+> submission artifacts.
+>
+> In the current evaluation, Loom is running 16 concurrent WACV/WSDM research
+> projects; four have reached the Delivered stage and the rest are progressing
+> through automated author/reviewer rounds. The project has given me hands-on
+> experience with reliable agent orchestration, long-horizon task recovery,
+> multi-model evaluation, GPU execution, and human-in-the-loop system design.
+>
+> I think this work may overlap with your team's interests in [team area]. Would
+> you be open to a short conversation about whether I could join your team as a
+> fall intern? I would be happy to share a demo and the system design.
