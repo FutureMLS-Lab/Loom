@@ -916,3 +916,48 @@ def test_read_meta_upgrades_legacy_cursor_defaults_to_fast(tmp_path: Path) -> No
         data["interview_model"] = legacy
         tj.write_text(_json.dumps(data, indent=2))
         assert read_meta(tmp_path, meta.slug).interview_model == "gpt-5.6-sol-max-fast"
+
+
+def test_worktree_inherits_agent_config_by_symlink(tmp_path: Path) -> None:
+    """A fresh worktree gets the source repo's untracked .claude skills via
+    symlinks pointing back at the source, kept out of git status."""
+    repo = tmp_path / "proj"
+    _git_init_repo(repo)
+    # Untracked, gitignored agent config in the source repo.
+    skills = repo / ".claude" / "skills"
+    skills.mkdir(parents=True)
+    (skills / "deploy.md").write_text("# deploy skill", encoding="utf-8")
+    rules = repo / ".cursor" / "rules"
+    rules.mkdir(parents=True)
+    (rules / "style.mdc").write_text("rule", encoding="utf-8")
+
+    meta = create_task(repo, "Linky", "goal", auto_worktree=False)
+    wt, branch, msg = rud_task.prepare_task_worktree_from(repo, meta.slug, repo)
+    assert wt is not None, msg
+
+    link = wt / ".claude" / "skills"
+    assert link.is_symlink()
+    assert link.resolve() == skills.resolve()
+    assert (link / "deploy.md").read_text(encoding="utf-8") == "# deploy skill"
+    assert (wt / ".cursor" / "rules").is_symlink()
+    # git must not see the links as untracked noise.
+    ok, out, err = rud_task._git(["status", "--porcelain"], wt)
+    assert ok, err
+    assert ".claude" not in out and ".cursor" not in out
+
+
+def test_worktree_config_link_never_overwrites_tracked_files(tmp_path: Path) -> None:
+    """A repo that COMMITS its CLAUDE.md keeps the checkout's real file."""
+    repo = tmp_path / "proj"
+    _git_init_repo(repo)
+    (repo / "CLAUDE.md").write_text("tracked instructions", encoding="utf-8")
+    import subprocess as sp
+    sp.run(["git", "add", "CLAUDE.md"], cwd=repo, check=True)
+    sp.run(["git", "commit", "-qm", "add claude", "--no-gpg-sign"], cwd=repo, check=True)
+
+    meta = create_task(repo, "Tracked", "goal", auto_worktree=False)
+    wt, _, msg = rud_task.prepare_task_worktree_from(repo, meta.slug, repo)
+    assert wt is not None, msg
+    target = wt / "CLAUDE.md"
+    assert target.is_file() and not target.is_symlink()
+    assert target.read_text(encoding="utf-8") == "tracked instructions"

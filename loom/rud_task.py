@@ -1759,6 +1759,79 @@ def _record_worktree_base(
     write_meta(project_root, meta)
 
 
+# Project-local agent config a fresh worktree should inherit from its source
+# repo. Skills and commands are SHARED by symlink - one project, one skill
+# set, edits visible everywhere at once. Mutable per-checkout state
+# (.claude/settings.local.json, todo caches) is deliberately NOT linked, so
+# parallel worktrees cannot trample each other's local settings.
+_AGENT_CONFIG_LINKS: tuple[tuple[str, bool], ...] = (
+    (".claude/skills", True),
+    (".claude/commands", True),
+    (".claude/agents", True),
+    (".cursor/rules", True),
+    ("AGENTS.md", False),
+    ("CLAUDE.md", False),
+)
+
+
+def _link_agent_config(source_root: Path, worktree: Path) -> list[str]:
+    """Symlink the source repo's untracked agent config into a new worktree.
+
+    ``git worktree add`` only carries tracked files, and .claude/.cursor are
+    usually gitignored - so an agent that cd's into its worktree loses the
+    project's skills. Gaps are filled with symlinks pointing back at the
+    source repo; anything the checkout already carries is left alone, and the
+    link names go into the repo's info/exclude so git status stays clean.
+    """
+    linked: list[str] = []
+    for rel, want_dir in _AGENT_CONFIG_LINKS:
+        src = source_root / rel
+        dst = worktree / rel
+        if not (src.is_dir() if want_dir else src.is_file()):
+            continue
+        if dst.exists() or dst.is_symlink():
+            continue
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.symlink_to(src)
+        except OSError:
+            continue
+        linked.append(rel)
+    if linked:
+        _exclude_from_git(worktree, sorted({rel.split("/", 1)[0] for rel in linked}))
+    return linked
+
+
+def _exclude_from_git(worktree: Path, names: list[str]) -> None:
+    """List *names* in the repo's info/exclude so the symlinks never show up
+    as untracked noise (exclude rules cannot hide tracked files, so a repo
+    that commits its CLAUDE.md is unaffected)."""
+    ok, out, _ = _git(["rev-parse", "--git-common-dir"], worktree)
+    if not ok or not out:
+        return
+    common = Path(out)
+    if not common.is_absolute():
+        common = (worktree / common).resolve()
+    exclude = common / "info" / "exclude"
+    try:
+        existing = (
+            exclude.read_text(encoding="utf-8", errors="replace")
+            if exclude.is_file()
+            else ""
+        )
+        have = {line.strip() for line in existing.splitlines()}
+        add = [f"/{name}" for name in names if f"/{name}" not in have]
+        if not add:
+            return
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        with exclude.open("a", encoding="utf-8") as fh:
+            if existing and not existing.endswith("\n"):
+                fh.write("\n")
+            fh.write("\n".join(add) + "\n")
+    except OSError:
+        return
+
+
 def prepare_task_worktree_from(
     project_root: Path,
     slug: str,
@@ -1801,9 +1874,11 @@ def prepare_task_worktree_from(
     )
     if add_new[0]:
         _record_worktree_base(project_root, slug, work_dir, head_out, source_branch)
+        _link_agent_config(git_root, work_dir)
         return work_dir.resolve(), branch, "worktree created"
     reuse = _git(["worktree", "add", str(work_dir), branch], git_root)
     if reuse[0]:
+        _link_agent_config(git_root, work_dir)
         return work_dir.resolve(), branch, "worktree attached to existing branch"
     return None, branch, f"git worktree add failed: {add_new[2] or add_new[1]} | {reuse[2]}"
 
