@@ -497,9 +497,9 @@ function renderStudioLists(papers, ideas) {
         <span class="rf-idea__score">${Number(idea.score || 0).toFixed(2)}</span>
       </div>
       <div class="rf-idea__body">
-        ${idea.hypothesis ? `<p><b>假设。</b> ${esc(idea.hypothesis)}</p>` : ''}
-        ${idea.novelty ? `<p><b>新意。</b> ${esc(idea.novelty)}</p>` : ''}
-        ${idea.metric ? `<p><b>指标。</b> ${esc(idea.metric)}</p>` : ''}
+        ${idea.hypothesis ? `<p><b>Hypothesis.</b> ${esc(idea.hypothesis)}</p>` : ''}
+        ${idea.novelty ? `<p><b>New because.</b> ${esc(idea.novelty)}</p>` : ''}
+        ${idea.metric ? `<p><b>Metric.</b> ${esc(idea.metric)}</p>` : ''}
         ${edges ? `<div class="rf-edges">${edges}</div>` : ''}
         ${spawned && idea.child_slug ? `<p><a href="#paper/${esc(idea.child_slug)}" data-open-paper="${esc(idea.child_slug)}">Open the paper →</a></p>` : ''}
       </div>
