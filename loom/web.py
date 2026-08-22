@@ -5941,6 +5941,10 @@ class ARLoopManager:
 # --- HTTP handler factory ---------------------------------------------------
 
 
+_TERMINAL_STREAM_LEASE_SECONDS = 75.0
+_TERMINAL_STREAM_SELECT_SECONDS = 10.0
+
+
 class _TerminalStreamRegistry:
     """Route browser terminal input back through its own tmux attach PTY."""
 
@@ -5948,11 +5952,13 @@ class _TerminalStreamRegistry:
         self._lock = threading.Lock()
         self._masters: dict[str, int] = {}
         self._procs: dict[str, object] = {}
+        self._last_seen: dict[str, float] = {}
 
     def register(self, master: int, proc: object = None) -> str:
         stream_id = uuid.uuid4().hex
         with self._lock:
             self._masters[stream_id] = master
+            self._last_seen[stream_id] = time.monotonic()
             if proc is not None:
                 self._procs[stream_id] = proc
         return stream_id
@@ -5962,6 +5968,30 @@ class _TerminalStreamRegistry:
             if self._masters.get(stream_id) == master:
                 self._masters.pop(stream_id, None)
                 self._procs.pop(stream_id, None)
+                self._last_seen.pop(stream_id, None)
+
+    def touch(self, stream_id: str) -> tuple[bool, str]:
+        """Renew a browser-owned stream lease."""
+        if not re.fullmatch(r"[0-9a-f]{32}", stream_id or ""):
+            return False, "invalid terminal stream"
+        with self._lock:
+            if stream_id not in self._masters:
+                return False, "terminal stream is not active"
+            self._last_seen[stream_id] = time.monotonic()
+        return True, ""
+
+    def lease_active(
+        self,
+        stream_id: str,
+        lease_seconds: float = _TERMINAL_STREAM_LEASE_SECONDS,
+    ) -> bool:
+        """Return whether the real browser has renewed this stream recently."""
+        with self._lock:
+            last_seen = self._last_seen.get(stream_id)
+        return (
+            last_seen is not None
+            and time.monotonic() - last_seen <= lease_seconds
+        )
 
     def close(self, stream_id: str) -> tuple[bool, str]:
         """End a stream because its client said so.
@@ -5978,6 +6008,7 @@ class _TerminalStreamRegistry:
         with self._lock:
             proc = self._procs.pop(stream_id, None)
             self._masters.pop(stream_id, None)
+            self._last_seen.pop(stream_id, None)
         if proc is None:
             return True, ""  # already gone; nothing to do
         try:
@@ -5996,6 +6027,7 @@ class _TerminalStreamRegistry:
             master = self._masters.get(stream_id)
             if master is None:
                 return False, "terminal stream is not active"
+            self._last_seen[stream_id] = time.monotonic()
             try:
                 view = memoryview(data)
                 while view:
@@ -7126,6 +7158,8 @@ def make_handler(
                 conn = self.connection
                 try:
                     while True:
+                        if not terminal_streams.lease_active(stream_id):
+                            break
                         if proc.poll() is not None:
                             try:
                                 while True:
@@ -7136,7 +7170,12 @@ def make_handler(
                             except OSError:
                                 pass
                             break
-                        r, _, _ = _select.select([master, conn], [], [], 30)
+                        r, _, _ = _select.select(
+                            [master, conn],
+                            [],
+                            [],
+                            _TERMINAL_STREAM_SELECT_SECONDS,
+                        )
                         if conn in r:
                             try:
                                 probe = conn.recv(4096)
@@ -9400,6 +9439,17 @@ def make_handler(
                     _json_bytes({"ok": True})
                     if ok
                     else _json_bytes({"ok": False, "error": msg}, 400)
+                )
+                self._send(st, b, h)
+                return
+
+            if path == "/api/tmux/stream-heartbeat":
+                stream_id = str(body.get("stream_id", "")).strip()
+                ok, msg = terminal_streams.touch(stream_id)
+                st, b, h = (
+                    _json_bytes({"ok": True})
+                    if ok
+                    else _json_bytes({"ok": False, "error": msg}, 409)
                 )
                 self._send(st, b, h)
                 return

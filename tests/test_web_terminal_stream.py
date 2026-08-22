@@ -1,5 +1,7 @@
 import os
+from pathlib import Path
 
+import loom.web as web
 from loom.web import _TerminalStreamRegistry
 
 
@@ -39,3 +41,54 @@ def test_terminal_stream_rejects_invalid_id_and_large_input() -> None:
         registry.unregister(stream_id, write_fd)
         os.close(read_fd)
         os.close(write_fd)
+
+
+def test_terminal_stream_close_terminates_registered_attach() -> None:
+    class Proc:
+        terminated = False
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+    read_fd, write_fd = os.pipe()
+    proc = Proc()
+    registry = _TerminalStreamRegistry()
+    stream_id = registry.register(write_fd, proc)
+    try:
+        assert registry.close(stream_id) == (True, "")
+        assert proc.terminated is True
+        assert registry.lease_active(stream_id) is False
+        assert registry.write(stream_id, "x") == (
+            False,
+            "terminal stream is not active",
+        )
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_terminal_stream_lease_requires_browser_heartbeat(monkeypatch) -> None:
+    clock = [100.0]
+    monkeypatch.setattr(web.time, "monotonic", lambda: clock[0])
+    read_fd, write_fd = os.pipe()
+    registry = _TerminalStreamRegistry()
+    stream_id = registry.register(write_fd)
+    try:
+        assert registry.lease_active(stream_id, lease_seconds=10) is True
+        clock[0] = 111.0
+        assert registry.lease_active(stream_id, lease_seconds=10) is False
+        assert registry.touch(stream_id) == (True, "")
+        assert registry.lease_active(stream_id, lease_seconds=10) is True
+    finally:
+        registry.unregister(stream_id, write_fd)
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_terminal_clients_explicitly_close_and_heartbeat_streams() -> None:
+    static_root = Path(__file__).resolve().parents[1] / "loom" / "web_static"
+    for name in ("app.js", "terminal.html"):
+        source = (static_root / name).read_text(encoding="utf-8")
+        assert "/api/tmux/stream-close" in source
+        assert "/api/tmux/stream-heartbeat" in source
+        assert "pagehide" in source
