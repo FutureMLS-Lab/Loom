@@ -1242,11 +1242,25 @@ def read_task_text(target: Path) -> dict[str, Any]:
 
 
 def list_task_markdown_files(project_root: Path, slug: str) -> list[str]:
-    """Return relative paths of ``*.md`` files under the task root.
+    """Return relative paths of the task's own ``*.md`` files.
 
     PLAN.md is always listed first when it exists; other files follow
-    case-insensitively sorted. Common generated/dependency directories are
-    skipped so worktrees with large build outputs do not make the UI slow.
+    case-insensitively sorted.
+
+    ``work/`` is left out wherever it appears, not only at the top: a task
+    that splits itself into sub-directories gives each one its own worktree.
+    It holds git checkouts of repositories the task happens to be working in,
+    and their documentation is not this task's.
+
+    Including it was not a matter of a few extra entries. One task here
+    carries a JavaScript toolchain, and the scan found 112,306 markdown files
+    totalling 655 MB, all of which the task detail then inlined into a single
+    response — which no client could read at all. Without ``work/`` the same
+    task has six files and 0.2 MB.
+
+    Clients that want to read inside a worktree browse it a directory at a
+    time through ``/api/tasks/<slug>/files``, which is what that endpoint is
+    for.
     """
     root = task_root(project_root, slug)
     if not root.is_dir():
@@ -1255,7 +1269,8 @@ def list_task_markdown_files(project_root: Path, slug: str) -> list[str]:
     try:
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [
-                d for d in dirnames if d not in _SKIP_MARKDOWN_SCAN_DIRS
+                d for d in dirnames
+                if d not in _SKIP_MARKDOWN_SCAN_DIRS and d != WORK_SUBDIR
             ]
             base = Path(dirpath)
             for filename in filenames:
