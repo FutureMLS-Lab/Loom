@@ -2335,6 +2335,7 @@ const TERM = {
   inputQueue: [],   // one entry per xterm onData datum (keystroke/sequence/paste)
   inputSending: false,
   resizeTimer: null,
+  heartbeatTimer: null,
   lastSelection: '',
 };
 
@@ -2751,11 +2752,56 @@ function termFlashCopied() {
   termFlashCopied._t = setTimeout(() => el.classList.remove('is-show'), 900);
 }
 
+const TERMINAL_HEARTBEAT_MS = 20000;
+
+function terminalStreamPost(path, streamId, keepalive = false) {
+  if (!streamId) return Promise.resolve();
+  return fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stream_id: streamId }),
+    cache: 'no-store',
+    keepalive,
+  });
+}
+
+function stopTerminalHeartbeat() {
+  if (TERM.heartbeatTimer) {
+    clearTimeout(TERM.heartbeatTimer);
+    TERM.heartbeatTimer = null;
+  }
+}
+
+function startTerminalHeartbeat(streamId, ctrl) {
+  stopTerminalHeartbeat();
+  const beat = () => {
+    TERM.heartbeatTimer = null;
+    if (TERM.abort !== ctrl || TERM.streamId !== streamId) return;
+    terminalStreamPost('/api/tmux/stream-heartbeat', streamId)
+      .catch(() => {})
+      .finally(() => {
+        if (TERM.abort === ctrl && TERM.streamId === streamId) {
+          TERM.heartbeatTimer = setTimeout(beat, TERMINAL_HEARTBEAT_MS);
+        }
+      });
+  };
+  TERM.heartbeatTimer = setTimeout(beat, TERMINAL_HEARTBEAT_MS);
+}
+
+function closeTerminalStream(streamId) {
+  // keepalive lets this tiny request survive pagehide/iframe teardown. It is
+  // deliberately independent of the AbortController for the output stream.
+  terminalStreamPost('/api/tmux/stream-close', streamId, true).catch(() => {});
+}
+
 function disconnectTerminal() {
+  const streamId = TERM.streamId;
+  TERM.streamId = '';
+  stopTerminalHeartbeat();
+  if (streamId) closeTerminalStream(streamId);
   if (TERM.abort) { try { TERM.abort.abort(); } catch (e) {} TERM.abort = null; }
   TERM.connected = false;
   TERM.target = '';
-  TERM.streamId = '';
 }
 
 // Put the keyboard back in the pane. Skipped on touch devices, where focusing
@@ -2870,8 +2916,14 @@ async function connectTerminal(target, force = false) {
       }
       return;
     }
-    if (TERM.abort !== ctrl) return;
-    TERM.streamId = resp.headers.get('X-Loom-Terminal-Stream') || '';
+    const streamId = resp.headers.get('X-Loom-Terminal-Stream') || '';
+    if (TERM.abort !== ctrl) {
+      closeTerminalStream(streamId);
+      try { await resp.body.cancel(); } catch (e) {}
+      return;
+    }
+    TERM.streamId = streamId;
+    startTerminalHeartbeat(streamId, ctrl);
     const reader = resp.body.getReader();
     while (true) {
       const { value, done } = await reader.read();
@@ -2884,9 +2936,12 @@ async function connectTerminal(target, force = false) {
     if (err && err.name !== 'AbortError') console.debug('terminal stream error', err);
   } finally {
     if (TERM.abort === ctrl) {
-      TERM.connected = false;
+      const streamId = TERM.streamId;
       TERM.streamId = '';
+      stopTerminalHeartbeat();
+      TERM.connected = false;
       TERM.abort = null;
+      closeTerminalStream(streamId);
     }
   }
 }
@@ -2923,6 +2978,14 @@ document.addEventListener('visibilitychange', () => {
     refreshTaskTemplates();
     refreshClaudeSessions();
   }
+});
+
+window.addEventListener('pagehide', () => {
+  disconnectTerminal();
+});
+
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted && STATE.slug) refreshInterviewPreview(true);
 });
 
 async function startInterviewPane() {

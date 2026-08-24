@@ -114,6 +114,7 @@
   var streamId = '';
   var abort = null;
   var retryTimer = null;
+  var heartbeatTimer = null;
   var stateDot = document.getElementById('state');
 
   // tmux enables app-mouse modes that would swallow scroll/select in the
@@ -256,9 +257,58 @@
 
   function setOn(on) { stateDot.className = on ? 'on' : ''; }
 
+  var TERMINAL_HEARTBEAT_MS = 20000;
+
+  function streamPost(path, id, keepalive) {
+    if (!id) return Promise.resolve();
+    return fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stream_id: id }),
+      cache: 'no-store',
+      keepalive: !!keepalive,
+    });
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer) {
+      clearTimeout(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  }
+
+  function startHeartbeat(id, ctrl) {
+    stopHeartbeat();
+    function beat() {
+      heartbeatTimer = null;
+      if (abort !== ctrl || streamId !== id) return;
+      streamPost('/api/tmux/stream-heartbeat', id, false)
+        .catch(function () {})
+        .finally(function () {
+          if (abort === ctrl && streamId === id) {
+            heartbeatTimer = setTimeout(beat, TERMINAL_HEARTBEAT_MS);
+          }
+        });
+    }
+    heartbeatTimer = setTimeout(beat, TERMINAL_HEARTBEAT_MS);
+  }
+
+  function closeStream(id) {
+    streamPost('/api/tmux/stream-close', id, true).catch(function () {});
+  }
+
+  function disconnect() {
+    var id = streamId;
+    streamId = '';
+    stopHeartbeat();
+    if (id) closeStream(id);
+    if (abort) { try { abort.abort(); } catch (e) {} abort = null; }
+    setOn(false);
+  }
+
   function connect() {
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-    if (abort) { try { abort.abort(); } catch (e) {} }
+    disconnect();
     var ctrl = new AbortController();
     abort = ctrl;
     try { fit.fit(); } catch (e) {}
@@ -270,7 +320,14 @@
           term.write('\r\n\x1b[2m[the pane is not alive - retrying]\x1b[0m\r\n');
           throw new Error('attach failed');
         }
-        streamId = resp.headers.get('X-Loom-Terminal-Stream') || '';
+        var id = resp.headers.get('X-Loom-Terminal-Stream') || '';
+        if (abort !== ctrl) {
+          closeStream(id);
+          try { resp.body.cancel(); } catch (e) {}
+          return null;
+        }
+        streamId = id;
+        startHeartbeat(id, ctrl);
         setOn(true);
         var reader = resp.body.getReader();
         return (function read() {
@@ -284,7 +341,12 @@
       .catch(function () {})
       .finally(function () {
         if (abort !== ctrl) return;
-        setOn(false); streamId = '';
+        var id = streamId;
+        streamId = '';
+        stopHeartbeat();
+        abort = null;
+        setOn(false);
+        closeStream(id);
         retryTimer = setTimeout(connect, 3000);  // the agent may restart the pane
       });
   }
@@ -298,6 +360,15 @@
       try { fit.fit(); } catch (e) {}
       if (term.cols + 'x' + term.rows !== before) connect();
     }, 250);
+  });
+
+  window.addEventListener('pagehide', function () {
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    disconnect();
+  });
+
+  window.addEventListener('pageshow', function () {
+    if (!abort && !retryTimer) connect();
   });
 
   connect();
