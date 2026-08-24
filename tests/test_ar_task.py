@@ -152,6 +152,21 @@ class TestSkillCatalog:
         assert "no numeric interval endpoints" in body
         assert "appendix experiment details" in body
 
+    def test_lists_the_wacv_submission_skill_separately(self):
+        wacv = next(
+            skill
+            for skill in ar.skill_catalog()
+            if skill["id"] == ar.SKILL_WACV_SUBMISSION
+        )
+        assert wacv["name"] == "wacv-submission-readiness"
+        assert wacv["role"] == "Author"
+        body = ar.skill_body(ar.SKILL_WACV_SUBMISSION)
+        assert "eight-page technical-body boundary" in body
+        assert r"\usepackage[review,<track>]{wacv}" in body
+        assert "fully packed page eight" in body
+        assert "supplement.pdf" in body
+        assert "numeric interval endpoints" in body
+
     def test_body_reads_a_catalogued_skill(self):
         first = ar.skill_catalog()[0]
         assert len(ar.skill_body(first["id"])) > 200
@@ -1595,6 +1610,7 @@ def test_resolve_invitation_prefers_an_open_window(monkeypatch: pytest.MonkeyPat
         ar.SKILL_REVIEWER,
         ar.SKILL_RESULTS_REPORTING,
         ar.SKILL_WSDM_SUBMISSION,
+        ar.SKILL_WACV_SUBMISSION,
     ],
 )
 def test_ar_skills_are_bundled(name: str) -> None:
@@ -1668,6 +1684,7 @@ def test_author_prompts_inject_results_reporting(tmp_path: Path) -> None:
         assert "appendix experiment details" in prompt
         assert "main-paper-<submission-ID>.pdf" in prompt
         assert "WSDM submission requirements" not in prompt
+        assert "WACV submission requirements" not in prompt
 
 
 def test_wsdm_author_prompts_inject_only_the_wsdm_skill(tmp_path: Path) -> None:
@@ -1688,6 +1705,7 @@ def test_wsdm_author_prompts_inject_only_the_wsdm_skill(tmp_path: Path) -> None:
     for prompt in prompts:
         assert "Results reporting and provenance" in prompt
         assert "WSDM submission requirements" in prompt
+        assert "WACV submission requirements" not in prompt
         assert r"\documentclass[sigconf,anonymous,review]{acmart}" in prompt
         assert "appendix-backup.tex" in prompt
         assert "point estimate (mean) only" in prompt
@@ -1698,6 +1716,36 @@ def test_wsdm_author_prompts_inject_only_the_wsdm_skill(tmp_path: Path) -> None:
     non_wsdm = _paper_state()
     assert not ar.is_wsdm_paper(non_wsdm)
     assert ar.wsdm_submission_block(non_wsdm) == ""
+
+
+def test_wacv_author_prompts_inject_only_the_wacv_skill(tmp_path: Path) -> None:
+    state = _paper_state()
+    state["parent_slug"] = "wacv2027"
+    assert ar.is_wacv_paper(state)
+    prompts = (
+        ar.author_draft_prompt(tmp_path, tmp_path / "manuscript", state),
+        ar.author_round_prompt(tmp_path, tmp_path / "manuscript", state, 2),
+        ar.author_readiness_repair_prompt(
+            tmp_path,
+            tmp_path / "manuscript",
+            state,
+            2,
+            {"ready": False, "failed": []},
+        ),
+    )
+    for prompt in prompts:
+        assert "Results reporting and provenance" in prompt
+        assert "WACV submission requirements" in prompt
+        assert "WSDM submission requirements" not in prompt
+        assert r"\usepackage[review,<track>]{wacv}" in prompt
+        assert "exactly eight pages" in prompt
+        assert "supplement.pdf" in prompt
+        assert "numeric interval endpoints" in prompt
+        assert "main-paper-<OpenReview-ID>.pdf" in prompt
+
+    non_wacv = _paper_state()
+    assert not ar.is_wacv_paper(non_wacv)
+    assert ar.wacv_submission_block(non_wacv) == ""
 
 
 def test_ar_skill_text_missing_file() -> None:

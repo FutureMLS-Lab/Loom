@@ -3580,6 +3580,7 @@ SKILL_GPU = "GPU-RESOURCES.md"
 SKILL_REBUTTAL = "paper-rebuttal/SKILL.md"
 SKILL_RESULTS_REPORTING = "paper-results-reporting/SKILL.md"
 SKILL_WSDM_SUBMISSION = "wsdm-submission-readiness/SKILL.md"
+SKILL_WACV_SUBMISSION = "wacv-submission-readiness/SKILL.md"
 
 
 def ar_skills_dir() -> Path:
@@ -3647,6 +3648,30 @@ def results_reporting_block() -> str:
         "=== Results reporting and provenance - follow this exactly ===\n"
         + text
         + "\n=== end results reporting and provenance ==="
+    )
+
+
+def is_wacv_paper(state: dict[str, Any]) -> bool:
+    """Whether a paper belongs to WACV, including legacy URL-led studios."""
+    markers = (
+        state.get("venue"),
+        state.get("parent_slug"),
+        state.get("venue_url"),
+    )
+    return any("wacv" in str(marker or "").casefold() for marker in markers)
+
+
+def wacv_submission_block(state: dict[str, Any]) -> str:
+    """The WACV-only submission skill, omitted from every other venue."""
+    if not is_wacv_paper(state):
+        return ""
+    text = ar_skill_text(SKILL_WACV_SUBMISSION)
+    if not text:
+        return ""
+    return (
+        "=== WACV submission requirements - follow this exactly ===\n"
+        + text
+        + "\n=== end WACV submission requirements ==="
     )
 
 
@@ -3797,6 +3822,12 @@ ROLE_SKILLS = (
         "Packages anonymous WSDM papers under ACM and nine-page rules.",
         "Injected in full only into WSDM author prompts.",
     ),
+    (
+        SKILL_WACV_SUBMISSION,
+        "Author",
+        "Packages anonymous WACV papers under track and eight-page rules.",
+        "Injected in full only into WACV author prompts.",
+    ),
 )
 
 
@@ -3878,6 +3909,14 @@ def paper_skills_report(
                 "how": "full text, WSDM papers only",
             },
         )
+    elif is_wacv_paper(state):
+        injected.insert(
+            2,
+            {
+                "name": "wacv-submission-readiness",
+                "how": "full text, WACV papers only",
+            },
+        )
     injected += [
         {"name": sk["name"], "how": "figure menu - read on demand"}
         for sk in figure_skills()
@@ -3893,6 +3932,7 @@ def paper_skills_report(
         "paper-rebuttal",
         "paper-results-reporting",
         "wsdm-submission-readiness",
+        "wacv-submission-readiness",
         "checkbib",
     })
     mentions: dict[str, list[int]] = {}
@@ -4028,6 +4068,8 @@ The idea this paper must establish:
 
 {results_reporting_block()}
 
+{wacv_submission_block(state)}
+
 {wsdm_submission_block(state)}
 
 {figure_skills_block()}
@@ -4106,6 +4148,8 @@ The idea this paper must establish:
 === end methodology ===
 
 {results_reporting_block()}
+
+{wacv_submission_block(state)}
 
 {wsdm_submission_block(state)}
 
@@ -4197,6 +4241,8 @@ Continue the SAME round. Follow the AR author methodology exactly:
 {ar_skill_text(SKILL_AUTHOR) or "(AR author skill missing)"}
 
 {results_reporting_block()}
+
+{wacv_submission_block(state)}
 
 {wsdm_submission_block(state)}
 
