@@ -36,9 +36,11 @@ body ends, where Ethical Considerations begins, and where References begins.
 
 ## WSDM result-display policy
 
-Apply `paper-results-reporting` to tables: stochastic table cells remain
-`mean ± sample SD`, with the replicate unit and count defined in the caption.
-Do not remove table dispersion to satisfy this section.
+Apply the general `paper-results-reporting` interval-placement rule to the
+abstract, body, tables, captions, and figure labels. Stochastic main-table cells
+remain `mean ± sample SD`, with the replicate unit and count defined in the
+caption, but they must not add confidence-interval columns or endpoint pairs.
+Do not remove table dispersion merely to eliminate interval endpoints.
 
 In WSDM narrative prose, report the point estimate (mean) only. This applies to
 every numerical experimental result in the abstract, introduction, method,
@@ -52,14 +54,16 @@ callouts embedded in figures.
 - A caption may define what graphical error bars or shaded bands represent,
   and a figure may retain those visual uncertainty marks, but its text labels
   must not print the interval endpoints.
-- Preserve the underlying CI/SD fields in machine-readable results when they
-  remain useful for tables, plots, or audits.
+- Preserve the underlying CI/SD fields in machine-readable results and, when
+  scientifically useful, report full endpoints in the experiment-details
+  portion of `appendix-backup.tex`; do not put them in the main WSDM PDF.
 - Update figure generators and LaTeX exporters, not only generated PDF/PNG
   files, so a rebuild cannot restore forbidden interval labels.
 
-Before delivery, scan both source and rendered PDF text for estimate-plus-
-interval patterns. Inspect figure pixels when labels are paths or otherwise
-not extractable as text.
+Before delivery, scan both main source and rendered main-PDF text for
+estimate-plus-interval patterns, including tables. Inspect figure pixels when
+labels are paths or otherwise not extractable as text. Full interval endpoints
+may appear only in appendix experiment details kept outside the main WSDM PDF.
 
 ## Laboratory packaging policy
 
@@ -117,8 +121,9 @@ demographic, causal, privacy, or safety evidence was measured.
 5. Confirm technical content ends on page nine or earlier.
 6. Confirm Ethical Considerations begins only after the technical boundary and
    References follows it.
-7. Confirm prose and figure text use point estimates only while stochastic
-   table cells retain `mean ± sample SD`.
+7. Confirm the abstract, body prose, main tables, captions, and figure labels
+   contain no numeric interval endpoints; stochastic table cells may retain
+   `mean ± sample SD`.
 8. Scan the rendered PDF for identity leaks, local paths, internal hashes,
    placeholders, stale venue names, and old template text.
 9. Visually inspect all nine technical pages plus the ethics/reference pages.

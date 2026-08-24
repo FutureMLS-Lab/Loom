@@ -132,6 +132,8 @@ class TestSkillCatalog:
         assert reporting["role"] == "Author"
         body = ar.skill_body(ar.SKILL_RESULTS_REPORTING)
         assert "sample standard deviation" in body
+        assert "Main-paper interval-placement rule" in body
+        assert "appendix experiment details" in body
         assert "main-paper-<submission-ID>.pdf" in body
         assert "never leave both files" in body
 
@@ -146,7 +148,9 @@ class TestSkillCatalog:
         body = ar.skill_body(ar.SKILL_WSDM_SUBMISSION)
         assert "nine-page technical-content boundary" in body
         assert "point estimate (mean) only" in body
-        assert "stochastic table cells remain" in body
+        assert "Stochastic main-table cells" in body
+        assert "no numeric interval endpoints" in body
+        assert "appendix experiment details" in body
 
     def test_body_reads_a_catalogued_skill(self):
         first = ar.skill_catalog()[0]
@@ -1660,6 +1664,8 @@ def test_author_prompts_inject_results_reporting(tmp_path: Path) -> None:
         assert "Results reporting and provenance" in prompt
         assert "mean ± sample standard deviation" in prompt
         assert "EXPERIMENT_DETAILS.md" in prompt
+        assert "Main-paper interval-placement rule" in prompt
+        assert "appendix experiment details" in prompt
         assert "main-paper-<submission-ID>.pdf" in prompt
         assert "WSDM submission requirements" not in prompt
 
@@ -1685,6 +1691,8 @@ def test_wsdm_author_prompts_inject_only_the_wsdm_skill(tmp_path: Path) -> None:
         assert r"\documentclass[sigconf,anonymous,review]{acmart}" in prompt
         assert "appendix-backup.tex" in prompt
         assert "point estimate (mean) only" in prompt
+        assert "no numeric interval endpoints" in prompt
+        assert "appendix experiment details" in prompt
         assert "main-paper-<CMT-ID>.pdf" in prompt
 
     non_wsdm = _paper_state()

@@ -1,6 +1,6 @@
 ---
 name: paper-results-reporting
-description: Standardize venue-independent, evidence-backed result tables, provenance hygiene, and final submission-artifact naming. Use for any paper when reporting multi-seed experiments, formatting mean plus-or-minus sample standard deviation, removing machine hashes from manuscripts, naming a final PDF by submission ID, or validating statistical tables.
+description: Standardize venue-independent, evidence-backed result tables, main-paper interval placement, provenance hygiene, and final submission-artifact naming. Use for any paper when reporting multi-seed experiments, keeping numeric interval endpoints out of the abstract, body, and main tables, formatting mean plus-or-minus sample standard deviation, removing machine hashes from manuscripts, naming a final PDF by submission ID, or validating statistical tables.
 ---
 
 # Paper Results Reporting
@@ -60,15 +60,44 @@ event counts. A genuinely seed-independent exact quantity may be shown as
 explicitly says why it is zero.
 
 Mean ± SD is descriptive run-to-run variability, not an inferential confidence
-interval. Confidence intervals may remain in prose or figures for inference,
-provided the manuscript does not describe an SD table as a CI table.
+interval. It may remain in stochastic main-table cells under this rule, but it
+must never be described as a confidence interval.
+
+## Main-paper interval-placement rule
+
+Apply this rule across venues. In the rendered main paper, do not print numeric
+interval endpoints in the abstract, body prose, tables, captions, or figure
+labels. This includes confidence, credible, percentile-bootstrap, standard-error,
+and min--max intervals written as `[lower, upper]`, `(lower, upper)`, or an
+estimate followed by an endpoint pair.
+
+- Report the point estimate, normally the mean, in the abstract and body prose.
+- In main-paper tables, keep stochastic cells as `mean ± sample SD` when the
+  statistical table rule applies. Sample SD is a dispersion summary, not a pair
+  of interval endpoints. Do not add CI columns or endpoint pairs to those cells.
+- Describe inferential outcomes qualitatively when needed, for example that a
+  comparison remains unresolved or that a paired difference stays positive
+  under resampling, without printing endpoint values.
+- Do not print endpoint values in a main-paper figure callout. Visual error bars
+  or shaded bands may remain only when their caption defines the statistic
+  without giving numeric endpoints.
+- Put full interval methodology, endpoint values, per-replicate records, and
+  additional uncertainty analysis in appendix experiment details. If the venue
+  cannot accept an appendix, preserve them in a separate experiment-details
+  artifact rather than the main PDF.
+- Preserve CI, SD, and SE fields in machine-readable results even when the main
+  paper displays only the permitted summary.
+
+Update the source exporter or figure generator as well as generated artifacts,
+so rebuilding cannot restore forbidden intervals.
 
 ## Reproducible export
 
 1. Identify the unique aggregate and completion manifest behind each table.
 2. Add mean and sample-SD fields or LaTeX macros to the aggregator/exporter.
 3. Regenerate the table source; do not hand-copy numbers into multiple files.
-4. Keep the old CI fields when other claims or figures legitimately use them.
+4. Keep CI fields for appendix experiment details and machine-readable audits,
+   not for numeric endpoint display in the main paper.
 5. Record the aggregate revision and input artifacts in experiment details.
 
 Recommended LaTeX:
@@ -155,6 +184,9 @@ Before declaring a paper ready:
   rounding;
 - confirm every stochastic result cell uses `mean ± sample SD` and every
   caption names `N` and the replicate unit;
+- reject numeric interval endpoints in the main-paper abstract, body prose,
+  tables, captions, and figure labels; verify moved interval details are in an
+  appendix experiment-details section or separate experiment-details artifact;
 - scan rendered text for hexadecimal hashes, private paths, hosts, identity
   leaks, stale CI descriptions, and placeholders, including abbreviated
   7--12-character commit IDs in reproducibility sections;
