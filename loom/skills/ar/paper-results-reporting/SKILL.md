@@ -1,6 +1,6 @@
 ---
 name: paper-results-reporting
-description: Standardize venue-independent, evidence-backed result tables and provenance hygiene. Use for any paper when reporting multi-seed experiments, formatting mean plus-or-minus sample standard deviation, removing machine hashes from manuscripts, or validating statistical tables.
+description: Standardize venue-independent, evidence-backed result tables, provenance hygiene, and final submission-artifact naming. Use for any paper when reporting multi-seed experiments, formatting mean plus-or-minus sample standard deviation, removing machine hashes from manuscripts, naming a final PDF by submission ID, or validating statistical tables.
 ---
 
 # Paper Results Reporting
@@ -12,9 +12,10 @@ traceable without exposing internal artifact metadata. The paper shows the
 scientific result; a separate experiment-details record preserves machine
 provenance.
 
-This skill is venue-independent. It does not define page limits, templates,
-ethical-section placement, appendix policy, or other conference rules. Apply a
-separate venue skill for submission packaging.
+This skill is venue-independent. It defines result reporting, provenance
+hygiene, and the cross-venue final-PDF naming convention. It does not define
+page limits, templates, ethical-section placement, appendix policy, or other
+conference rules. Apply a separate venue skill for venue-specific packaging.
 
 ## Statistical table rule
 
@@ -108,6 +109,28 @@ For each label record:
 
 Removing a hash from the PDF must never destroy provenance.
 
+## Final main-PDF naming
+
+Name every final main-paper artifact:
+
+```text
+main-paper-<submission-ID>.pdf
+```
+
+Replace `<submission-ID>` with the assigned venue ID. This convention applies
+across venues, including WSDM and WACV. It does not prescribe names for
+supplements or internal appendix backups.
+
+- Prefer building directly to the final name, for example with
+  `latexmk -jobname=main-paper-<submission-ID> main.tex`.
+- If a toolchain must first emit `main.pdf`, move the freshly verified artifact
+  to the final name and delete `main.pdf`; never leave both files.
+- Update `.gitignore`, READMEs, submission manifests, upload instructions, and
+  automation that still refers to `main.pdf`.
+- Recompute recorded size and checksum values after the final build or rename.
+- Reject a package when the expected ID-specific PDF is missing, when a stale
+  `main.pdf` remains, or when the PDF predates source changes.
+
 ## Batch-paper workflow
 
 When several papers need the same polish:
@@ -135,6 +158,8 @@ Before declaring a paper ready:
 - scan rendered text for hexadecimal hashes, private paths, hosts, identity
   leaks, stale CI descriptions, and placeholders, including abbreviated
   7--12-character commit IDs in reproducibility sections;
+- confirm the final artifact is `main-paper-<submission-ID>.pdf`, contains the
+  correct assigned ID, and has no sibling legacy `main.pdf`;
 - compile from source and reject undefined references/citations or overfull
   table content;
 - visually inspect every table for clipping, overlap, and unreadable type.

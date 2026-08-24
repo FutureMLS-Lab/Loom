@@ -1,6 +1,6 @@
 ---
 name: wsdm-submission-readiness
-description: Prepare and validate WSDM submissions in anonymous ACM proceedings format. Use only when the target venue is WSDM, especially for ACM template migration, the nine-page technical-content boundary, Ethical Considerations placement, appendix triage, and final PDF checks.
+description: Prepare and validate WSDM submissions in anonymous ACM proceedings format. Use only when the target venue is WSDM, especially for ACM template migration, the nine-page technical-content boundary, mean-only narrative results, Ethical Considerations placement, appendix triage, and final PDF checks.
 ---
 
 # WSDM Submission Readiness
@@ -33,6 +33,33 @@ site has been updated.
 
 Do not infer compliance from total PDF pages alone. Inspect where the technical
 body ends, where Ethical Considerations begins, and where References begins.
+
+## WSDM result-display policy
+
+Apply `paper-results-reporting` to tables: stochastic table cells remain
+`mean ± sample SD`, with the replicate unit and count defined in the caption.
+Do not remove table dispersion to satisfy this section.
+
+In WSDM narrative prose, report the point estimate (mean) only. This applies to
+every numerical experimental result in the abstract, introduction, method,
+experiments, discussion, limitations, conclusion, captions, and numerical
+callouts embedded in figures.
+
+- Do not write a point estimate followed by bracketed or parenthesized interval
+  endpoints in prose.
+- Do not print `mean ± SD`, `mean ± SE`, or another numeric uncertainty pair
+  as an inline prose result.
+- A caption may define what graphical error bars or shaded bands represent,
+  and a figure may retain those visual uncertainty marks, but its text labels
+  must not print the interval endpoints.
+- Preserve the underlying CI/SD fields in machine-readable results when they
+  remain useful for tables, plots, or audits.
+- Update figure generators and LaTeX exporters, not only generated PDF/PNG
+  files, so a rebuild cannot restore forbidden interval labels.
+
+Before delivery, scan both source and rendered PDF text for estimate-plus-
+interval patterns. Inspect figure pixels when labels are paths or otherwise
+not extractable as text.
 
 ## Laboratory packaging policy
 
@@ -80,7 +107,9 @@ demographic, causal, privacy, or safety evidence was measured.
 
 ## Build and acceptance loop
 
-1. Force-build `main.pdf` from source rather than trusting a stale artifact.
+1. Force-build `main-paper-<CMT-ID>.pdf` from `main.tex` rather than trusting a
+   stale artifact. Follow the general naming skill and leave no legacy
+   `main.pdf`.
 2. Build `appendix-backup.pdf` independently when a backup exists.
 3. Reject LaTeX errors, undefined citations or references, overfull content,
    clipped floats, overlapping text, and visibly unbalanced reference columns.
@@ -88,9 +117,11 @@ demographic, causal, privacy, or safety evidence was measured.
 5. Confirm technical content ends on page nine or earlier.
 6. Confirm Ethical Considerations begins only after the technical boundary and
    References follows it.
-7. Scan the rendered PDF for identity leaks, local paths, internal hashes,
+7. Confirm prose and figure text use point estimates only while stochastic
+   table cells retain `mean ± sample SD`.
+8. Scan the rendered PDF for identity leaks, local paths, internal hashes,
    placeholders, stale venue names, and old template text.
-8. Visually inspect all nine technical pages plus the ethics/reference pages.
+9. Visually inspect all nine technical pages plus the ethics/reference pages.
 
 Report the technical-body page count separately from the total PDF page count.
 An eleven-page PDF is common when pages 1--9 are technical content, page 10 is

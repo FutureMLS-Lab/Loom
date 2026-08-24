@@ -130,9 +130,10 @@ class TestSkillCatalog:
         )
         assert reporting["name"] == "paper-results-reporting"
         assert reporting["role"] == "Author"
-        assert "sample standard deviation" in ar.skill_body(
-            ar.SKILL_RESULTS_REPORTING
-        )
+        body = ar.skill_body(ar.SKILL_RESULTS_REPORTING)
+        assert "sample standard deviation" in body
+        assert "main-paper-<submission-ID>.pdf" in body
+        assert "never leave both files" in body
 
     def test_lists_the_wsdm_submission_skill_separately(self):
         wsdm = next(
@@ -142,9 +143,10 @@ class TestSkillCatalog:
         )
         assert wsdm["name"] == "wsdm-submission-readiness"
         assert wsdm["role"] == "Author"
-        assert "nine-page technical-content boundary" in ar.skill_body(
-            ar.SKILL_WSDM_SUBMISSION
-        )
+        body = ar.skill_body(ar.SKILL_WSDM_SUBMISSION)
+        assert "nine-page technical-content boundary" in body
+        assert "point estimate (mean) only" in body
+        assert "stochastic table cells remain" in body
 
     def test_body_reads_a_catalogued_skill(self):
         first = ar.skill_catalog()[0]
@@ -1658,6 +1660,7 @@ def test_author_prompts_inject_results_reporting(tmp_path: Path) -> None:
         assert "Results reporting and provenance" in prompt
         assert "mean ± sample standard deviation" in prompt
         assert "EXPERIMENT_DETAILS.md" in prompt
+        assert "main-paper-<submission-ID>.pdf" in prompt
         assert "WSDM submission requirements" not in prompt
 
 
@@ -1681,6 +1684,8 @@ def test_wsdm_author_prompts_inject_only_the_wsdm_skill(tmp_path: Path) -> None:
         assert "WSDM submission requirements" in prompt
         assert r"\documentclass[sigconf,anonymous,review]{acmart}" in prompt
         assert "appendix-backup.tex" in prompt
+        assert "point estimate (mean) only" in prompt
+        assert "main-paper-<CMT-ID>.pdf" in prompt
 
     non_wsdm = _paper_state()
     assert not ar.is_wsdm_paper(non_wsdm)
