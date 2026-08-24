@@ -52,7 +52,7 @@ flowchart TB
 | API | `loom/web.py` 中 `/api/tasks/<slug>/ar*` 系列路由 |
 | 领域逻辑 | `loom/ar_task.py`（状态、挖掘、ideation、readiness、评审面板）|
 | 任务基建 | `loom/rud_task.py`（任务注册、worktree、tmux agent 命令）|
-| 技能 | `loom/skills/ar/`（AR-STUDIO / AR-AUTHOR / AR-REVIEWER / GPU-RESOURCES / figures/*）|
+| 技能 | `loom/skills/ar/`（角色技能 / 通用论文技能 / venue 专用技能 / figures/*）|
 | 实例存储 | `<factory-root>/.RUD/<slug>/`（`ar.json` 状态 + `rounds/` + `work/`）|
 
 同一个 `ar.json` 按 `role` 字段区分两种实体：`studio` 与 `paper`。
@@ -60,7 +60,7 @@ flowchart TB
 ## 技能库（`loom/skills/ar/`）
 
 技能是 Markdown 文件、方法论即代码：改文件即升级所有 Agent，无需改 Python。
-按用途分五类，注入方式各不相同：
+按用途分七类，注入方式各不相同：
 
 **① 角色方法论**（整篇注入对应角色的每个 prompt，`ar_skill_text`）
 
@@ -91,7 +91,17 @@ venue 实源核对），防造假引用混入提交。
 `GPU-RESOURCES.md` — slurm 集群规范：禁止登录节点跑推理、sbatch 模板、
 显存被野进程占用时的防御性 requeue 守卫。
 
-**⑤ Rebuttal 域技能**（物理上同在 `skills/ar/` 下，逻辑属 Rebuttal Factory，
+**⑤ 通用结果报告与实验溯源**（整篇注入所有 Author prompt）：
+`paper-results-reporting/SKILL.md` — 与投稿 venue 无关；多 seed 结果统一报告为
+均值 ± 样本标准差，禁止从置信区间反推标准差；论文中不暴露 hash、主机名和
+本地路径，完整 provenance 转存到未编入 PDF 的 `EXPERIMENT_DETAILS.md`。
+
+**⑥ WSDM 投稿规范**（只整篇注入 WSDM Author prompt）：
+`wsdm-submission-readiness/SKILL.md` — ACM 匿名 review 模板、九页技术正文边界、
+Ethical Considerations 与 References 的页界、正文附录整合和
+`appendix-backup.tex` 独立备份。该技能不负责统计口径，也不会注入其他 venue。
+
+**⑦ Rebuttal 域技能**（物理上同在 `skills/ar/` 下，逻辑属 Rebuttal Factory，
 见 `docs/rebuttal-factory/arch.md`）：`paper-rebuttal/`（回复起草）、
 `paper-rebuttal-delivery/`（终稿交付通用方法论 + `WACV.md` 会议档案）。
 

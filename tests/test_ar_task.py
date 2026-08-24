@@ -122,6 +122,30 @@ class TestSkillCatalog:
         assert rebuttal["role"] == "Rebuttal"
         assert "Acceptance-first" in ar.skill_body(ar.SKILL_REBUTTAL)
 
+    def test_lists_the_results_reporting_skill(self):
+        reporting = next(
+            skill
+            for skill in ar.skill_catalog()
+            if skill["id"] == ar.SKILL_RESULTS_REPORTING
+        )
+        assert reporting["name"] == "paper-results-reporting"
+        assert reporting["role"] == "Author"
+        assert "sample standard deviation" in ar.skill_body(
+            ar.SKILL_RESULTS_REPORTING
+        )
+
+    def test_lists_the_wsdm_submission_skill_separately(self):
+        wsdm = next(
+            skill
+            for skill in ar.skill_catalog()
+            if skill["id"] == ar.SKILL_WSDM_SUBMISSION
+        )
+        assert wsdm["name"] == "wsdm-submission-readiness"
+        assert wsdm["role"] == "Author"
+        assert "nine-page technical-content boundary" in ar.skill_body(
+            ar.SKILL_WSDM_SUBMISSION
+        )
+
     def test_body_reads_a_catalogued_skill(self):
         first = ar.skill_catalog()[0]
         assert len(ar.skill_body(first["id"])) > 200
@@ -1558,7 +1582,14 @@ def test_resolve_invitation_prefers_an_open_window(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.parametrize(
-    "name", [ar.SKILL_STUDIO, ar.SKILL_AUTHOR, ar.SKILL_REVIEWER]
+    "name",
+    [
+        ar.SKILL_STUDIO,
+        ar.SKILL_AUTHOR,
+        ar.SKILL_REVIEWER,
+        ar.SKILL_RESULTS_REPORTING,
+        ar.SKILL_WSDM_SUBMISSION,
+    ],
 )
 def test_ar_skills_are_bundled(name: str) -> None:
     assert len(ar.ar_skill_text(name)) > 500
@@ -1608,6 +1639,52 @@ def test_author_prompts_point_at_the_figure_skills(tmp_path: Path) -> None:
         assert "teaser-figure-4" in prompt
         assert "results-figure-2" in prompt
         assert "SKILL.md" in prompt
+
+
+def test_author_prompts_inject_results_reporting(tmp_path: Path) -> None:
+    state = _paper_state()
+    prompts = (
+        ar.author_draft_prompt(tmp_path, tmp_path / "manuscript", state),
+        ar.author_round_prompt(tmp_path, tmp_path / "manuscript", state, 2),
+        ar.author_readiness_repair_prompt(
+            tmp_path,
+            tmp_path / "manuscript",
+            state,
+            2,
+            {"ready": False, "failed": []},
+        ),
+    )
+    for prompt in prompts:
+        assert "Results reporting and provenance" in prompt
+        assert "mean ± sample standard deviation" in prompt
+        assert "EXPERIMENT_DETAILS.md" in prompt
+        assert "WSDM submission requirements" not in prompt
+
+
+def test_wsdm_author_prompts_inject_only_the_wsdm_skill(tmp_path: Path) -> None:
+    state = _paper_state()
+    state["parent_slug"] = "wsdm2027"
+    assert ar.is_wsdm_paper(state)
+    prompts = (
+        ar.author_draft_prompt(tmp_path, tmp_path / "manuscript", state),
+        ar.author_round_prompt(tmp_path, tmp_path / "manuscript", state, 2),
+        ar.author_readiness_repair_prompt(
+            tmp_path,
+            tmp_path / "manuscript",
+            state,
+            2,
+            {"ready": False, "failed": []},
+        ),
+    )
+    for prompt in prompts:
+        assert "Results reporting and provenance" in prompt
+        assert "WSDM submission requirements" in prompt
+        assert r"\documentclass[sigconf,anonymous,review]{acmart}" in prompt
+        assert "appendix-backup.tex" in prompt
+
+    non_wsdm = _paper_state()
+    assert not ar.is_wsdm_paper(non_wsdm)
+    assert ar.wsdm_submission_block(non_wsdm) == ""
 
 
 def test_ar_skill_text_missing_file() -> None:

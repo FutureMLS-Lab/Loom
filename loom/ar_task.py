@@ -3578,6 +3578,8 @@ SKILL_AUTHOR = "AR-AUTHOR.md"
 SKILL_REVIEWER = "AR-REVIEWER.md"
 SKILL_GPU = "GPU-RESOURCES.md"
 SKILL_REBUTTAL = "paper-rebuttal/SKILL.md"
+SKILL_RESULTS_REPORTING = "paper-results-reporting/SKILL.md"
+SKILL_WSDM_SUBMISSION = "wsdm-submission-readiness/SKILL.md"
 
 
 def ar_skills_dir() -> Path:
@@ -3634,6 +3636,43 @@ def gpu_resources_block() -> str:
         + text
         + "\n=== end compute resources ==="
     )
+
+
+def results_reporting_block() -> str:
+    """The result-table and provenance skill as it appears in author prompts."""
+    text = ar_skill_text(SKILL_RESULTS_REPORTING)
+    if not text:
+        return ""
+    return (
+        "=== Results reporting and provenance - follow this exactly ===\n"
+        + text
+        + "\n=== end results reporting and provenance ==="
+    )
+
+
+def is_wsdm_paper(state: dict[str, Any]) -> bool:
+    """Whether a paper belongs to WSDM, including legacy URL-led studios."""
+    markers = (
+        state.get("venue"),
+        state.get("parent_slug"),
+        state.get("venue_url"),
+    )
+    return any("wsdm" in str(marker or "").casefold() for marker in markers)
+
+
+def wsdm_submission_block(state: dict[str, Any]) -> str:
+    """The WSDM-only submission skill, omitted from every other venue."""
+    if not is_wsdm_paper(state):
+        return ""
+    text = ar_skill_text(SKILL_WSDM_SUBMISSION)
+    if not text:
+        return ""
+    return (
+        "=== WSDM submission requirements - follow this exactly ===\n"
+        + text
+        + "\n=== end WSDM submission requirements ==="
+    )
+
 
 def figure_skills_block() -> str:
     """The figure-skill menu as it appears in an author prompt."""
@@ -3746,6 +3785,18 @@ ROLE_SKILLS = (
         "Named in every author round prompt; the author reads it before "
         "answering the reviewers.",
     ),
+    (
+        SKILL_RESULTS_REPORTING,
+        "Author",
+        "Standardizes result-table statistics and manuscript-safe provenance.",
+        "Injected in full into every author prompt.",
+    ),
+    (
+        SKILL_WSDM_SUBMISSION,
+        "Author",
+        "Packages anonymous WSDM papers under ACM and nine-page rules.",
+        "Injected in full only into WSDM author prompts.",
+    ),
 )
 
 
@@ -3811,10 +3862,22 @@ def paper_skills_report(
     injected = [
         {"name": "AR-AUTHOR", "how": "full text, every round prompt"},
         {
+            "name": "paper-results-reporting",
+            "how": "full text, every round prompt",
+        },
+        {
             "name": DEFAULT_TEASER_SKILL,
             "how": "figure menu default - the prompt orders proactive use",
         },
     ]
+    if is_wsdm_paper(state):
+        injected.insert(
+            2,
+            {
+                "name": "wsdm-submission-readiness",
+                "how": "full text, WSDM papers only",
+            },
+        )
     injected += [
         {"name": sk["name"], "how": "figure menu - read on demand"}
         for sk in figure_skills()
@@ -3826,7 +3889,12 @@ def paper_skills_report(
 
     # Evidence pass: the author's own notes, round by round.
     names = {sk["name"] for sk in figure_skills()}
-    names.update({"paper-rebuttal", "checkbib"})
+    names.update({
+        "paper-rebuttal",
+        "paper-results-reporting",
+        "wsdm-submission-readiness",
+        "checkbib",
+    })
     mentions: dict[str, list[int]] = {}
     rounds = rounds_root(project_root, slug)
     if rounds.is_dir():
@@ -3958,6 +4026,10 @@ The idea this paper must establish:
 {ar_skill_text(SKILL_AUTHOR) or "(AR author skill missing)"}
 === end methodology ===
 
+{results_reporting_block()}
+
+{wsdm_submission_block(state)}
+
 {figure_skills_block()}
 
 {gpu_resources_block()}
@@ -4032,6 +4104,10 @@ The idea this paper must establish:
 === AR author methodology - follow this exactly ===
 {ar_skill_text(SKILL_AUTHOR) or "(AR author skill missing)"}
 === end methodology ===
+
+{results_reporting_block()}
+
+{wsdm_submission_block(state)}
 
 {figure_skills_block()}
 
@@ -4119,6 +4195,10 @@ Failures that must all be fixed:
 
 Continue the SAME round. Follow the AR author methodology exactly:
 {ar_skill_text(SKILL_AUTHOR) or "(AR author skill missing)"}
+
+{results_reporting_block()}
+
+{wsdm_submission_block(state)}
 
 {gpu_resources_block()}
 
