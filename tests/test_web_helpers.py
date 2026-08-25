@@ -1,18 +1,17 @@
 """Prompt-side helpers of the web layer."""
 
-def test_skills_shelf_is_a_menu_not_a_paste(tmp_path):
-    """The shelf generalises the AR figure menu: name + pitch + path, with
-    already-injected skills marked and pipeline-internal ar/ skills absent."""
-    from loom import web as w
-    from loom.rud_task import bundled_skills_path
+def test_default_prompt_lists_every_skill():
+    """The skills map lives inside DEFAULT_PROMPT.md now - one always-on
+    text that names the picker tier AND the AR pipeline tier, menu-style."""
+    from loom.paths import default_prompt_path
 
-    shelf = w._skills_shelf_text(bundled_skills_path(), str(bundled_skills_path()))
-    assert "[already injected above]" in shelf          # the selected skill is marked
-    assert "remote_control.md" in shelf                 # real skills listed by path
-    assert "AR-AUTHOR" not in shelf                     # ar/ stays pipeline-internal
-    assert "DEFAULT_PROMPT" not in shelf                # always-on is never a choice
-    # It is a menu: no skill body sneaks in (bodies are thousands of chars).
-    assert all(len(line) < 200 for line in shelf.splitlines())
+    doc = default_prompt_path().read_text(encoding="utf-8")
+    assert "remote_control" in doc                      # picker tier listed
+    assert "AR-AUTHOR" in doc                           # AR tier listed
+    assert "teaser-figure-3" in doc                     # figure menu listed
+    assert "loom/skills/ar/AR-AUTHOR.md" in doc         # paths included
+    # It is a menu: no skill body sneaks in wholesale.
+    assert len(doc) < 20000
 
 
 def test_skill_summary_prefers_frontmatter_description(tmp_path):
@@ -30,8 +29,8 @@ def test_skill_summary_prefers_frontmatter_description(tmp_path):
 
 
 def test_skills_index_is_fresh():
-    """SKILLS.md is generated; this fails when a skill was added or its
-    description changed without rerunning scripts/gen_skills_index.py."""
+    """The generated section of DEFAULT_PROMPT.md matches a fresh render;
+    fails when a skill was added without rerunning gen_skills_index.py."""
     import importlib.util
     from pathlib import Path
 
@@ -41,7 +40,8 @@ def test_skills_index_is_fresh():
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    on_disk = (repo / "loom" / "skills" / "SKILLS.md").read_text(encoding="utf-8")
-    assert on_disk == mod.render(), (
-        "loom/skills/SKILLS.md is stale - run: python3 scripts/gen_skills_index.py"
+    on_disk = (repo / "loom" / "skills" / "DEFAULT_PROMPT.md").read_text(encoding="utf-8")
+    assert on_disk == mod.render_document(), (
+        "DEFAULT_PROMPT.md skills section is stale - run: "
+        "python3 scripts/gen_skills_index.py"
     )

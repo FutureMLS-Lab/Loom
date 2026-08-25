@@ -414,29 +414,6 @@ def _skill_summary(path: Path, limit: int = 140) -> str:
     return ""
 
 
-def _skills_shelf_text(
-    default_skills: Path, injected: str = "", limit: int = 40
-) -> str:
-    """The whole skill shelf as a menu: name, one-line pitch, path.
-
-    The same on-demand pattern the AR figure menu proved out, generalised:
-    the prompt carries a few hundred tokens of menu instead of every skill's
-    full text, and the agent reads the SKILL.md it needs when it needs it.
-    Skills already injected in full are marked so nobody reads them twice.
-    """
-    injected_paths = {
-        str(p.resolve()) for p in split_skills_paths(injected) if p.is_file()
-    }
-    lines: list[str] = []
-    for option in _available_skill_options(default_skills)[:limit]:
-        mark = " [already injected above]" if option["path"] in injected_paths else ""
-        summary = _skill_summary(Path(option["path"]))
-        lines.append(
-            f"- {option['label']}{mark} - {summary}\n    {option['path']}"
-        )
-    return "\n".join(lines)
-
-
 # --- HTTP response helpers --------------------------------------------------
 
 
@@ -2840,14 +2817,6 @@ Default skills from:
 Default skills:
 ---
 {skills or "(none)"}
----
-
-The skill shelf - every packaged skill, on demand. When the work ahead
-matches one, READ its file at the listed path before improvising; do not
-paste it back into chat. The complete one-page map, including the
-pipeline-injected AR tier, is {bundled_skills_path().parent / "SKILLS.md"}:
----
-{_skills_shelf_text(default_skills or bundled_skills_path(), meta.skills_path) or "(none found)"}
 ---
 
 RUD workflow:

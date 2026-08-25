@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Regenerate loom/skills/SKILLS.md - the one-file map of every skill.
+"""Regenerate the skills list inside loom/skills/DEFAULT_PROMPT.md.
 
-The index is generated, not hand-kept: it reads the same catalogs the
-runtime uses (the AR pipeline's skill_catalog and the picker's option
-scan), so it cannot silently disagree with what agents actually receive.
-A test compares the file against a fresh render; when a skill is added
-or its description changes, run:
+The default prompt is the one text every agent always receives, so the
+map of available skills lives right there - between the SKILLS markers,
+rendered from the same catalogs the runtime uses (the AR pipeline's
+skill_catalog and the picker's option scan), never hand-kept. A test
+compares the section against a fresh render; when a skill is added or
+its description changes, run:
 
     python3 scripts/gen_skills_index.py
 """
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -23,7 +25,8 @@ from loom.paths import default_prompt_path  # noqa: E402
 from loom.rud_task import bundled_skills_path  # noqa: E402
 from loom.web import _available_skill_options, _skill_summary  # noqa: E402
 
-INDEX_PATH = REPO / "loom" / "skills" / "SKILLS.md"
+BEGIN = "<!-- SKILLS:BEGIN generated - edit skills, then run scripts/gen_skills_index.py -->"
+END = "<!-- SKILLS:END -->"
 
 
 def _rel(path: str | Path) -> str:
@@ -34,50 +37,39 @@ def _rel(path: str | Path) -> str:
         return str(p)
 
 
-def render() -> str:
-    lines: list[str] = [
-        "# Every Loom skill, on one page",
-        "",
-        "<!-- GENERATED - edit the skills, then run scripts/gen_skills_index.py -->",
-        "",
-        "A skill is a markdown file; injection is text. Three tiers decide who",
-        "reads what, and when:",
-        "",
-        "1. **Always on** - in every prompt, nobody chooses it.",
-        "2. **Human-picked** - the task creator selects; full text is injected,",
-        "   and every task prompt also carries this tier as an on-demand menu",
-        "   (name + pitch + path) so agents can read unselected ones anyway.",
-        "3. **Pipeline-injected** - the Paper Factory hands each AR role its",
-        "   methodology itself; these never appear in the picker.",
-        "",
-        "## Always on",
-        "",
-    ]
-    dp = default_prompt_path()
-    lines.append(
-        f"- **DEFAULT_PROMPT** — {_skill_summary(dp) or 'working style + project memory protocol'}"
-    )
-    lines.append(f"    `{_rel(dp)}`")
-    lines += ["", "## Human-picked (the task picker / the skill shelf)", ""]
+def render_section() -> str:
+    lines: list[str] = ["", "Pick-and-read (also selectable at task creation):"]
     for option in _available_skill_options(bundled_skills_path()):
         summary = _skill_summary(Path(option["path"]))
-        lines.append(f"- **{option['label']}** — {summary}")
-        lines.append(f"    `{_rel(option['path'])}`")
-    lines += ["", "## Pipeline-injected (AR / Paper Factory)", ""]
-    role_order: dict[str, list[dict[str, str]]] = {}
+        lines.append(f"- {option['label']} - {summary}")
+        lines.append(f"    {_rel(option['path'])}")
+    lines.append("")
+    lines.append(
+        "Paper Factory (AR) skills - the pipeline injects these itself; listed "
+        "so you know the machinery:"
+    )
     for entry in ar.skill_catalog():
-        role_order.setdefault(entry["role"], []).append(entry)
-    for role, entries in role_order.items():
-        lines.append(f"### {role}")
-        lines.append("")
-        for entry in entries:
-            lines.append(f"- **{entry['name']}** — {entry['description']}")
-            lines.append(f"    {entry['injection']}")
-            lines.append(f"    `{_rel(entry['path'])}`")
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
+        lines.append(
+            f"- {entry['name']} ({entry['role']}) - {entry['description']} "
+            f"[{entry['injection']}]"
+        )
+        lines.append(f"    {_rel(entry['path'])}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_document() -> str:
+    doc = default_prompt_path().read_text(encoding="utf-8")
+    pattern = re.compile(
+        re.escape(BEGIN) + r".*?" + re.escape(END), flags=re.DOTALL
+    )
+    if not pattern.search(doc):
+        raise SystemExit(
+            f"markers not found in {default_prompt_path()} - refusing to guess"
+        )
+    return pattern.sub(BEGIN + render_section() + END, doc)
 
 
 if __name__ == "__main__":
-    INDEX_PATH.write_text(render(), encoding="utf-8")
-    print(f"wrote {INDEX_PATH}")
+    default_prompt_path().write_text(render_document(), encoding="utf-8")
+    print(f"updated {default_prompt_path()}")
