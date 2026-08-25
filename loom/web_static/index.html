@@ -7,7 +7,7 @@
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
   <link rel="stylesheet" href="/static/vendor/xterm.css?v=5.5.0" />
   <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
-  <link rel="stylesheet" href="/static/app.css?v=20260825-1" />
+  <link rel="stylesheet" href="/static/app.css?v=20260825-2" />
 </head>
 <body>
   <header class="topbar">
@@ -228,7 +228,7 @@
         <section class="tab-panel" data-panel="ar" role="tabpanel" hidden>
           <p class="tab-panel__hint">
             Automated research on <code id="ar-direction-label">…</code> ·
-            <span class="kernel-badge" id="ar-stage-badge" data-state="unknown">…</span>
+            <span class="stage-badge" id="ar-stage-badge" data-state="unknown">…</span>
             <button type="button" class="btn btn--sm" id="btn-ar-refresh">Refresh</button>
           </p>
 
@@ -354,17 +354,17 @@
             </div>
           </div>
           <input type="text" id="ar-custom-direction" class="modal-input-wide" placeholder="Describe the direction in your own words" hidden />
-          <fieldset class="kernel-mode-picker ar-mode-picker">
-            <label class="kernel-mode-card">
+          <fieldset class="mode-picker ar-mode-picker">
+            <label class="mode-card">
               <input type="radio" name="ar-mode" value="auto" checked />
-              <span class="kernel-mode-card__body">
+              <span class="mode-card__body">
                 <strong>Auto direction</strong>
                 <small>Mine recent arXiv / ICLR / ICML work in this direction, then propose ideas to pick from.</small>
               </span>
             </label>
-            <label class="kernel-mode-card">
+            <label class="mode-card">
               <input type="radio" name="ar-mode" value="seed" />
-              <span class="kernel-mode-card__body">
+              <span class="mode-card__body">
                 <strong>My idea</strong>
                 <small>Start from an idea you describe and iterate it into concrete proposals.</small>
               </span>

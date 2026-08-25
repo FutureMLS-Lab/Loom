@@ -290,7 +290,6 @@ select:focus-visible { outline: none; border-color: var(--border-focus); box-sha
   color: var(--text-faint); background: var(--bg-elev-2); border: 1px solid var(--border);
   font-size: 0.62rem; font-weight: 700; letter-spacing: 0.03em;
 }
-.task-kind--kernel { color: #6d28d9; background: #f3e8ff; border-color: #e9d5ff; }
 .task-kind--ar,
 .task-kind--aris { color: #047857; background: #ecfdf5; border-color: #a7f3d0; }
 
@@ -2545,7 +2544,7 @@ textarea.editable__input {
   a { color: inherit !important; text-decoration: none !important; }
   @page { margin: 12mm 14mm; }
 }
-.kernel-mode-picker {
+.mode-picker {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
@@ -2553,18 +2552,18 @@ textarea.editable__input {
   padding: 0;
   border: 0;
 }
-.kernel-mode-card {
+.mode-card {
   position: relative;
   display: block !important;
   margin: 0 !important;
   cursor: pointer;
 }
-.kernel-mode-card input {
+.mode-card input {
   position: absolute;
   opacity: 0;
   pointer-events: none;
 }
-.kernel-mode-card__body {
+.mode-card__body {
   display: block;
   min-height: 72px;
   padding: 11px 12px;
@@ -2573,30 +2572,29 @@ textarea.editable__input {
   background: var(--bg-elev-2);
   transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
 }
-.kernel-mode-card__body strong {
+.mode-card__body strong {
   display: block;
   margin-bottom: 5px;
   color: var(--text);
   font-size: 12.5px;
 }
-.kernel-mode-card__body small {
+.mode-card__body small {
   display: block;
   color: var(--text-faint);
   font-size: 10.5px;
   line-height: 1.4;
 }
-.kernel-mode-card:hover .kernel-mode-card__body {
+.mode-card:hover .mode-card__body {
   border-color: var(--accent);
   transform: translateY(-1px);
 }
-.kernel-mode-card:has(input:checked) .kernel-mode-card__body {
+.mode-card:has(input:checked) .mode-card__body {
   border-color: var(--accent);
   background: var(--accent-soft);
   box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.11);
 }
-#kernel-launch-status { display: block; margin-top: 8px; }
 
-.kernel-badge {
+.stage-badge {
   font-size: 12px;
   font-weight: 600;
   padding: 3px 10px;
@@ -2605,12 +2603,11 @@ textarea.editable__input {
   background: var(--bg-elev-2);
   color: var(--text-dim);
 }
-.kernel-badge[data-state="up"] { background: #ecfdf3; border-color: #abefc6; color: var(--good); }
-.kernel-badge[data-state="down"] { background: var(--danger-soft); border-color: #fecdd3; color: var(--bad); }
+.stage-badge[data-state="up"] { background: #ecfdf3; border-color: #abefc6; color: var(--good); }
+.stage-badge[data-state="down"] { background: var(--danger-soft); border-color: #fecdd3; color: var(--bad); }
 
 @media (max-width: 760px) {
-  .kernel-lab__body { grid-template-columns: 1fr; }
-  .kernel-mode-picker { grid-template-columns: 1fr; }
+  .mode-picker { grid-template-columns: 1fr; }
 }
 
 /* ===== AR (Automated Research) panel ===== */
