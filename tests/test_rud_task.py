@@ -143,8 +143,9 @@ def test_list_task_markdown_files_returns_plan_first(tmp_path: Path) -> None:
     root = task_root(tmp_path, meta.slug)
     (root / "review.md").write_text("# review", encoding="utf-8")
     (root / "Notes.md").write_text("# notes", encoding="utf-8")
-    # Non-markdown files are excluded; nested markdown is surfaced by
-    # relative path so worktree docs can be previewed from the UI.
+    # Non-markdown files are excluded, and so is everything under work/ -
+    # a task's markdown is its own, not its worktrees' (whole repos live
+    # there; their READMEs are not task documents).
     (root / "stuff.txt").write_text("ignore me", encoding="utf-8")
     nested = root / "work" / "subrepo"
     nested.mkdir(parents=True)
@@ -153,8 +154,9 @@ def test_list_task_markdown_files_returns_plan_first(tmp_path: Path) -> None:
     names = list_task_markdown_files(tmp_path, meta.slug)
     # PLAN.md must be first; the rest are sorted case-insensitively.
     assert names[0] == "PLAN.md"
-    assert names[1:] == ["Notes.md", "review.md", "work/subrepo/DEEP.md"]
+    assert names[1:] == ["Notes.md", "review.md"]
     assert "stuff.txt" not in names
+    assert all("work/" not in name for name in names)
 
 
 def test_list_task_markdown_files_without_plan(tmp_path: Path) -> None:
