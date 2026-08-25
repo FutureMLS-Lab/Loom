@@ -27,3 +27,21 @@ def test_skill_summary_prefers_frontmatter_description(tmp_path):
     plain = tmp_path / "plain.md"
     plain.write_text("# Heading\n\nFirst real line here.", encoding="utf-8")
     assert w._skill_summary(plain) == "Heading"
+
+
+def test_skills_index_is_fresh():
+    """SKILLS.md is generated; this fails when a skill was added or its
+    description changed without rerunning scripts/gen_skills_index.py."""
+    import importlib.util
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "gen_skills_index", repo / "scripts" / "gen_skills_index.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    on_disk = (repo / "loom" / "skills" / "SKILLS.md").read_text(encoding="utf-8")
+    assert on_disk == mod.render(), (
+        "loom/skills/SKILLS.md is stale - run: python3 scripts/gen_skills_index.py"
+    )

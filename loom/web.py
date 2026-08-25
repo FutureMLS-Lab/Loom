@@ -351,6 +351,9 @@ def _available_skill_options(
         # let someone send it twice.
         if p == default_prompt_path().resolve():
             return
+        # The generated index of all skills is a map, not a skill.
+        if p.name == "SKILLS.md" and p.parent == skills_root:
+            return
         rel = ""
         try:
             rel = str(p.relative_to(skills_root))
@@ -2841,7 +2844,8 @@ Default skills:
 
 The skill shelf - every packaged skill, on demand. When the work ahead
 matches one, READ its file at the listed path before improvising; do not
-paste it back into chat:
+paste it back into chat. The complete one-page map, including the
+pipeline-injected AR tier, is {bundled_skills_path().parent / "SKILLS.md"}:
 ---
 {_skills_shelf_text(default_skills or bundled_skills_path(), meta.skills_path) or "(none found)"}
 ---
