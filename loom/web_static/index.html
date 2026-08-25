@@ -7,7 +7,7 @@
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
   <link rel="stylesheet" href="/static/vendor/xterm.css?v=5.5.0" />
   <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
-  <link rel="stylesheet" href="/static/app.css?v=20260814-1" />
+  <link rel="stylesheet" href="/static/app.css?v=20260825-1" />
 </head>
 <body>
   <header class="topbar">
@@ -223,96 +223,6 @@
             <button type="button" class="btn btn--sm" id="btn-changes-refresh">Refresh</button>
           </div>
           <div id="changes-body" class="changes-body"></div>
-        </section>
-
-        <section class="tab-panel" data-panel="kernel" role="tabpanel" hidden>
-          <p class="tab-panel__hint">Kernel optimization on <code id="kernel-project">…</code> · <span class="kernel-badge" id="kernel-service-badge" data-state="unknown">service: …</span> <button type="button" class="btn btn--sm" id="btn-kernel-refresh">Refresh</button></p>
-          <div class="pane-card claude-info kernel-info-card" id="kernel-info-card">
-            <div class="claude-info__row claude-info__row--worktrees">
-              <span class="claude-info__label">Worktrees</span>
-              <div class="claude-info__worktrees" id="kernel-worktree-list"></div>
-              <div class="claude-info__wt-actions">
-                <button type="button" class="btn btn--sm" id="btn-kernel-create-worktree">+ Add worktree</button>
-                <button type="button" class="btn btn--sm" id="btn-kernel-worktree-push-all" hidden>Push all</button>
-              </div>
-            </div>
-          </div>
-          <div class="kernel-lab__body">
-            <section class="kernel-interview">
-              <h3>Describe what to optimize (interview)</h3>
-              <div class="kernel-chat" id="kernel-chat"></div>
-              <div class="kernel-chat__input">
-                <textarea id="kernel-chat-text" rows="2" placeholder="e.g. optimize this MLA decode: https://raw.githubusercontent.com/…/mla_decode_fp8.py"></textarea>
-                <button type="button" class="btn btn--primary" id="btn-kernel-chat-send">Send</button>
-              </div>
-              <div class="kernel-spec" id="kernel-spec" hidden></div>
-            </section>
-            <section class="kernel-form">
-              <div class="kernel-form__head">
-                <h3>Launch workers</h3>
-                <span>Choose one workflow</span>
-              </div>
-              <fieldset class="kernel-mode-picker">
-                <label class="kernel-mode-card">
-                  <input type="radio" name="kernel-run-mode" value="scratch" checked />
-                  <span class="kernel-mode-card__body">
-                    <strong>Write from scratch</strong>
-                    <small>No starter kernel. Build from INSTRUCTION.md and shared PLAN.md.</small>
-                  </span>
-                </label>
-                <label class="kernel-mode-card">
-                  <input type="radio" name="kernel-run-mode" value="optimize" />
-                  <span class="kernel-mode-card__body">
-                    <strong>Optimize existing</strong>
-                    <small>Start from the best correct kernel in the evaluator library.</small>
-                  </span>
-                </label>
-              </fieldset>
-              <div class="kernel-form__row">
-                <div>
-                  <label for="kernel-plugin">Operation</label>
-                  <select id="kernel-plugin"></select>
-                </div>
-                <div>
-                  <label for="kernel-target">Backend</label>
-                  <select id="kernel-target"></select>
-                </div>
-              </div>
-              <label for="kernel-model">Worker model</label>
-              <input type="text" id="kernel-model" list="kernel-model-list" placeholder="claude-…" />
-              <datalist id="kernel-model-list"></datalist>
-              <div class="kernel-form__row">
-                <div>
-                  <label for="kernel-cluster">Cluster / GPU</label>
-                  <select id="kernel-cluster"></select>
-                </div>
-                <div>
-                  <label for="kernel-nagents">Workers</label>
-                  <input type="number" id="kernel-nagents" min="1" value="3" />
-                </div>
-              </div>
-              <div class="kernel-form__row">
-                <div>
-                  <label for="kernel-target-speedup">Success target</label>
-                  <input type="number" id="kernel-target-speedup" step="0.05" placeholder="e.g. 1.10×" />
-                </div>
-              </div>
-              <details class="kernel-advanced" id="kernel-advanced-shape">
-                <summary class="kernel-advanced__summary">Advanced shape override</summary>
-                <p class="kernel-advanced__hint">Normally use the interview shape. Override only when benchmarking a specific workload.</p>
-                <textarea id="kernel-shape" rows="5" spellcheck="false" placeholder="(agent decides — optional override)"></textarea>
-              </details>
-              <button type="button" class="btn btn--primary kernel-launch-btn" id="btn-kernel-launch">
-                <span>Launch run</span><span aria-hidden="true">→</span>
-              </button>
-              <span class="tab-panel__hint" id="kernel-launch-status"></span>
-            </section>
-            <section class="kernel-runs">
-              <h3>Runs</h3>
-              <ul class="kernel-run-list" id="kernel-run-list"></ul>
-              <div class="kernel-run-detail" id="kernel-run-detail" hidden></div>
-            </section>
-          </div>
         </section>
 
         <section class="tab-panel" data-panel="ar" role="tabpanel" hidden>
@@ -632,30 +542,10 @@
     </div>
   </div>
 
-  <div class="preview-modal" id="kernel-source-modal" hidden>
-    <div class="preview-modal__card" role="dialog" aria-modal="true" aria-labelledby="kernel-source-title">
-      <header class="preview-modal__header">
-        <div>
-          <p class="preview-modal__eyebrow">Kernel source</p>
-          <h2 id="kernel-source-title">Kernel</h2>
-          <div class="kernel-src-tabs" id="kernel-source-tabs" hidden></div>
-        </div>
-        <div class="preview-modal__actions">
-          <button type="button" class="btn" id="btn-kernel-source-copy">Copy</button>
-          <button type="button" class="btn" id="btn-kernel-source-download">Download</button>
-          <button type="button" class="icon-btn" id="btn-kernel-source-close" aria-label="Close">×</button>
-        </div>
-      </header>
-      <main class="preview-modal__body">
-        <pre id="kernel-source-pre" class="kernel-source-pre"></pre>
-      </main>
-    </div>
-  </div>
-
   <script src="/static/vendor/xterm.js?v=5.5.0"></script>
   <script src="/static/vendor/addon-fit.js?v=0.10.0"></script>
   <script src="/static/vendor/katex/katex.min.js"></script>
 <script src="/static/vendor/katex/auto-render.min.js"></script>
-<script src="/static/app.js?v=20260814-1"></script>
+<script src="/static/app.js?v=20260825-1"></script>
 </body>
 </html>

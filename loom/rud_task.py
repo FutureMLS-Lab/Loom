@@ -42,7 +42,7 @@ NOTES = "NOTES.md"
 META = "task.json"
 TASK_ORDER = "task-order.json"
 
-# PLAN.md is the normal task ledger; kernel tasks use WIKI.md as their shared
+# PLAN.md is the task ledger:
 # evaluator/worker knowledge base. NOTES.md remains project-scoped.
 ALLOWED_TEMPLATE_NAMES = frozenset({PLAN, WIKI})
 
@@ -511,7 +511,6 @@ class TaskMeta:
     # task.json files that predate the `agent` field.
     agent: str = AGENT_CURSOR
     # Task kind: "agent" (Claude/Codex deep-interview task, default) or
-    # "kernel" (Kernel Lab task — the task view renders the Kernel Lab UI).
     kind: str = "agent"
     # ``worktree_path`` and ``branch`` are the *primary* worktree (also
     # mirrored at ``worktrees[0]`` / ``branches[0]``); the Claude pane
@@ -949,67 +948,6 @@ def write_template(project_root: Path, slug: str, name: str, content: str) -> bo
         path.write_text(content, encoding="utf-8")
     except PermissionError:
         return _sudo_write_text(path, content)
-    return True
-
-
-# --- Kernel Lab interview state (per task, on disk) -------------------------
-
-KERNEL_INTERVIEW = "kernel_interview.json"
-
-# The Kernel Lab interview is a stateless `claude -p` chat - the server keeps
-# no live session.  To make the conversation survive page reloads / server
-# restarts we persist the message list + the last proposed spec next to the
-# task (one JSON file per task).
-
-
-def read_kernel_interview(project_root: Path, slug: str) -> dict[str, Any]:
-    """Return ``{"messages": [...], "spec": <obj|None>}`` for a task.
-
-    Always returns a well-formed dict; missing/corrupt files yield an empty
-    conversation so the UI can start fresh.
-    """
-    p = task_root(project_root, slug) / KERNEL_INTERVIEW
-    if not p.is_file():
-        return {"messages": [], "spec": None}
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {"messages": [], "spec": None}
-    messages = data.get("messages")
-    if not isinstance(messages, list):
-        messages = []
-    spec = data.get("spec")
-    if not isinstance(spec, dict):
-        spec = None
-    return {"messages": messages, "spec": spec}
-
-
-def write_kernel_interview(
-    project_root: Path,
-    slug: str,
-    messages: list[Any],
-    spec: Any = None,
-) -> bool:
-    td = task_root(project_root, slug)
-    if not td.is_dir():
-        return False
-    payload = json.dumps(
-        {
-            "messages": messages if isinstance(messages, list) else [],
-            "spec": spec if isinstance(spec, dict) else None,
-            "updated_at": _now_iso(),
-        },
-        indent=2,
-    )
-    path = td / KERNEL_INTERVIEW
-    tmp = path.with_suffix(".json.tmp")
-    try:
-        tmp.write_text(payload, encoding="utf-8")
-        tmp.replace(path)
-    except PermissionError:
-        return _sudo_write_text(path, payload)
-    except OSError:
-        return False
     return True
 
 

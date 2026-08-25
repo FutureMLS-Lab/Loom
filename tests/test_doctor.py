@@ -51,14 +51,3 @@ def test_port_in_use_is_a_warning_not_a_failure() -> None:
 
     assert check.status == doctor.WARN
     assert doctor.Report([check]).blocking == []
-
-
-def test_kernel_hub_env_override_points_at_a_checkout(monkeypatch, tmp_path) -> None:
-    # The bundle left the tree, but an external checkout can still power the
-    # legacy kernel task that remains on disk.
-    hub = tmp_path / "kernel_hub"
-    (hub / "scaffold" / "agent_runner").mkdir(parents=True)
-    monkeypatch.setenv(paths.KERNEL_HUB_ENV, str(hub))
-
-    assert paths.kernel_hub_dir() == hub
-    assert paths.kernel_hub_available() is True

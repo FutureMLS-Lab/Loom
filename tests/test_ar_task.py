@@ -196,7 +196,7 @@ class TestBrowse:
         blob.write_bytes(b"\x00\x01")
         assert ar.read_text_file(blob) == ""
     assert ar.normalize_kind("ar") == ar.KIND_AR
-    assert ar.normalize_kind("kernel") == "kernel"
+    assert ar.normalize_kind("agent") == "agent"
     assert ar.normalize_kind("") == "agent"
     assert ar.normalize_kind(None) == "agent"
 
@@ -204,7 +204,7 @@ class TestBrowse:
 def test_is_ar_kind() -> None:
     assert ar.is_ar_kind("aris")
     assert ar.is_ar_kind("ar")
-    assert not ar.is_ar_kind("kernel")
+    assert not ar.is_ar_kind("agent")
     assert not ar.is_ar_kind("agent")
 
 

@@ -77,34 +77,6 @@ from loom.web_activity import (
     _AGENT_WORKING_RE,
     _iso_now,
 )
-from loom.web_kernel import (
-    KERNEL_WIKI,
-    _KERNEL_ID_RE,
-    _initialize_kernel_run_artifacts,
-    _kernel_cluster_profiles,
-    _kernel_delete_record,
-    _kernel_delete_task_records,
-    _kernel_interview_turn,
-    _kernel_judge_async,
-    _kernel_list_records,
-    _kernel_merge_submissions,
-    _kernel_mirror_agent_log,
-    _kernel_read_record,
-    _kernel_record_cluster,
-    _kernel_run_log_path,
-    _kernel_service_status_cached,
-    _kernel_set_unverified,
-    _kernel_task_agent_dir,
-    _kernel_task_run_dir,
-    _kernel_unverified_set,
-    _kernel_write_record,
-    _launch_kernel_run,
-    _maybe_export_judged_kernel_async,
-    _prepare_kernel_run,
-    _run_kernel_helper,
-    _sweep_stale_kernel_runs,
-    _task_contract_plugins,
-)
 from loom.web_conversation import (
     _conversation_terminal_answer_keys,
     _conversation_terminal_question,
@@ -156,7 +128,6 @@ from loom.rud_task import (
     prepare_task_worktree_from,
     prefer_cursor_fast_model,
     push_worktree_branch,
-    read_kernel_interview,
     read_meta,
     read_markdown_asset,
     read_project_notes,
@@ -175,7 +146,6 @@ from loom.rud_task import (
     update_meta,
     worktree_diff,
     worktree_status,
-    write_kernel_interview,
     write_project_notes,
     write_template,
 )
@@ -507,8 +477,6 @@ def _safe_static_path(static_root: Path, url_path: str) -> Path | None:
 
 # (structured agent conversations live in loom/web_conversation.py)
 
-# (Kernel Lab machinery lives in loom/web_kernel.py)
-
 _REVIEW_DEFAULT_RULES = """- Correctness: logic bugs, edge cases, wrong APIs, off-by-one, error handling.
 - Security: NO hardcoded secrets/tokens/keys; no injection; safe file/subprocess use.
 - Hygiene: no leftover debug prints, commented-out code, stray TODOs, dead code.
@@ -651,7 +619,7 @@ def _build_claude_prompt(
     wt_line = f"Worktree (branch {meta.branch or '(unset)'}): {wt}" if wt else "Worktree: (none)"
     # meta.skills_path may name several ;-joined skills files - inject them all.
     skills = load_skills_text(meta.skills_path, default_skills)
-    state_doc = KERNEL_WIKI if meta.kind == "kernel" else PLAN
+    state_doc = PLAN
     plan_path = td / state_doc
     if ar.is_ar_kind(meta.kind):
         return _build_ar_prompt(project_root, slug, meta, td, skills)
@@ -2862,21 +2830,6 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
-            m_ki = re.match(r"^/api/tasks/([^/]+)/kernel-interview$", path)
-            if m_ki:
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                slug = m_ki.group(1)
-                if not _SLUG_RE.match(slug):
-                    st, b, h = _json_bytes({"error": "invalid slug"}, 400)
-                    self._send(st, b, h)
-                    return
-                st, b, h = _json_bytes(read_kernel_interview(root, slug))
-                self._send(st, b, h)
-                return
-
             if path == "/api/activity":
                 # Host-wide on purpose: the point is to surface an agent that
                 # finished in a project you are not currently looking at.
@@ -3081,264 +3034,6 @@ def make_handler(
                     self._send(st, b, h)
                     return
                 st, b, h = _json_bytes(self._ar_payload(root, pid, slug))
-                self._send(st, b, h)
-                return
-
-            if path == "/api/kernel/plugins":
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                ok, data = _run_kernel_helper(root, ["plugins"], timeout=30)
-                if ok:
-                    task_slug = (parse_qs(parsed.query or "").get("task") or [""])[0].strip()
-                    if task_slug and _SLUG_RE.match(task_slug):
-                        task_plugins = _task_contract_plugins(root, task_slug)
-                        data["plugins"] = list(dict.fromkeys([
-                            *task_plugins,
-                            *(data.get("plugins") or []),
-                        ]))
-                    data["unverified"] = sorted(_kernel_unverified_set(root))
-                    data["clusters"] = [""] + sorted(_kernel_cluster_profiles())
-                st, b, h = _json_bytes(data, 200 if ok else 502)
-                self._send(st, b, h)
-                return
-
-            if path == "/api/kernel/service":
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                qs_cluster = (parse_qs(parsed.query or "").get("cluster") or [""])[0].strip()
-                if qs_cluster and qs_cluster not in _kernel_cluster_profiles():
-                    qs_cluster = ""
-                ok, data = _kernel_service_status_cached(root, qs_cluster)
-                if isinstance(data, dict):
-                    data["cluster"] = qs_cluster
-                st, b, h = _json_bytes(data, 200 if ok else 502)
-                self._send(st, b, h)
-                return
-
-            if path == "/api/kernel/runs":
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                task = (parse_qs(parsed.query or "").get("task") or [""])[0].strip()
-                st, b, h = _json_bytes({"runs": _kernel_list_records(root, task or None)})
-                self._send(st, b, h)
-                return
-
-            m_klog = re.match(r"^/api/kernel/runs/([^/]+)/log$", path)
-            if m_klog:
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                run_uid = m_klog.group(1)
-                if not _KERNEL_ID_RE.match(run_uid):
-                    st, b, h = _json_bytes({"error": "invalid run id"}, 400)
-                    self._send(st, b, h)
-                    return
-                lp = _kernel_run_log_path(root, run_uid)
-                text = ""
-                if lp.is_file():
-                    try:
-                        # tail (~24KB) so a long build log stays cheap to poll
-                        text = lp.read_bytes()[-24000:].decode("utf-8", "replace")
-                    except OSError:
-                        text = ""
-                st, b, h = _json_bytes({"log": text})
-                self._send(st, b, h)
-                return
-
-            m_kalog = re.match(r"^/api/kernel/runs/([^/]+)/agents/([0-9]+)/log$", path)
-            if m_kalog:
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                run_uid, agent_idx = m_kalog.group(1), m_kalog.group(2)
-                if not _KERNEL_ID_RE.match(run_uid):
-                    st, b, h = _json_bytes({"error": "invalid run id"}, 400)
-                    self._send(st, b, h)
-                    return
-                rec = _kernel_read_record(root, run_uid)
-                rid = (rec or {}).get("run_id")
-                if not rid:
-                    st, b, h = _json_bytes({"ok": False, "error": "run not started yet"})
-                    self._send(st, b, h)
-                    return
-                ok, data = _run_kernel_helper(
-                    root,
-                    ["agent-log", "--run-id", rid, "--agent", agent_idx, "--tail", "300"],
-                    timeout=40,
-                    cluster=_kernel_record_cluster(rec),
-                )
-                if ok and (data or {}).get("log"):
-                    local_path = _kernel_mirror_agent_log(
-                        root, rec or {}, agent_idx, str(data["log"])
-                    )
-                    if local_path:
-                        data["local_path"] = local_path
-                elif not ok and rec is not None:
-                    local_log = _kernel_task_agent_dir(
-                        root, str(rec.get("slug") or ""), run_uid, agent_idx
-                    ) / "agent.log"
-                    if local_log.is_file():
-                        data = {
-                            "ok": True,
-                            "agent": agent_idx,
-                            "log": local_log.read_text(encoding="utf-8", errors="replace"),
-                            "local_path": str(local_log),
-                            "source": "task-local mirror",
-                        }
-                        ok = True
-                st, b, h = _json_bytes(data, 200 if ok else 200)  # soft-fail: UI shows data.error
-                self._send(st, b, h)
-                return
-
-            m_kleader = re.match(r"^/api/kernel/runs/([^/]+)/leaderboard$", path)
-            if m_kleader:
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                run_uid = m_kleader.group(1)
-                if not _KERNEL_ID_RE.match(run_uid):
-                    st, b, h = _json_bytes({"error": "invalid run id"}, 400)
-                    self._send(st, b, h)
-                    return
-                rec = _kernel_read_record(root, run_uid)
-                if rec is None:
-                    st, b, h = _json_bytes({"error": "not found"}, 404)
-                    self._send(st, b, h)
-                    return
-                rid = rec.get("run_id")
-                if not rid:
-                    st, b, h = _json_bytes({"ok": False, "error": "run not started yet"})
-                    self._send(st, b, h)
-                    return
-                ok, status = _run_kernel_helper(
-                    root, ["status", "--run-id", rid], timeout=30,
-                    cluster=_kernel_record_cluster(rec),
-                )
-                if ok:
-                    _kernel_merge_submissions(root, rec, status)
-                st, b, h = _json_bytes(
-                    status if ok else {"ok": False, "error": (status or {}).get("error", "status failed")},
-                    200 if ok else 502,
-                )
-                self._send(st, b, h)
-                return
-
-            m_kbest = re.match(r"^/api/kernel/runs/([^/]+)/best-kernel$", path)
-            if m_kbest:
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                run_uid = m_kbest.group(1)
-                if not _KERNEL_ID_RE.match(run_uid):
-                    st, b, h = _json_bytes({"error": "invalid run id"}, 400)
-                    self._send(st, b, h)
-                    return
-                rec = _kernel_read_record(root, run_uid)
-                rid = (rec or {}).get("run_id")
-                if not rid:
-                    st, b, h = _json_bytes({"ok": False, "error": "run not started yet"})
-                    self._send(st, b, h)
-                    return
-                ok, data = _run_kernel_helper(
-                    root, ["best-kernel", "--run-id", rid], timeout=30,
-                    cluster=_kernel_record_cluster(rec),
-                )
-                st, b, h = _json_bytes(data, 200 if ok else 502)
-                self._send(st, b, h)
-                return
-
-            m_ksrc = re.match(r"^/api/kernel/runs/([^/]+)/kernel/([^/]+)$", path)
-            if m_ksrc:
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                run_uid, job_id = m_ksrc.group(1), m_ksrc.group(2)
-                if not _KERNEL_ID_RE.match(job_id):
-                    st, b, h = _json_bytes({"error": "invalid job id"}, 400)
-                    self._send(st, b, h)
-                    return
-                rec = _kernel_read_record(root, run_uid) if _KERNEL_ID_RE.match(run_uid) else None
-                local_matches: list[Path] = []
-                if rec is not None and rec.get("slug"):
-                    local_matches = list(
-                        (_kernel_task_run_dir(root, str(rec["slug"]), run_uid) / "agents").glob(
-                            f"*/attempts/*-{job_id}.*"
-                        )
-                    )
-                if local_matches:
-                    source = local_matches[0].read_text(encoding="utf-8", errors="replace")
-                    st, b, h = _json_bytes({
-                        "ok": True,
-                        "job_id": job_id,
-                        "source": source,
-                        "local_path": str(local_matches[0]),
-                    })
-                    self._send(st, b, h)
-                    return
-                ok, data = _run_kernel_helper(
-                    root, ["kernel-source", "--job-id", job_id], timeout=30,
-                    cluster=_kernel_record_cluster(rec),
-                )
-                st, b, h = _json_bytes(data, 200 if ok else 502)
-                self._send(st, b, h)
-                return
-
-            m_krun = re.match(r"^/api/kernel/runs/([^/]+)$", path)
-            if m_krun:
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                run_uid = m_krun.group(1)
-                if not _KERNEL_ID_RE.match(run_uid):
-                    st, b, h = _json_bytes({"error": "invalid run id"}, 400)
-                    self._send(st, b, h)
-                    return
-                rec = _kernel_read_record(root, run_uid)
-                if rec is None:
-                    st, b, h = _json_bytes({"error": "not found"}, 404)
-                    self._send(st, b, h)
-                    return
-                if rec.get("run_id") and rec.get("state") == "running":
-                    ok, status = _run_kernel_helper(
-                        root, ["status", "--run-id", rec["run_id"]], timeout=30,
-                        cluster=_kernel_record_cluster(rec),
-                    )
-                    if ok:
-                        _kernel_merge_submissions(root, rec, status)
-                        rec["status"] = status
-                        # The auto-terminate watcher finishes runs out-of-band
-                        # (kills agents, postprocesses the winner) and nothing
-                        # told this record - detect "all agents gone" and flip
-                        # the state so the UI doesn't show a zombie "running".
-                        age = time.time() - (rec.get("launched_at") or rec.get("created_at") or 0)
-                        if (
-                            status.get("agents_known")
-                            and not status.get("agents_running")
-                            and age > 180
-                        ):
-                            done = bool(status.get("best") or status.get("improvements"))
-                            rec["state"] = "finished" if done else "stopped"
-                            rec["finished_at"] = time.time()
-                            _kernel_write_record(root, rec)
-                            # Judge the winning kernel against EVALUATION.md
-                            # (hard results + source review) once, on finish.
-                            if done and not rec.get("judge"):
-                                _kernel_judge_async(root, run_uid)
-                                rec = _kernel_read_record(root, run_uid) or rec
-                rec = _maybe_export_judged_kernel_async(root, rec)
-                st, b, h = _json_bytes(rec)
                 self._send(st, b, h)
                 return
 
@@ -3615,7 +3310,6 @@ def make_handler(
                         else None
                     )
                     # Surface every top-level *.md file in the task directory.
-                    # Normal tasks use PLAN.md; kernel tasks deliberately use
                     # WIKI.md as the shared worker/evaluator knowledge base.
                     md_names = list_task_markdown_files(root, slug)
                     templates: dict[str, str] = {}
@@ -3623,7 +3317,7 @@ def make_handler(
                         content = read_task_markdown_file(root, slug, md_name)
                         if content is not None:
                             templates[md_name] = content
-                    primary_md = KERNEL_WIKI if meta.kind == "kernel" else PLAN
+                    primary_md = PLAN
                     if primary_md not in templates:
                         templates[primary_md] = read_template(root, slug, primary_md) or ""
                         if primary_md not in md_names:
@@ -4423,152 +4117,6 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
-            if path == "/api/kernel/runs":
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                plugin = str(body.get("plugin", "")).strip()
-                target = str(body.get("target", "")).strip()
-                model = str(body.get("model", "")).strip()
-                slug = str(body.get("slug", "")).strip()
-                # Shape is optional: an explicit override when given, otherwise an
-                # agent proposes one at launch (see _launch_kernel_run).
-                shape = body.get("shape")
-                if not plugin or not target or not model:
-                    st, b, h = _json_bytes(
-                        {"error": "plugin, target and model are required"}, 400
-                    )
-                    self._send(st, b, h)
-                    return
-                cluster = str(body.get("cluster", "") or "").strip()
-                if cluster and cluster not in _kernel_cluster_profiles():
-                    st, b, h = _json_bytes(
-                        {"error": f"unknown cluster profile: {cluster}"}, 400
-                    )
-                    self._send(st, b, h)
-                    return
-                raw_run_mode = str(body.get("run_mode", "") or "").strip()
-                run_mode = "optimize" if raw_run_mode == "optimize" else "scratch"
-                starter_mode = (
-                    "best-similar"
-                    if raw_run_mode and run_mode == "optimize"
-                    else (
-                        "none"
-                        if raw_run_mode
-                        else str(body.get("starter_mode", "none") or "none")
-                    )
-                )
-                run_uid = uuid.uuid4().hex[:12]
-                cfg = {
-                    "plugin": plugin,
-                    "target": target,
-                    "model": model,
-                    "cluster": cluster,
-                    "run_mode": run_mode,
-                    "shape": shape if shape else None,
-                    "n_agents": int(body.get("n_agents", 1) or 1),
-                    "starter_mode": starter_mode,
-                    "target_speedup": body.get("target_speedup"),
-                    "auto_terminate": bool(body.get("auto_terminate", False)),
-                    "poll_interval": int(body.get("poll_interval", 60) or 60),
-                    "build": bool(body.get("build", False)),
-                    "build_mode": bool(body.get("build_mode", False)),
-                }
-                if cfg["build_mode"]:
-                    # correctness-first: stop at the first correct kernel; ignore speed
-                    cfg["auto_terminate"] = True
-                    if cfg["target_speedup"] is None:
-                        cfg["target_speedup"] = 0
-                rec = {
-                    "id": run_uid,
-                    "state": "launching",
-                    "config": cfg,
-                    "run_id": None,
-                    "slug": slug or None,
-                    "task_slug": slug or None,
-                    "containers": [],
-                    "created_at": time.time(),
-                }
-                _kernel_write_record(root, rec)
-                _initialize_kernel_run_artifacts(root, rec)
-                threading.Thread(
-                    target=_launch_kernel_run, args=(root, run_uid, cfg), daemon=True
-                ).start()
-                st, b, h = _json_bytes({"ok": True, "id": run_uid, "state": "launching"}, 202)
-                self._send(st, b, h)
-                return
-
-            m_kjudge = re.match(r"^/api/kernel/runs/([^/]+)/judge$", path)
-            if m_kjudge:
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                run_uid = m_kjudge.group(1)
-                if not _KERNEL_ID_RE.match(run_uid):
-                    st, b, h = _json_bytes({"error": "invalid run id"}, 400)
-                    self._send(st, b, h)
-                    return
-                rec = _kernel_read_record(root, run_uid)
-                if rec is None:
-                    st, b, h = _json_bytes({"error": "not found"}, 404)
-                    self._send(st, b, h)
-                    return
-                judge_state = rec.get("judge") or {}
-                judge_age = time.time() - float(judge_state.get("started_at") or 0)
-                if judge_state.get("state") == "judging" and judge_age < 600:
-                    st, b, h = _json_bytes({"ok": True, "state": "judging"}, 202)
-                    self._send(st, b, h)
-                    return
-                _kernel_judge_async(root, run_uid)
-                st, b, h = _json_bytes({"ok": True, "state": "judging"}, 202)
-                self._send(st, b, h)
-                return
-
-            m_kstop = re.match(r"^/api/kernel/runs/([^/]+)/stop$", path)
-            if m_kstop:
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                run_uid = m_kstop.group(1)
-                if not _KERNEL_ID_RE.match(run_uid):
-                    st, b, h = _json_bytes({"error": "invalid run id"}, 400)
-                    self._send(st, b, h)
-                    return
-                rec = _kernel_read_record(root, run_uid)
-                if rec is None:
-                    st, b, h = _json_bytes({"error": "not found"}, 404)
-                    self._send(st, b, h)
-                    return
-                result: dict[str, Any] = {"ok": True}
-                if rec.get("run_id"):
-                    _ok, result = _run_kernel_helper(
-                        root, ["stop", "--run-id", rec["run_id"]], timeout=600,
-                        cluster=_kernel_record_cluster(rec),
-                    )
-                rec["state"] = "stopped"
-                _kernel_write_record(root, rec)
-                st, b, h = _json_bytes({"ok": True, "stop": result, "run": rec})
-                self._send(st, b, h)
-                return
-
-            if path == "/api/kernel/interview":
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                msgs = body.get("messages", [])
-                if not isinstance(msgs, list):
-                    st, b, h = _json_bytes({"error": "messages must be a list"}, 400)
-                    self._send(st, b, h)
-                    return
-                result = _kernel_interview_turn(msgs, str(body.get("model", "")))
-                st, b, h = _json_bytes(result, 200 if result.get("ok") else 502)
-                self._send(st, b, h)
-                return
-
             if path == "/api/activity/ack":
                 root, project_id = self._resolve_scope(parsed)
                 if project_id is None:
@@ -4598,44 +4146,6 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
-            if path == "/api/kernel/prepare":
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                spec = body.get("spec") or {}
-                if not isinstance(spec, dict):
-                    st, b, h = _json_bytes({"error": "spec must be an object"}, 400)
-                    self._send(st, b, h)
-                    return
-                slug = str(body.get("slug", "")).strip()
-                prep_uid = uuid.uuid4().hex[:12]
-                rec = {"id": prep_uid, "state": "resolving", "kind": "prepare",
-                       "spec": spec, "slug": slug or None, "task_slug": slug or None,
-                       "created_at": time.time()}
-                _kernel_write_record(root, rec)
-                threading.Thread(
-                    target=_prepare_kernel_run, args=(root, prep_uid, spec), daemon=True
-                ).start()
-                st, b, h = _json_bytes({"ok": True, "id": prep_uid, "state": "resolving"}, 202)
-                self._send(st, b, h)
-                return
-
-            if path == "/api/kernel/plugins/verify":
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                name = str(body.get("name", "")).strip()
-                if not name:
-                    st, b, h = _json_bytes({"error": "name required"}, 400)
-                    self._send(st, b, h)
-                    return
-                _kernel_set_unverified(root, name, False)
-                st, b, h = _json_bytes({"ok": True, "name": name, "verified": True})
-                self._send(st, b, h)
-                return
-
             if path == "/api/tasks/reorder":
                 root, _project_id = self._resolve_scope(parsed)
                 if root is None:
@@ -4662,7 +4172,7 @@ def make_handler(
                     return
                 title = str(body.get("title", "")).strip()
                 general_goal = str(body.get("general_goal", "")).strip()
-                kind = {"kernel": "kernel", "ar": ar.KIND_AR, "aris": ar.KIND_AR}.get(
+                kind = {"ar": ar.KIND_AR, "aris": ar.KIND_AR}.get(
                     str(body.get("kind", "")).strip().lower(), "agent"
                 )
                 ar_state: dict[str, Any] | None = None
@@ -5779,31 +5289,6 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
-            m_ki_put = re.match(r"^/api/tasks/([^/]+)/kernel-interview$", path)
-            if m_ki_put:
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                slug = m_ki_put.group(1)
-                if not _SLUG_RE.match(slug):
-                    st, b, h = _json_bytes({"error": "invalid slug"}, 400)
-                    self._send(st, b, h)
-                    return
-                messages = body.get("messages", [])
-                if not isinstance(messages, list):
-                    st, b, h = _json_bytes({"error": "messages must be a list"}, 400)
-                    self._send(st, b, h)
-                    return
-                spec = body.get("spec")
-                if not write_kernel_interview(root, slug, messages, spec):
-                    st, b, h = _json_bytes({"error": "failed to save kernel interview"}, 500)
-                    self._send(st, b, h)
-                    return
-                st, b, h = _json_bytes({"ok": True})
-                self._send(st, b, h)
-                return
-
             m_meta = re.match(r"^/api/tasks/([^/]+)/meta$", path)
             if m_meta:
                 root, _pid = self._resolve_scope(parsed)
@@ -6046,35 +5531,6 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
-            m_krun_del = re.match(r"^/api/kernel/runs/([^/]+)$", path)
-            if m_krun_del:
-                root, _pid = self._resolve_scope(parsed)
-                if root is None:
-                    self._bad_project()
-                    return
-                run_uid = m_krun_del.group(1)
-                if not _KERNEL_ID_RE.match(run_uid):
-                    st, b, h = _json_bytes({"error": "invalid run id"}, 400)
-                    self._send(st, b, h)
-                    return
-                rec = _kernel_read_record(root, run_uid)
-                if rec is None:
-                    st, b, h = _json_bytes({"error": "not found"}, 404)
-                    self._send(st, b, h)
-                    return
-                # A live run must be stopped before its record can be deleted, so
-                # we never orphan running agent containers.
-                if rec.get("state") in ("launching", "running", "resolving"):
-                    st, b, h = _json_bytes(
-                        {"error": "stop the run before deleting it"}, 409
-                    )
-                    self._send(st, b, h)
-                    return
-                _kernel_delete_record(root, run_uid)
-                st, b, h = _json_bytes({"ok": True, "id": run_uid})
-                self._send(st, b, h)
-                return
-
             m_mon_del = re.match(r"^/api/tasks/([^/]+)/monitor$", path)
             if m_mon_del:
                 root, project_id = self._resolve_scope(parsed)
@@ -6163,7 +5619,6 @@ def make_handler(
                     st, b, h = _json_bytes({"error": "task not found"}, 404)
                     self._send(st, b, h)
                     return
-                kernel_cleanup = _kernel_delete_task_records(root, slug)
                 ok_task, err_task = delete_task(root, slug)
                 if not ok_task:
                     status = 404 if err_task == "task not found" else 400
@@ -6171,7 +5626,7 @@ def make_handler(
                     self._send(st, b, h)
                     return
                 st, b, h = _json_bytes(
-                    {"ok": True, "slug": slug, "kernel_cleanup": kernel_cleanup}
+                    {"ok": True, "slug": slug}
                 )
                 self._send(st, b, h)
                 return
@@ -6225,20 +5680,6 @@ def serve(
     claude_registry = ClaudeRegistry()
     openclaw_client = OpenClawClient(openclaw_config)
     monitor_manager = TaskMonitorManager(openclaw_client)
-    # A launch/prepare runs in a background thread that does NOT survive a server
-    # restart, leaving its run record stuck at "launching"/"resolving" forever.
-    # On startup, no launch can be in flight, so sweep any such records to error.
-    _sweep_roots = {project_root}
-    try:
-        for _p in web_project_registry.list_projects():
-            _pp = _p.get("path")
-            if _pp:
-                _sweep_roots.add(Path(_pp))
-    except Exception:  # noqa: BLE001
-        pass
-    _swept = _sweep_stale_kernel_runs(list(_sweep_roots))
-    if _swept:
-        print(f"  Swept {_swept} stale kernel run(s) (launching/resolving -> error)", flush=True)
     # Resume per-task run monitors that were left enabled, so the Notify toggle
     # survives a server restart without re-opening each task.
     _monitor_projects: list[tuple[str, Path]] = []
