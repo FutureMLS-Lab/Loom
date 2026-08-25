@@ -1416,9 +1416,10 @@ def _kernel_helper_cmd(script_name: str) -> tuple[list[str] | None, str]:
     if bundled.is_file():
         return [sys.executable, str(bundled)], ""
     return None, (
-        f"Kernel Lab helper '{script_name}' not found at {bundled}. The Kernel "
-        f"Hub bundle is not shipped in the Loom wheel; clone "
-        f"https://github.com/FutureMLS-Lab/Loom and set {KERNEL_HUB_ENV}=<checkout>/loom/kernel_hub"
+        f"Kernel Lab helper '{script_name}' not found at {bundled}. Kernel Lab "
+        f"is retired and the bundle left the tree; to run this legacy task, "
+        f"check out a pre-retirement revision (before c23b149) and set "
+        f"{KERNEL_HUB_ENV}=<that-checkout>/loom/kernel_hub"
     )
 
 
