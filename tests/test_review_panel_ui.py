@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from loom import ar_task as ar
-from loom import web
+from loom import web_jobs as web
 
 
 def _task(tmp_path: Path, slug: str = "paper") -> tuple[Path, str]:

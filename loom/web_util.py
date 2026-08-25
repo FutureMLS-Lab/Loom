@@ -14,3 +14,16 @@ def _path_within(child: Path, parent: Path) -> bool:
         return True
     except (OSError, ValueError):
         return False
+
+
+def _sanitize_session_name(raw: str, fallback: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.@-]+", "-", raw).strip("-")
+    return safe[:90] or fallback
+
+
+def _session_name_from_tmux_target(target: str) -> str:
+    """``session:0.0`` -> ``session`` (we never put ``:`` in session names)."""
+    t = (target or "").strip()
+    if ":" in t:
+        return t.split(":", 1)[0].strip()
+    return t

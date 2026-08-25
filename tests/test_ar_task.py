@@ -840,7 +840,7 @@ def test_cursor_reviewer_refuses_incomplete_paper_before_model_call(
 def test_loop_driver_returns_failed_readiness_to_same_round(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from loom.web import _ARLoopDriver
+    from loom.web_jobs import _ARLoopDriver
 
     root = _project(tmp_path)
     meta = create_task(
@@ -1877,7 +1877,7 @@ def test_every_direction_has_search_terms() -> None:
 
 
 def test_sweep_stale_jobs_unwedges_interrupted_work(tmp_path: Path) -> None:
-    from loom.web import ARLoopManager
+    from loom.web_jobs import ARLoopManager
 
     root = _project(tmp_path)
     stuck = create_task(root, "stuck studio", "g", kind=ar.KIND_AR, auto_worktree=False)

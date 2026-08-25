@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import loom.web as web
+import loom.web_jobs as web
 from loom import ar_task as ar
-from loom.web import _ARLoopDriver
+from loom.web_jobs import _ARLoopDriver
 
 
 class FakeManager:

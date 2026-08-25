@@ -9,7 +9,7 @@ import pytest
 from pypdf import PdfWriter
 
 from loom import rebuttal_task as rebuttal
-from loom import web
+from loom import web_jobs as web
 
 
 def _pdf(path: Path) -> None:
