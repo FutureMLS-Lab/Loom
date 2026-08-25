@@ -184,13 +184,13 @@ fetch rides the token, which also skips OpenReview's datacenter-IP challenge.
 |--------|-----|---------|
 | `GET` | `/api/factories/approvals` | Every human gate currently waiting, across all three factories — the "Waiting on you" inbox |
 
-## Kernel Lab (advanced)
+## Kernel Lab (retired)
 
-`/api/kernel/*` drives the optional Kernel Hub evaluator: `interview`,
-`prepare`, `runs` (+ per-run `log`, `leaderboard`, `judge`, `best-kernel`,
-`stop`), `plugins`, `service`. The evaluator bundle ships in the source tree
-but not the installed package — point `LOOM_KERNEL_HUB_DIR` at a checkout's
-`loom/kernel_hub`. See `docs/LOOM_CODEBASE_ARCHITECTURE.md`.
+The Kernel Hub bundle has been removed from the tree and Kernel Lab is no
+longer offered when creating a task. The `/api/kernel/*` routes remain only
+so tasks created before the retirement still render; they need an external
+bundle checkout via `LOOM_KERNEL_HUB_DIR` to actually run, and they will be
+dropped together with the planned route split.
 
 ## Where things live on disk
 

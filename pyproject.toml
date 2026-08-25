@@ -39,7 +39,6 @@ packages = ["loom"]
 # reference docs) is ~800 files / 6 MB and only used by the optional Kernel Lab
 # task type, so it stays out of the wheel. It ships in the sdist, and an
 # installed Loom can point at a source checkout via LOOM_KERNEL_HUB_DIR.
-exclude = ["loom/kernel_hub/**"]
 
 [tool.hatch.build.targets.sdist]
 include = ["loom", "tests", "scripts", "README.md", "pyproject.toml"]

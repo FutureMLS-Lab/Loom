@@ -16,10 +16,7 @@ import sys
 from dataclasses import dataclass, field
 
 from loom.paths import (
-    KERNEL_HUB_ENV,
     bundled_skills_path,
-    kernel_hub_available,
-    kernel_hub_dir,
     web_static_dir,
 )
 
@@ -163,17 +160,6 @@ def _check_assets() -> list[Check]:
     return checks
 
 
-def _check_kernel_hub() -> Check:
-    if kernel_hub_available():
-        return Check("kernel hub", OK, str(kernel_hub_dir()))
-    return Check(
-        "kernel hub",
-        WARN,
-        "not installed (Kernel Lab tasks unavailable)",
-        hint=f"optional; set {KERNEL_HUB_ENV}=<checkout>/loom/kernel_hub to enable",
-    )
-
-
 def _check_port(host: str, port: int) -> Check:
     label = f"port {port}"
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -208,7 +194,6 @@ def run_checks(host: str = "127.0.0.1", port: int = 8765) -> Report:
     report.checks.append(_check_agents())
     report.checks.append(_check_latex())
     report.checks.extend(_check_assets())
-    report.checks.append(_check_kernel_hub())
     report.checks.append(_check_port(host, port))
     report.checks.append(_check_auth())
     return report
