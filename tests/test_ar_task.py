@@ -1959,3 +1959,24 @@ def test_final_gate_reject_grants_a_fresh_plateau_window() -> None:
     assert state["stage"] == ar.STAGE_LOOP
     assert state["plateau_started_round"] == 0
     assert state["stop_reason"] == ""
+
+
+def test_author_prompts_carry_the_default_prompt_but_reviewers_stay_cold(
+    tmp_path: Path,
+) -> None:
+    """The Loom floor (working style, memory protocol, skills table) now
+    reaches the AR author too; the reviewer panel deliberately never sees
+    it - isolation is the point of the panel."""
+    state = _paper_state()
+    draft = ar.author_draft_prompt(tmp_path, tmp_path / "manuscript", state)
+    rnd = ar.author_round_prompt(tmp_path, tmp_path / "manuscript", state, 2)
+    repair = ar.author_readiness_repair_prompt(
+        tmp_path, tmp_path / "manuscript", state, 2, {"ready": False, "failed": []}
+    )
+    for prompt in (draft, rnd, repair):
+        assert "Loom default prompt - always active" in prompt
+        assert "Working style" in prompt
+    review = ar._cursor_pdf_review_prompt(
+        "RUBRIC", pdf_path=tmp_path / "s.pdf", venue="iclr", round_n=2
+    )
+    assert "Loom default prompt" not in review

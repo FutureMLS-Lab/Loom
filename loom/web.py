@@ -2740,7 +2740,9 @@ def _build_ar_prompt(
             )
         return ar.author_draft_prompt(task_dir, paper_dir, state)
 
-    base = ar.studio_prompt(task_dir, state, meta.general_goal)
+    base = ar.default_prompt_block() + "\n" + ar.studio_prompt(
+        task_dir, state, meta.general_goal
+    )
     # Only skills the user deliberately picked. A task that never chose any
     # carries the bundled default, and pasting an unrelated host runbook into a
     # research prompt is noise at best - and leaks whatever happens to be in
@@ -2751,7 +2753,7 @@ def _build_ar_prompt(
     return base
 
 
-def _default_prompt_text(limit: int = 8000) -> str:
+def _default_prompt_text(limit: int = 20000) -> str:
     """The always-on floor under every task prompt; empty if the file is gone."""
     try:
         return default_prompt_path().read_text(encoding="utf-8", errors="replace")[:limit]

@@ -4043,6 +4043,25 @@ with your own search.
 """
 
 
+def default_prompt_block(limit: int = 20000) -> str:
+    """The always-on Loom floor (working style, project memory protocol, the
+    skills table), formatted for the author prompts. Reviewers deliberately
+    never receive it - their isolation is the point of the panel."""
+    from loom.paths import default_prompt_path
+
+    try:
+        text = default_prompt_path().read_text(encoding="utf-8", errors="replace")[:limit]
+    except OSError:
+        return ""
+    if not text.strip():
+        return ""
+    return (
+        "=== Loom default prompt - always active ===\n"
+        f"{text.strip()}\n"
+        "=== end default prompt ===\n"
+    )
+
+
 def author_draft_prompt(
     task_dir: Path, paper_dir: Path, state: dict[str, Any]
 ) -> str:
@@ -4062,6 +4081,7 @@ Full path to the manuscript: {paper_dir}
 The idea this paper must establish:
 {idea_summary(state.get("idea") or {})}
 
+{default_prompt_block()}
 === AR author methodology - follow this exactly ===
 {ar_skill_text(SKILL_AUTHOR) or "(AR author skill missing)"}
 === end methodology ===
@@ -4143,6 +4163,7 @@ Your pane starts in {work}, which holds two git repositories:
 The idea this paper must establish:
 {idea_summary(state.get("idea") or {})}
 {gate_block}
+{default_prompt_block()}
 === AR author methodology - follow this exactly ===
 {ar_skill_text(SKILL_AUTHOR) or "(AR author skill missing)"}
 === end methodology ===
@@ -4237,6 +4258,7 @@ Full gate report:
 Failures that must all be fixed:
 {failure_lines}
 
+{default_prompt_block()}
 Continue the SAME round. Follow the AR author methodology exactly:
 {ar_skill_text(SKILL_AUTHOR) or "(AR author skill missing)"}
 
