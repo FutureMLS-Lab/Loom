@@ -41,7 +41,9 @@ your task already injected in full need no second read. Paths are relative
 to the Loom checkout.
 
 <!-- SKILLS:BEGIN generated - edit skills, then run scripts/gen_skills_index.py -->
-Pick-and-read (also selectable at task creation):
+Loom ships exactly 19 skills - 5 pick-and-read, 14 Paper-Factory. This generated list is the complete, authoritative set: a skill not listed here does not exist. To add one, put a markdown file under loom/skills/ (its frontmatter `description:` becomes the pitch below) and run scripts/gen_skills_index.py.
+
+Pick-and-read (5, also selectable at task creation):
 - charlie_skills - 在开始实现或 review 前，先把任务目标、当前 plan、成功标准整理清楚，只保留对后续执行有用的信息。默认遵守下面的工作习惯：
     loom/skills/charlie_skills.md
 - ARIS - ARIS — Autonomous Research-In-Sleep loop
@@ -53,7 +55,7 @@ Pick-and-read (also selectable at task creation):
 - server_setup - Loom Agent Server Setup
     loom/skills/server_setup/server_setup.md
 
-Paper Factory (AR) skills - the pipeline injects these itself; listed so you know the machinery:
+Paper Factory (AR) skills (14) - the pipeline injects these itself; listed so you know the machinery:
 - AR-STUDIO (Studio) - Surveys the field and proposes grounded ideas. [Injected in full into every Studio job (mine, ideas, ground).]
     loom/skills/ar/AR-STUDIO.md
 - AR-AUTHOR (Author) - Writes the paper and runs the experiments behind it. [Injected in full into every author round prompt.]

@@ -38,17 +38,29 @@ def _rel(path: str | Path) -> str:
 
 
 def render_section() -> str:
-    lines: list[str] = ["", "Pick-and-read (also selectable at task creation):"]
-    for option in _available_skill_options(bundled_skills_path()):
+    picker = _available_skill_options(bundled_skills_path())
+    pipeline = ar.skill_catalog()
+    lines: list[str] = [
+        "",
+        f"Loom ships exactly {len(picker) + len(pipeline)} skills - "
+        f"{len(picker)} pick-and-read, {len(pipeline)} Paper-Factory. This "
+        "generated list is the complete, authoritative set: a skill not "
+        "listed here does not exist. To add one, put a markdown file under "
+        "loom/skills/ (its frontmatter `description:` becomes the pitch "
+        "below) and run scripts/gen_skills_index.py.",
+        "",
+        f"Pick-and-read ({len(picker)}, also selectable at task creation):",
+    ]
+    for option in picker:
         summary = _skill_summary(Path(option["path"]))
         lines.append(f"- {option['label']} - {summary}")
         lines.append(f"    {_rel(option['path'])}")
     lines.append("")
     lines.append(
-        "Paper Factory (AR) skills - the pipeline injects these itself; listed "
-        "so you know the machinery:"
+        f"Paper Factory (AR) skills ({len(pipeline)}) - the pipeline injects "
+        "these itself; listed so you know the machinery:"
     )
-    for entry in ar.skill_catalog():
+    for entry in pipeline:
         lines.append(
             f"- {entry['name']} ({entry['role']}) - {entry['description']} "
             f"[{entry['injection']}]"
