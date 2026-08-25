@@ -41,47 +41,34 @@ your task already injected in full need no second read. Paths are relative
 to the Loom checkout.
 
 <!-- SKILLS:BEGIN generated - edit skills, then run scripts/gen_skills_index.py -->
-Loom ships exactly 19 skills - 5 pick-and-read, 14 Paper-Factory. This generated list is the complete, authoritative set: a skill not listed here does not exist. To add one, put a markdown file under loom/skills/ (its frontmatter `description:` becomes the pitch below) and run scripts/gen_skills_index.py.
+Loom ships exactly 19 skills - 5 pick-and-read, 14 Paper-Factory. This generated table is the complete, authoritative set: a skill not listed here does not exist. Each description says when the skill applies; when your work matches one, READ its file at the path. To add a skill, put a markdown file under loom/skills/ (its frontmatter `description:` becomes its row here) and run scripts/gen_skills_index.py.
 
-Pick-and-read (5, also selectable at task creation):
-- charlie_skills - 在开始实现或 review 前，先把任务目标、当前 plan、成功标准整理清楚，只保留对后续执行有用的信息。默认遵守下面的工作习惯：
-    loom/skills/charlie_skills.md
-- ARIS - ARIS — Autonomous Research-In-Sleep loop
-    loom/skills/aris/ARIS.md
-- loom-hot-restart - Restarts a running Loom web service from an updated source checkout while preserving its authentication environment, disk-backed tasks, tmux
-    loom/skills/dev/loom-hot-restart/SKILL.md
-- remote_control - loom Remote Control
-    loom/skills/remote_control/remote_control.md
-- server_setup - Loom Agent Server Setup
-    loom/skills/server_setup/server_setup.md
+### Pick-and-read (5) - selectable at task creation, readable by anyone
 
-Paper Factory (AR) skills (14) - the pipeline injects these itself; listed so you know the machinery:
-- AR-STUDIO (Studio) - Surveys the field and proposes grounded ideas. [Injected in full into every Studio job (mine, ideas, ground).]
-    loom/skills/ar/AR-STUDIO.md
-- AR-AUTHOR (Author) - Writes the paper and runs the experiments behind it. [Injected in full into every author round prompt.]
-    loom/skills/ar/AR-AUTHOR.md
-- AR-REVIEWER (Reviewer) - Reviews each round the way a venue would. [Injected in full into every reviewer run.]
-    loom/skills/ar/AR-REVIEWER.md
-- paper-rebuttal (Rebuttal) - Drafts acceptance-oriented, evidence-bounded responses to reviewers. [Named in every author round prompt; the author reads it before answering the reviewers.]
-    loom/skills/ar/paper-rebuttal/SKILL.md
-- paper-results-reporting (Author) - Standardizes result-table statistics and manuscript-safe provenance. [Injected in full into every author prompt.]
-    loom/skills/ar/paper-results-reporting/SKILL.md
-- wsdm-submission-readiness (Author) - Packages anonymous WSDM papers under ACM and nine-page rules. [Injected in full only into WSDM author prompts.]
-    loom/skills/ar/wsdm-submission-readiness/SKILL.md
-- wacv-submission-readiness (Author) - Packages anonymous WACV papers under track and eight-page rules. [Injected in full only into WACV author prompts.]
-    loom/skills/ar/wacv-submission-readiness/SKILL.md
-- checkbib (Figures) - Verify every citation in a LaTeX paper against a real fetched source, and catch fabricated references before submission [Listed as a menu in every author round; the author reads the one it needs.]
-    loom/skills/ar/figures/checkbib/SKILL.md
-- results-figure-1 (Figures) - Draw a results figure for one of this repo's papers — a chart carrying measurements, in the house style the existing figures already use: Okabe-Ito colours, the paper's serif face, TrueType output, references drawn as labelled baselines rather than legend entries, and a printed summary of every number the figure asserts [Listed as a menu in every author round; the author reads the one it needs.]
-    loom/skills/ar/figures/results-figure-1/SKILL.md
-- results-figure-2 (Figures) - Draw a results figure that shows the distribution behind every number it asserts — the aggregate in one panel, every individual run in the next, dashed reference lines carrying the published value in their own colour, and the statistics set inside the panel [Listed as a menu in every author round; the author reads the one it needs.]
-    loom/skills/ar/figures/results-figure-2/SKILL.md
-- teaser-figure-1 (Figures) - Draw a paper's page-one teaser — the three-panel problem/method/result schematic of tinted rounded boxes and arrows that explains a contribution at a glance [Listed as a menu in every author round; the author reads the one it needs.]
-    loom/skills/ar/figures/teaser-figure-1/SKILL.md
-- teaser-figure-2 (Figures) - Draw a paper's page-one teaser in the unadorned conference idiom — white ground, no tinted panels, the objects themselves drawn rather than named, panel names underneath as "(a) Obstacle: ...", and a real measured chart as the result panel [Listed as a menu in every author round; the author reads the one it needs.]
-    loom/skills/ar/figures/teaser-figure-2/SKILL.md
-- teaser-figure-3 (Figures) - Generate an icon-rich scientific pipeline, architecture, or closed-loop teaser with Cursor GenerateImage (the Cursor 2.4 backend was described as Nano Banana Pro), using a deterministic semantic blueprint and reference figures, then iterate after manual arrow/text review [The default teaser: every author round is told to use this proactively for page-one figures.]
-    loom/skills/ar/figures/teaser-figure-3/SKILL.md
-- teaser-figure-4 (Figures) - Create paper-grounded teaser Prompts with the Happy Figure workflow, exact text/fact locks, multiple visual directions, and rendered-image audits [Listed as a menu in every author round; the author reads the one it needs.]
-    loom/skills/ar/figures/teaser-figure-4/SKILL.md
+| Skill | What it does / when to use it | Path |
+|---|---|---|
+| charlie_skills | 在开始实现或 review 前，先把任务目标、当前 plan、成功标准整理清楚，只保留对后续执行有用的信息。默认遵守下面的工作习惯： | `loom/skills/charlie_skills.md` |
+| ARIS | ARIS — Autonomous Research-In-Sleep loop | `loom/skills/aris/ARIS.md` |
+| loom-hot-restart | Restarts a running Loom web service from an updated source checkout while preserving its authentication environment, di… | `loom/skills/dev/loom-hot-restart/SKILL.md` |
+| remote_control | loom Remote Control | `loom/skills/remote_control/remote_control.md` |
+| server_setup | Loom Agent Server Setup | `loom/skills/server_setup/server_setup.md` |
+
+### Paper Factory (AR) skills (14) - the pipeline injects these itself
+
+| Skill | Role | What it does / when to use it | How it reaches the agent | Path |
+|---|---|---|---|---|
+| AR-STUDIO | Studio | Surveys the field and proposes grounded ideas. | Injected in full into every Studio job (mine, ideas, ground). | `loom/skills/ar/AR-STUDIO.md` |
+| AR-AUTHOR | Author | Writes the paper and runs the experiments behind it. | Injected in full into every author round prompt. | `loom/skills/ar/AR-AUTHOR.md` |
+| AR-REVIEWER | Reviewer | Reviews each round the way a venue would. | Injected in full into every reviewer run. | `loom/skills/ar/AR-REVIEWER.md` |
+| paper-rebuttal | Rebuttal | Drafts acceptance-oriented, evidence-bounded responses to reviewers. | Named in every author round prompt; the author reads it before answering the reviewers. | `loom/skills/ar/paper-rebuttal/SKILL.md` |
+| paper-results-reporting | Author | Standardizes result-table statistics and manuscript-safe provenance. | Injected in full into every author prompt. | `loom/skills/ar/paper-results-reporting/SKILL.md` |
+| wsdm-submission-readiness | Author | Packages anonymous WSDM papers under ACM and nine-page rules. | Injected in full only into WSDM author prompts. | `loom/skills/ar/wsdm-submission-readiness/SKILL.md` |
+| wacv-submission-readiness | Author | Packages anonymous WACV papers under track and eight-page rules. | Injected in full only into WACV author prompts. | `loom/skills/ar/wacv-submission-readiness/SKILL.md` |
+| checkbib | Figures | Verify every citation in a LaTeX paper against a real fetched source, and catch fabricated references before submission | Listed as a menu in every author round; the author reads the one it needs. | `loom/skills/ar/figures/checkbib/SKILL.md` |
+| results-figure-1 | Figures | Draw a results figure for one of this repo's papers — a chart carrying measurements, in the house style the existing fi… | Listed as a menu in every author round; the author reads the one it needs. | `loom/skills/ar/figures/results-figure-1/SKILL.md` |
+| results-figure-2 | Figures | Draw a results figure that shows the distribution behind every number it asserts — the aggregate in one panel, every in… | Listed as a menu in every author round; the author reads the one it needs. | `loom/skills/ar/figures/results-figure-2/SKILL.md` |
+| teaser-figure-1 | Figures | Draw a paper's page-one teaser — the three-panel problem/method/result schematic of tinted rounded boxes and arrows tha… | Listed as a menu in every author round; the author reads the one it needs. | `loom/skills/ar/figures/teaser-figure-1/SKILL.md` |
+| teaser-figure-2 | Figures | Draw a paper's page-one teaser in the unadorned conference idiom — white ground, no tinted panels, the objects themselv… | Listed as a menu in every author round; the author reads the one it needs. | `loom/skills/ar/figures/teaser-figure-2/SKILL.md` |
+| teaser-figure-3 | Figures | Generate an icon-rich scientific pipeline, architecture, or closed-loop teaser with Cursor GenerateImage (the Cursor 2.… | The default teaser: every author round is told to use this proactively for page-one figur… | `loom/skills/ar/figures/teaser-figure-3/SKILL.md` |
+| teaser-figure-4 | Figures | Create paper-grounded teaser Prompts with the Happy Figure workflow, exact text/fact locks, multiple visual directions,… | Listed as a menu in every author round; the author reads the one it needs. | `loom/skills/ar/figures/teaser-figure-4/SKILL.md` |
 <!-- SKILLS:END -->

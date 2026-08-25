@@ -37,6 +37,13 @@ def _rel(path: str | Path) -> str:
         return str(p)
 
 
+def _cell(text: str, limit: int = 120) -> str:
+    """One table cell: pipes escaped, length capped - the full text lives in
+    the skill file itself; this row is only the trigger."""
+    flat = " ".join(str(text or "").split()).replace("|", "\\|")
+    return flat[: limit - 1] + "…" if len(flat) > limit else flat
+
+
 def render_section() -> str:
     picker = _available_skill_options(bundled_skills_path())
     pipeline = ar.skill_catalog()
@@ -44,28 +51,35 @@ def render_section() -> str:
         "",
         f"Loom ships exactly {len(picker) + len(pipeline)} skills - "
         f"{len(picker)} pick-and-read, {len(pipeline)} Paper-Factory. This "
-        "generated list is the complete, authoritative set: a skill not "
-        "listed here does not exist. To add one, put a markdown file under "
-        "loom/skills/ (its frontmatter `description:` becomes the pitch "
-        "below) and run scripts/gen_skills_index.py.",
+        "generated table is the complete, authoritative set: a skill not "
+        "listed here does not exist. Each description says when the skill "
+        "applies; when your work matches one, READ its file at the path. To "
+        "add a skill, put a markdown file under loom/skills/ (its "
+        "frontmatter `description:` becomes its row here) and run "
+        "scripts/gen_skills_index.py.",
         "",
-        f"Pick-and-read ({len(picker)}, also selectable at task creation):",
+        f"### Pick-and-read ({len(picker)}) - selectable at task creation, "
+        "readable by anyone",
+        "",
+        "| Skill | What it does / when to use it | Path |",
+        "|---|---|---|",
     ]
     for option in picker:
-        summary = _skill_summary(Path(option["path"]))
-        lines.append(f"- {option['label']} - {summary}")
-        lines.append(f"    {_rel(option['path'])}")
-    lines.append("")
-    lines.append(
-        f"Paper Factory (AR) skills ({len(pipeline)}) - the pipeline injects "
-        "these itself; listed so you know the machinery:"
-    )
+        summary = _cell(_skill_summary(Path(option["path"])))
+        lines.append(f"| {option['label']} | {summary} | `{_rel(option['path'])}` |")
+    lines += [
+        "",
+        f"### Paper Factory (AR) skills ({len(pipeline)}) - the pipeline "
+        "injects these itself",
+        "",
+        "| Skill | Role | What it does / when to use it | How it reaches the agent | Path |",
+        "|---|---|---|---|---|",
+    ]
     for entry in pipeline:
         lines.append(
-            f"- {entry['name']} ({entry['role']}) - {entry['description']} "
-            f"[{entry['injection']}]"
+            f"| {entry['name']} | {entry['role']} | {_cell(entry['description'])} "
+            f"| {_cell(entry['injection'], 90)} | `{_rel(entry['path'])}` |"
         )
-        lines.append(f"    {_rel(entry['path'])}")
     lines.append("")
     return "\n".join(lines)
 
