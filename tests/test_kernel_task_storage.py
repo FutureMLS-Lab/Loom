@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import loom.web as web
+import loom.web_kernel as web
 from loom.rud_task import create_task
 
 
