@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from loom import ar_task as ar
-from loom import web
+from loom import web_jobs as web
 from loom.rud_task import create_task
 
 
