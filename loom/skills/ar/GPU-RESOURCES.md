@@ -1,83 +1,67 @@
-# Compute resources — run every experiment on a GPU compute node
+# Compute resources — run experiments on the strongest compute you can reach
 
-The machine your pane runs on is a **login node with NO GPU** and only ~32
-oversubscribed CPU cores. Model inference on it takes minutes per item where an
-H100 takes seconds. Running experiments locally is the single biggest cause of
-slow author rounds — a round that should take under an hour stretches to 8–19
-hours on local CPU.
+Never assume the machine your pane runs on is all you have. Anything this
+host can access is fair game: the local machine itself, SSH-reachable nodes,
+Slurm queues, and Kubernetes clusters. Discover what is reachable, then put
+every experiment on the strongest path — model inference or training on a
+shared CPU box takes minutes per item where an H100 takes seconds, and a
+round that should take under an hour stretches to a full day.
 
-**Rule: never run model inference or training on the login node.** Small
-aggregation/plotting scripts are fine locally; anything that loads model
-weights goes to a GPU compute node.
+Small aggregation, plotting, and test suites are fine locally; anything that
+loads model weights goes to the best accelerator you can reach.
 
-## Do NOT use Slurm on this cluster
+## 1. Discover what you can reach (fast, read-only, do this once per task)
 
-Slurm here is unreliable: the queue backs up for hours and chained
-`sbatch --dependency` jobs frequently wedge into `DependencyNeverSatisfied` and
-never run, which hangs your round. **Do not use `sbatch`, `srun`, or any Slurm
-command.** Ignore Slurm entirely and run directly on a compute node over SSH.
+Run these probes and note what answers:
 
-## Find a free GPU, then SSH to the node and run there
-
-A background scout refreshes a free-GPU inventory every ~60 seconds:
-
-```
-/data/shared/zhizhousha/gpu-scout/free_gpus.txt     # human/agent-facing table
-/data/shared/zhizhousha/gpu-scout/free_gpus.json    # same data, machine-readable
+```bash
+nvidia-smi                          # local GPUs?
+nproc; free -h                      # local CPU/RAM scale
+kubectl config get-contexts         # k8s clusters copied to this host
+kubectl --context <ctx> get nodes   # GPU nodes? (look for gpu products/counts)
+grep -i '^Host ' ~/.ssh/config      # SSH-reachable machines
+sinfo -s                            # a Slurm queue?
 ```
 
-"Free" means `nvidia-smi` memory.used < 2000 MiB on that GPU. Each node has 8×
-H100 80GB (176 CPU cores, ~1 TB RAM). Workflow every time you need a GPU:
+Then read the host's own docs — `CLAUDE.md`, `AGENTS.md`, `RESOURCES.md` at
+the home or project root usually name the paved road, the approved contexts
+and namespaces, and any known-broken paths. A background GPU inventory may
+also exist (e.g. a `gpu-scout` `free_gpus.txt`/`free_gpus.json`); if present,
+read it instead of probing nodes one by one.
 
-1. **Read the inventory** (`cat /data/shared/zhizhousha/gpu-scout/free_gpus.txt`)
-   and pick a `node` + `gpu` index. For N parallel lanes, pick N different
-   `node:gpu` pairs.
-2. **Re-verify right before launch** — the inventory can be up to a minute
-   stale and GPUs are shared, so confirm the exact GPU is still idle:
+## 2. Pick the right shape for the work
 
-   ```
-   ssh <node> "nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits | awk -F', ' '\$1==<gpu>{print \$2}'"
-   ```
+- **Many runs (seeds × conditions)** → batch scheduling: Kubernetes Jobs
+  (one Job per seed/condition, small `backoffLimit`, let the scheduler spread
+  them across nodes) or Slurm array jobs. Do not babysit twenty interactive
+  shells.
+- **One interactive debug session** → `kubectl exec` into a development pod,
+  or SSH to a node with a free GPU.
+- **Local machine** — legitimate when it is genuinely the best available, and
+  always right for aggregation, plotting, and unit tests.
+- **Slurm** — a valid path where the queue is healthy. Check the host docs
+  first: if they flag the queue as unreliable, do not chain
+  `--dependency` jobs on it; use direct SSH or Kubernetes instead.
 
-   If that prints a number ≥ ~2000, pick another `node:gpu` from the inventory.
-3. **Launch on the node**, pinned to that GPU, detached, logging into your
-   worktree (which is on shared storage the node can see):
+## 3. Batch hygiene (the pattern that works)
 
-   ```
-   ssh <node> 'cd <abs path to your work/code>; \
-     CUDA_VISIBLE_DEVICES=<gpu> setsid nohup ./.venv/bin/python train.py \
-       > runs/<lane>.log 2>&1 & echo "PID $! on <node> gpu <gpu>"'
-   ```
-4. **Poll from your pane** by tailing the logfile (shared FS): `tail -n 40
-   runs/<lane>.log`. Do **not** open a blocking wait; sleep-poll the log/output
-   files and move on to other work between checks.
-5. **Clean up** when a lane finishes or you abandon it: `ssh <node> "pkill -f
-   <unique substring of your command>"` so you free the GPU for the next lane
-   and for other people.
+- Pin the environment: a fixed container image (e.g. `nvcr.io/nvidia/pytorch`)
+  or a frozen venv, identical across every run in a study and across rounds.
+- Record provenance per run: code commit, source digest, node, GPU type,
+  GPU-hours. Reviewers ask; the appendix answers.
+- Verify a GPU is actually idle right before launch (`nvidia-smi` on the
+  target); inventories go stale in a minute and GPUs are shared.
+- Bring results back to the worktree as soon as runs finish. The cluster is
+  not storage; pods and scratch filesystems get reclaimed.
+- Clean up the Jobs/pods you created once results are safely copied out.
 
-What carries over transparently: the **shared filesystem**. Your `work/` tree,
-the HuggingFace cache (`research-factory/.cache/huggingface`), and your `.venv`s
-are all on shared storage and visible from every compute node — activate the
-same venv inside the SSH command.
+## 4. Sharing rules (non-negotiable)
 
-## Migration guidance
-
-- **transformers-based runners**: the same script works on a GPU node with
-  `device_map="auto"` (or `.to("cuda")`). Usually a one-line change.
-- **llama.cpp / GGUF CPU servers**: on a GPU node, prefer serving the original
-  HF checkpoint with transformers or vLLM; if you must keep llama.cpp, use a
-  CUDA build with `-ngl 999`.
-- **Parity first**: before trusting GPU results, rerun one small batch (greedy /
-  temperature 0) and confirm it matches your CPU outputs; note any numeric drift
-  in the round summary rather than silently mixing backends.
-- **Record the recipe**: once an SSH launch works for your codebase, write the
-  exact command into your notes (README or scratch notes) so every later round
-  reuses it. Keep experiments modest and convergent — get real numbers for this
-  round first, widen the grid in later rounds.
-
-## Never squat a GPU
-
-Pin exactly one GPU per process with `CUDA_VISIBLE_DEVICES`, and kill your
-process as soon as its lane is done. Do not hold GPUs idle "in reserve". The
-inventory is shared with 7 sibling papers and other people — take what you use
-and release it.
+- Default to read-only toward everything you did not create. Never kill,
+  delete, or scale someone else's pods, jobs, or queues.
+- Every mutating command names its scope explicitly: `--context` and
+  `--namespace` for kubectl, the partition for Slurm.
+- Request only what the run needs (one GPU per single-GPU run); do not
+  reserve whole nodes for insurance.
+- Credentials (kubeconfig, SSH keys) stay where the host keeps them — never
+  copy them into the worktree, logs, or Git.
