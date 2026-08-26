@@ -57,6 +57,16 @@ Check specifically:
 **Scope.** Does the conclusion generalise further than the experiments license?
 One model family or one benchmark supports a narrow claim, not a broad one.
 
+**Venue bar.** Say the quiet part out loud: does the experimental scale -
+model sizes, task diversity, compute - meet what this venue actually accepts
+today? Do not launder "too small" into a polite "add another model". If the
+setup is below the bar, write the sentence "This is below the venue's bar"
+in the Weaknesses, name the minimum credible setup (e.g. "at least a 7B-class
+model and a second task family"), and cap your Rating accordingly. A paper
+can be internally flawless and still be a workshop paper at this scale -
+that distinction is exactly what the authors need to hear in round one, not
+round seven.
+
 **Presentation.** Only after the above: clarity, notation, figure quality,
 whether the abstract matches the results, and rendered-PDF defects such as
 clipping, unreadable labels, broken references, missing glyphs, or overflow.
