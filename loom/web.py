@@ -27,7 +27,6 @@ import os
 import re
 import shlex
 import shutil
-import socket
 import subprocess
 import threading
 import time
@@ -36,7 +35,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote as _urlquote, unquote, urlparse
+from urllib.parse import parse_qs, quote as _urlquote, urlparse
 
 from loom import agent_hooks
 from loom.web_jobs import (
@@ -65,9 +64,18 @@ from loom.web_jobs import (
     _review_run_job,
     _sweep_stale_review_runs,
 )
+from loom import routes_tmux
 from loom.web_util import (
+    _REVIEW_DEFAULT_RULES,
+    _SLUG_RE,
+    _json_bytes,
+    _legacy_claude_session_name,
+    _read_json,
+    _safe_claude_session_name,
+    _safe_static_path,
+    _session_name_aliases,
+    _text_bytes,
     _path_within,
-    _sanitize_session_name,
     _session_name_from_tmux_target,
     _SESSION_ID_RE,
 )
@@ -151,21 +159,14 @@ from loom.rud_task import (
 )
 from loom.tmux_util import (
     capture_pane,
-    list_tmux_panes,
-    list_tmux_sessions,
-    open_pane_attach,
     reap_orphaned_attaches,
-    scroll_pane,
     send_pane_key,
-    send_pane_literal,
     send_pane_text,
-    tmux_available,
     tmux_subprocess_env,
     validate_tmux_target,
 )
 from loom.web_projects import WebProjectRegistry
 
-_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
 _STATIC_MIME: dict[str, str] = {
     ".css": "text/css; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
@@ -183,53 +184,6 @@ def _project_worktree_candidates(
 
 
 # --- naming / filtering helpers --------------------------------------------
-
-
-def _tmux_id_fragment(project_id: str) -> str:
-    frag = re.sub(r"[^A-Za-z0-9]+", "", (project_id or "x"))[:8]
-    return frag or "proj"
-
-
-# Current brand prefix for new tmux session names. "claudeloop" is the legacy
-# prefix from before the rename and is still recognized for reuse/cleanup so
-# panes started by older builds keep working.
-_SESSION_BRAND = "loom"
-_SESSION_BRANDS = ("loom", "claudeloop")
-
-
-def _safe_claude_session_name(project_id: str, slug: str, agent: str = AGENT_CURSOR) -> str:
-    """Tmux session name for a task's agent pane (current ``loom-`` brand).
-
-    The agent name is part of the prefix so a claude pane and a codex pane for
-    the same project never share a tmux session if the user ever changes agent.
-    The legacy ``claudeloop-`` prefix and old ``interview`` pane name are handled
-    via ``_legacy_claude_session_name`` / ``_session_name_aliases`` and
-    ``_filter_tmux_sessions_for_project``.
-    """
-    tid = _tmux_id_fragment(project_id)
-    agent = normalize_agent(agent)
-    return _sanitize_session_name(f"{_SESSION_BRAND}-{agent}-{tid}-{slug}", f"{_SESSION_BRAND}-{agent}")
-
-
-def _legacy_claude_session_name(project_id: str, slug: str, agent: str = AGENT_CURSOR) -> str:
-    """Pre-rename ``claudeloop-`` session name for the same task/agent."""
-    tid = _tmux_id_fragment(project_id)
-    agent = normalize_agent(agent)
-    return _sanitize_session_name(f"claudeloop-{agent}-{tid}-{slug}", f"claudeloop-{agent}")
-
-
-def _session_name_aliases(project_id: str, slug: str) -> set[str]:
-    """Every session name this task could use across brands + agents (plus the
-    old ``interview`` pane name) - so we can find/clean up its pane regardless of
-    which build started it."""
-    tid = _tmux_id_fragment(project_id)
-    names: set[str] = set()
-    for brand in _SESSION_BRANDS:
-        for ag in (*SUPPORTED_AGENTS, "interview"):
-            names.add(_sanitize_session_name(f"{brand}-{ag}-{tid}-{slug}", f"{brand}-{ag}"))
-    return names
-
-
 
 
 def _git_clone(repo_url: str, dest: Path, timeout: int = 900) -> tuple[bool, str]:
@@ -257,48 +211,6 @@ def _git_clone(repo_url: str, dest: Path, timeout: int = 900) -> tuple[bool, str
     if r.returncode != 0:
         return False, (r.stderr or r.stdout or "git clone failed").strip()[-2000:]
     return True, ""
-
-
-def _task_meta_tmux_session_names(project_root: Path) -> set[str]:
-    out: set[str] = set()
-    try:
-        root = project_root.resolve()
-    except OSError:
-        return out
-    if not root.is_dir():
-        return out
-    for meta in list_tasks(root):
-        n = _session_name_from_tmux_target(getattr(meta, "tmux_interview_target", "") or "")
-        if n:
-            out.add(n)
-    return out
-
-
-def _filter_tmux_sessions_for_project(
-    sessions: list[dict[str, str]],
-    project_id: str,
-    project_root: Path | None,
-) -> list[dict[str, str]]:
-    tid = _tmux_id_fragment(project_id)
-    picked: dict[str, dict[str, str]] = {}
-    # We accept session-name prefixes for every supported agent plus the
-    # legacy "claudeloop-interview-<tid>-..." used before the rename.
-    prefixes = tuple(
-        f"{brand}-{name}-{tid}-"
-        for brand in _SESSION_BRANDS
-        for name in (*SUPPORTED_AGENTS, "interview")
-    )
-    for s in sessions:
-        name = str(s.get("name", ""))
-        if name and tid and any(name.startswith(p) for p in prefixes):
-            picked[name] = s
-    if project_root is not None:
-        for nm in _task_meta_tmux_session_names(project_root):
-            for s in sessions:
-                if str(s.get("name", "")) == nm:
-                    picked[nm] = s
-                    break
-    return sorted(picked.values(), key=lambda x: str(x.get("name", "")).lower())
 
 
 def _launch_root_child_dirs(launch_root: Path, *, limit: int = 200) -> list[dict[str, str]]:
@@ -428,60 +340,6 @@ def _skill_summary(path: Path, limit: int = 140) -> str:
 
 
 # --- HTTP response helpers --------------------------------------------------
-
-
-def _json_bytes(obj: Any, status: int = 200) -> tuple[int, bytes, list[tuple[str, str]]]:
-    body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
-    headers = [
-        ("Content-Type", "application/json; charset=utf-8"),
-        ("Content-Length", str(len(body))),
-    ]
-    return status, body, headers
-
-
-def _text_bytes(
-    text: str | bytes,
-    status: int = 200,
-    content_type: str = "text/plain; charset=utf-8",
-) -> tuple[int, bytes, list[tuple[str, str]]]:
-    body = text if isinstance(text, bytes) else text.encode("utf-8")
-    headers = [
-        ("Content-Type", content_type),
-        ("Content-Length", str(len(body))),
-    ]
-    return status, body, headers
-
-
-def _read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    n = int(handler.headers.get("Content-Length", "0") or 0)
-    raw = handler.rfile.read(n) if n > 0 else b"{}"
-    try:
-        return json.loads(raw.decode("utf-8"))
-    except json.JSONDecodeError:
-        return {}
-
-
-def _safe_static_path(static_root: Path, url_path: str) -> Path | None:
-    if not url_path.startswith("/static/"):
-        return None
-    rel = unquote(url_path[len("/static/") :])
-    if not rel or ".." in rel.split("/"):
-        return None
-    candidate = (static_root / rel).resolve()
-    try:
-        candidate.relative_to(static_root.resolve())
-    except ValueError:
-        return None
-    return candidate if candidate.is_file() else None
-
-
-# (structured agent conversations live in loom/web_conversation.py)
-
-_REVIEW_DEFAULT_RULES = """- Correctness: logic bugs, edge cases, wrong APIs, off-by-one, error handling.
-- Security: NO hardcoded secrets/tokens/keys; no injection; safe file/subprocess use.
-- Hygiene: no leftover debug prints, commented-out code, stray TODOs, dead code.
-- Tests: meaningful changes should add/keep tests; flag "claims tested" with no test.
-- Consistency: matches the surrounding code style and the project's skills."""
 
 
 def _run_worktree_review(
@@ -1271,7 +1129,6 @@ class ClaudeRegistry:
 
 
 _TERMINAL_STREAM_LEASE_SECONDS = 75.0
-_TERMINAL_STREAM_SELECT_SECONDS = 10.0
 
 
 class _TerminalStreamRegistry:
@@ -2398,136 +2255,8 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
-            if path == "/api/tmux/sessions":
-                qs = parse_qs(parsed.query or "")
-                proj = (qs.get("project") or [""])[0].strip()
-                all_sessions = list_tmux_sessions()
-                if proj:
-                    p_root = pr.get_path(proj)
-                    sessions = _filter_tmux_sessions_for_project(all_sessions, proj, p_root)
-                else:
-                    sessions = all_sessions
-                st, b, h = _json_bytes({"tmux": tmux_available(), "sessions": sessions})
-                self._send(st, b, h)
+            if routes_tmux.handle_get(self, path, parsed):
                 return
-
-            if path == "/api/tmux/panes":
-                qs = parse_qs(parsed.query or "")
-                sess = (qs.get("session") or [""])[0].strip()
-                if not sess:
-                    st, b, h = _json_bytes({"error": "session required"}, 400)
-                    self._send(st, b, h)
-                    return
-                st, b, h = _json_bytes({"panes": list_tmux_panes(sess)})
-                self._send(st, b, h)
-                return
-
-            if path == "/api/tmux/capture":
-                qs = parse_qs(parsed.query or "")
-                target = (qs.get("target") or [""])[0].strip()
-                lines = int((qs.get("lines") or ["80"])[0] or 80)
-                if not validate_tmux_target(target):
-                    st, b, h = _json_bytes({"ok": False, "error": "invalid target", "text": ""}, 400)
-                    self._send(st, b, h)
-                    return
-                ok, text = capture_pane(target, lines)
-                st, b, h = _json_bytes({"ok": ok, "text": text if ok else "", "error": "" if ok else text})
-                self._send(st, b, h)
-                return
-
-            if path == "/api/tmux/stream":
-                import select as _select
-
-                qs = parse_qs(parsed.query or "")
-                target = (qs.get("target") or [""])[0].strip()
-                try:
-                    cols = int((qs.get("cols") or ["80"])[0] or 80)
-                    rows = int((qs.get("rows") or ["24"])[0] or 24)
-                except ValueError:
-                    cols, rows = 80, 24
-                if not validate_tmux_target(target):
-                    st, b, h = _json_bytes({"ok": False, "error": "invalid target"}, 400)
-                    self._send(st, b, h)
-                    return
-                proc, master = open_pane_attach(target, cols, rows)
-                if proc is None or master is None:
-                    st, b, h = _json_bytes(
-                        {"ok": False, "error": "could not attach to pane"}, 502
-                    )
-                    self._send(st, b, h)
-                    return
-                stream_id = terminal_streams.register(master, proc)
-                self.close_connection = True
-                # A dropped SSH tunnel or a lid-closed laptop never sends FIN:
-                # without keepalive the half-open socket keeps this attach (a
-                # real tmux client, pinning the window size) alive for the
-                # kernel's full retransmission timeout - tens of minutes.
-                # Aggressive keepalive turns that into ~a minute, and a send
-                # timeout stops a flooding pane from blocking on a dead peer.
-                try:
-                    self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-                    self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
-                    self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
-                    self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
-                    self.connection.settimeout(60)
-                except OSError:
-                    pass
-                try:
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/octet-stream")
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("X-Accel-Buffering", "no")
-                    self.send_header("X-Loom-Terminal-Stream", stream_id)
-                    self.send_header("Connection", "close")
-                    self.end_headers()
-                except OSError:
-                    terminal_streams.unregister(stream_id, master)
-                    self._kill_pty(proc, master)
-                    return
-                conn = self.connection
-                try:
-                    while True:
-                        if not terminal_streams.lease_active(stream_id):
-                            break
-                        if proc.poll() is not None:
-                            try:
-                                while True:
-                                    data = os.read(master, 65536)
-                                    if not data:
-                                        break
-                                    self.wfile.write(data)
-                            except OSError:
-                                pass
-                            break
-                        r, _, _ = _select.select(
-                            [master, conn],
-                            [],
-                            [],
-                            _TERMINAL_STREAM_SELECT_SECONDS,
-                        )
-                        if conn in r:
-                            try:
-                                probe = conn.recv(4096)
-                            except OSError:
-                                probe = b""
-                            if not probe:
-                                break  # client closed the stream
-                        if master in r:
-                            try:
-                                data = os.read(master, 65536)
-                            except OSError:
-                                break
-                            if not data:
-                                break
-                            self.wfile.write(data)
-                            self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    pass
-                finally:
-                    terminal_streams.unregister(stream_id, master)
-                    self._kill_pty(proc, master)
-                return
-
             if path == "/api/review/projects":
                 st, b, h = _json_bytes(
                     {"ok": True, "projects": review.list_projects()}
@@ -4285,111 +4014,8 @@ def make_handler(
                 self._send(st, b, h)
                 return
 
-            if path == "/api/tmux/stream-input":
-                stream_id = str(body.get("stream_id", "")).strip()
-                text = body.get("text", "")
-                if not isinstance(text, str):
-                    st, b, h = _json_bytes(
-                        {"ok": False, "error": "text must be string"}, 400
-                    )
-                    self._send(st, b, h)
-                    return
-                ok, msg = terminal_streams.write(stream_id, text)
-                st, b, h = (
-                    _json_bytes({"ok": True})
-                    if ok
-                    else _json_bytes({"ok": False, "error": msg}, 409)
-                )
-                self._send(st, b, h)
+            if routes_tmux.handle_post(self, path, parsed, body):
                 return
-
-            if path == "/api/tmux/stream-close":
-                stream_id = str(body.get("stream_id", "")).strip()
-                ok, msg = terminal_streams.close(stream_id)
-                st, b, h = (
-                    _json_bytes({"ok": True})
-                    if ok
-                    else _json_bytes({"ok": False, "error": msg}, 400)
-                )
-                self._send(st, b, h)
-                return
-
-            if path == "/api/tmux/stream-heartbeat":
-                stream_id = str(body.get("stream_id", "")).strip()
-                ok, msg = terminal_streams.touch(stream_id)
-                st, b, h = (
-                    _json_bytes({"ok": True})
-                    if ok
-                    else _json_bytes({"ok": False, "error": msg}, 409)
-                )
-                self._send(st, b, h)
-                return
-
-            if path == "/api/tmux/send-text":
-                target = str(body.get("target", "")).strip()
-                text = body.get("text", "")
-                submit = bool(body.get("submit", False))
-                if not isinstance(text, str):
-                    st, b, h = _json_bytes({"ok": False, "error": "text must be string"}, 400)
-                    self._send(st, b, h)
-                    return
-                ok, msg = send_pane_text(target, text, submit=submit)
-                st, b, h = (
-                    _json_bytes({"ok": True})
-                    if ok
-                    else _json_bytes({"ok": False, "error": msg}, 400)
-                )
-                self._send(st, b, h)
-                return
-
-            if path == "/api/tmux/send-key":
-                target = str(body.get("target", "")).strip()
-                key = str(body.get("key", "")).strip()
-                ok, msg = send_pane_key(target, key)
-                st, b, h = (
-                    _json_bytes({"ok": True})
-                    if ok
-                    else _json_bytes({"ok": False, "error": msg}, 400)
-                )
-                self._send(st, b, h)
-                return
-
-            if path == "/api/tmux/send-literal":
-                target = str(body.get("target", "")).strip()
-                text = body.get("text", "")
-                if not isinstance(text, str):
-                    st, b, h = _json_bytes({"ok": False, "error": "text must be string"}, 400)
-                    self._send(st, b, h)
-                    return
-                ok, msg = send_pane_literal(target, text)
-                st, b, h = (
-                    _json_bytes({"ok": True})
-                    if ok
-                    else _json_bytes({"ok": False, "error": msg}, 400)
-                )
-                self._send(st, b, h)
-                return
-
-            if path == "/api/tmux/scroll":
-                target = str(body.get("target", "")).strip()
-                direction = str(body.get("dir", "up")).strip()
-                try:
-                    lines = int(body.get("lines", 3))
-                except (TypeError, ValueError):
-                    lines = 3
-                if not validate_tmux_target(target):
-                    st, b, h = _json_bytes({"ok": False, "error": "invalid target"}, 400)
-                    self._send(st, b, h)
-                    return
-                ok, msg = scroll_pane(target, direction, lines)
-                st, b, h = (
-                    _json_bytes({"ok": True})
-                    if ok
-                    else _json_bytes({"ok": False, "error": msg}, 400)
-                )
-                self._send(st, b, h)
-                return
-
             if path == "/api/projects/reorder":
                 raw_ids = body.get("ids", [])
                 if not isinstance(raw_ids, list):
@@ -5651,6 +5277,10 @@ def make_handler(
             )
             self._send(st, b, h)
 
+    Handler.pr = pr
+    Handler.terminal_streams = terminal_streams
+    Handler.ar_manager = ar_manager
+    Handler.claude_registry = claude_registry
     return Handler
 
 
