@@ -57,11 +57,15 @@ read it instead of probing nodes one by one.
 
 ## 4. Sharing rules (non-negotiable)
 
-- **Cap your concurrent footprint.** On a shared cluster, keep your queued +
-  running pods to a few dozen, not hundreds. If a study needs more lanes,
-  spread the arms across the other reachable clusters (each `kubectl` context
-  you verified in step 1) instead of monopolizing one queue — and launch in
-  waves, aggregating each wave before submitting the next.
+- **Hard ceiling: 4 nodes / 32 GPUs at once.** A task's total concurrent
+  footprint — queued plus running, summed across every cluster it touches —
+  stays at or below 4 nodes (32 GPUs). Do not launch hundreds of one-GPU pods
+  to parallelize seeds; batch the seeds/conditions into waves that each fit
+  the budget, aggregate a wave, then submit the next. The only exception is a
+  single run that strictly cannot execute within that budget — a model that
+  needs more than 4 GPUs (multi-GPU or multi-node) just to fit and run. Then
+  request exactly what that one run needs and say so in the run note; never
+  exceed the ceiling merely to finish a seed sweep faster.
 - **Delete your Jobs as soon as their results are copied out.** Hundreds of
   Completed pods are noise for every other user of the cluster.
 - Default to read-only toward everything you did not create. Never kill,
