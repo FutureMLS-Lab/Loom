@@ -3579,6 +3579,7 @@ SKILL_REVIEWER = "AR-REVIEWER.md"
 SKILL_GPU = "GPU-RESOURCES.md"
 SKILL_REBUTTAL = "paper-rebuttal/SKILL.md"
 SKILL_RESULTS_REPORTING = "paper-results-reporting/SKILL.md"
+SKILL_AI_TONE = "paper-ai-tone/SKILL.md"
 SKILL_WSDM_SUBMISSION = "wsdm-submission-readiness/SKILL.md"
 SKILL_WACV_SUBMISSION = "wacv-submission-readiness/SKILL.md"
 
@@ -3648,6 +3649,18 @@ def results_reporting_block() -> str:
         "=== Results reporting and provenance - follow this exactly ===\n"
         + text
         + "\n=== end results reporting and provenance ==="
+    )
+
+
+def ai_tone_block() -> str:
+    """The prose-quality skill as it appears in author prompts."""
+    text = ar_skill_text(SKILL_AI_TONE)
+    if not text:
+        return ""
+    return (
+        "=== Paper prose - kill the AI accent, follow this exactly ===\n"
+        + text
+        + "\n=== end paper prose ==="
     )
 
 
@@ -3814,6 +3827,13 @@ ROLE_SKILLS = (
         SKILL_RESULTS_REPORTING,
         "Author",
         "Standardizes result-table statistics and manuscript-safe provenance.",
+        "Injected in full into every author prompt.",
+    ),
+    (
+        SKILL_AI_TONE,
+        "Author",
+        "Strips the AI accent from paper prose: tone, narrative spine, "
+        "notation, claims and citation hygiene.",
         "Injected in full into every author prompt.",
     ),
     (
@@ -4088,6 +4108,8 @@ The idea this paper must establish:
 
 {results_reporting_block()}
 
+{ai_tone_block()}
+
 {wacv_submission_block(state)}
 
 {wsdm_submission_block(state)}
@@ -4169,6 +4191,8 @@ The idea this paper must establish:
 === end methodology ===
 
 {results_reporting_block()}
+
+{ai_tone_block()}
 
 {wacv_submission_block(state)}
 
@@ -4263,6 +4287,8 @@ Continue the SAME round. Follow the AR author methodology exactly:
 {ar_skill_text(SKILL_AUTHOR) or "(AR author skill missing)"}
 
 {results_reporting_block()}
+
+{ai_tone_block()}
 
 {wacv_submission_block(state)}
 

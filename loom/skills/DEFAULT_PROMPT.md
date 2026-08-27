@@ -41,7 +41,7 @@ your task already injected in full need no second read. Paths are relative
 to the Loom checkout.
 
 <!-- SKILLS:BEGIN generated - edit skills, then run scripts/gen_skills_index.py -->
-Loom ships exactly 19 skills - 5 pick-and-read, 14 Paper-Factory. This generated table is the complete, authoritative set: a skill not listed here does not exist. Each description says when the skill applies; when your work matches one, READ its file at the path. To add a skill, put a markdown file under loom/skills/ (its frontmatter `description:` becomes its row here) and run scripts/gen_skills_index.py.
+Loom ships exactly 20 skills - 5 pick-and-read, 15 Paper-Factory. This generated table is the complete, authoritative set: a skill not listed here does not exist. Each description says when the skill applies; when your work matches one, READ its file at the path. To add a skill, put a markdown file under loom/skills/ (its frontmatter `description:` becomes its row here) and run scripts/gen_skills_index.py.
 
 ### Pick-and-read (5) - selectable at task creation, readable by anyone
 
@@ -53,7 +53,7 @@ Loom ships exactly 19 skills - 5 pick-and-read, 14 Paper-Factory. This generated
 | remote_control | loom Remote Control | `loom/skills/remote_control/remote_control.md` |
 | server_setup | Loom Agent Server Setup | `loom/skills/server_setup/server_setup.md` |
 
-### Paper Factory (AR) skills (14) - the pipeline injects these itself
+### Paper Factory (AR) skills (15) - the pipeline injects these itself
 
 | Skill | Role | What it does / when to use it | How it reaches the agent | Path |
 |---|---|---|---|---|
@@ -62,6 +62,7 @@ Loom ships exactly 19 skills - 5 pick-and-read, 14 Paper-Factory. This generated
 | AR-REVIEWER | Reviewer | Reviews each round the way a venue would. | Injected in full into every reviewer run. | `loom/skills/ar/AR-REVIEWER.md` |
 | paper-rebuttal | Rebuttal | Drafts acceptance-oriented, evidence-bounded responses to reviewers. | Named in every author round prompt; the author reads it before answering the reviewers. | `loom/skills/ar/paper-rebuttal/SKILL.md` |
 | paper-results-reporting | Author | Standardizes result-table statistics and manuscript-safe provenance. | Injected in full into every author prompt. | `loom/skills/ar/paper-results-reporting/SKILL.md` |
+| paper-ai-tone | Author | Strips the AI accent from paper prose: tone, narrative spine, notation, claims and citation hygiene. | Injected in full into every author prompt. | `loom/skills/ar/paper-ai-tone/SKILL.md` |
 | wsdm-submission-readiness | Author | Packages anonymous WSDM papers under ACM and nine-page rules. | Injected in full only into WSDM author prompts. | `loom/skills/ar/wsdm-submission-readiness/SKILL.md` |
 | wacv-submission-readiness | Author | Packages anonymous WACV papers under track and eight-page rules. | Injected in full only into WACV author prompts. | `loom/skills/ar/wacv-submission-readiness/SKILL.md` |
 | checkbib | Figures | Verify every citation in a LaTeX paper against a real fetched source, and catch fabricated references before submission | Listed as a menu in every author round; the author reads the one it needs. | `loom/skills/ar/figures/checkbib/SKILL.md` |
