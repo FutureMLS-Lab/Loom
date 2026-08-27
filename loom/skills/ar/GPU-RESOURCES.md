@@ -57,6 +57,13 @@ read it instead of probing nodes one by one.
 
 ## 4. Sharing rules (non-negotiable)
 
+- **Cap your concurrent footprint.** On a shared cluster, keep your queued +
+  running pods to a few dozen, not hundreds. If a study needs more lanes,
+  spread the arms across the other reachable clusters (each `kubectl` context
+  you verified in step 1) instead of monopolizing one queue — and launch in
+  waves, aggregating each wave before submitting the next.
+- **Delete your Jobs as soon as their results are copied out.** Hundreds of
+  Completed pods are noise for every other user of the cluster.
 - Default to read-only toward everything you did not create. Never kill,
   delete, or scale someone else's pods, jobs, or queues.
 - Every mutating command names its scope explicitly: `--context` and

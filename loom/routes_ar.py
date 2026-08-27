@@ -134,7 +134,7 @@ def handle_get(self, path, parsed) -> bool:  # noqa: C901
             st, b, h = _json_bytes({"error": "invalid slug"}, 400)
             self._send(st, b, h)
             return True
-        pdf, err = self._ar_resolve_pdf(root, slug)
+        pdf, err = _ar_resolve_pdf(self, root, slug)
         if pdf is None:
             st, b, h = _json_bytes({"ok": False, "error": err}, 404)
             self._send(st, b, h)
