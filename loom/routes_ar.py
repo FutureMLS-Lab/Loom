@@ -60,6 +60,7 @@ def _profile_for_api(
     ):
         visible[key] = profile.get(key)
     for key in (
+        "research_profile",
         "notes",
         "summary",
         "topics",
@@ -348,6 +349,22 @@ def handle_raw_post(self, path, parsed) -> bool:
 
 
 def handle_post(self, path, parsed, body) -> bool:  # noqa: C901
+    if path == "/api/ar/profiles/generate":
+        try:
+            profile = researcher_profiles.generate_profile(
+                body.get("research_profile"),
+                notes=body.get("notes"),
+                profile_id=str(body.get("id") or "").strip(),
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
+        else:
+            st, b, h = _json_bytes(
+                {"ok": True, "profile": _profile_for_api(profile)}, 202
+            )
+        self._send(st, b, h)
+        return True
+
     if path == "/api/ar/profiles":
         try:
             profile = researcher_profiles.create_profile(

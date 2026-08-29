@@ -42,7 +42,6 @@ const S = {
 const $ = (sel) => document.querySelector(sel);
 const el = (id) => document.getElementById(id);
 const FIT_MODES = new Set(['strict', 'balanced', 'exploratory']);
-const PROFILE_UPLOAD_RE = /\.(pdf|png|jpe?g|webp|txt|md)$/i;
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
@@ -1197,13 +1196,8 @@ function renderFiles(d) {
 // ===== researcher profiles =====
 
 const PROFILE_EDIT_IDS = [
-  'profile-name',
-  'profile-fit-mode',
+  'profile-research-profile',
   'profile-notes',
-  'profile-summary',
-  'profile-interests',
-  'profile-avoid',
-  'profile-resources',
 ];
 
 function publicProfileText(value) {
@@ -1303,9 +1297,11 @@ function syncProfileSelectors() {
   const options = S.profiles.map((profile) => {
     const option = document.createElement('option');
     option.value = String(profile.id || '');
-    option.textContent = `${publicProfileText(profile.name || 'Untitled profile')} · ${
-      profile.status === 'active' ? 'active' : 'draft'
-    }`;
+    const extraction = profileExtractionState(profile);
+    const state = extraction === 'running'
+      ? 'generating'
+      : (extraction === 'error' ? 'failed' : (profile.status === 'active' ? 'ready · active' : 'draft'));
+    option.textContent = `${publicProfileText(profile.name || 'Research profile')} · ${state}`;
     return option;
   });
   if (!options.length) {
@@ -1322,7 +1318,7 @@ function syncProfileSelectors() {
     manager.value = String(S.profiles[0].id || '');
   }
   el('profile-count').textContent = S.profiles.length
-    ? `${S.profiles.length} saved · ${active.length} active`
+    ? `${S.profiles.length} saved · ${active.length} ready`
     : 'No profiles yet.';
 
   const newFit = el('new-profile-fit-mode');
@@ -1353,6 +1349,7 @@ function blankProfile() {
     name: '',
     status: 'draft',
     fit_mode: 'balanced',
+    research_profile: '',
     notes: '',
     summary: '',
     interests: [],
@@ -1372,16 +1369,22 @@ function blankProfile() {
 }
 
 function profileSources(profile) {
-  if (Array.isArray(profile && profile.source_files)) return profile.source_files;
+  const sourceFiles = Array.isArray(profile && profile.source_files)
+    ? profile.source_files
+    : null;
   // `sources` was the pre-contract backend name. Reading it keeps the UI
   // compatible during rolling upgrades; only safe fields are rendered.
-  return Array.isArray(profile && profile.sources) ? profile.sources : [];
+  const legacySources = Array.isArray(profile && profile.sources) ? profile.sources : [];
+  return sourceFiles && (sourceFiles.length || !legacySources.length)
+    ? sourceFiles
+    : legacySources;
 }
 
 function profileExtractionState(profile) {
-  const status = String((profile && profile.extraction_status) || 'idle');
-  if (status === 'succeeded') return 'done';
-  if (status === 'failed') return 'error';
+  const status = String((profile && profile.extraction_status) || 'idle').toLowerCase();
+  if (['succeeded', 'complete', 'completed', 'done'].includes(status)) return 'done';
+  if (['failed', 'error'].includes(status)) return 'error';
+  if (['queued', 'pending', 'processing', 'extracting'].includes(status)) return 'running';
   return status;
 }
 
@@ -1396,9 +1399,12 @@ function renderProfileFields(profile) {
     ['Topics', profile.topics],
     ['Methods', profile.methods],
     ['Domains', profile.domains],
+    ['Strengths', profile.strengths],
+    ['Interests', profile.interests],
+    ['Resources', profile.resources],
     ['Datasets', profile.datasets],
     ['Tools', profile.tools],
-    ['Strengths', profile.strengths],
+    ['Avoid', profile.avoid],
   ];
   const sections = groups.map(([label, values]) => {
     const items = profileStringItems(values);
@@ -1420,13 +1426,16 @@ function renderProfileFields(profile) {
 function extractionStatusText(profile) {
   const status = profileExtractionState(profile);
   const sources = profileSources(profile).length;
-  if (!profile.id) return 'Save the profile before adding sources.';
-  if (status === 'running') return 'Extracting… this panel will refresh automatically.';
-  if (status === 'done') return 'Extraction complete. Review the fields before activation.';
-  if (status === 'error') return 'Extraction failed. Correct the sources and try again.';
-  if (sources) return 'Sources are ready to extract.';
-  if (String(profile.notes || '').trim()) return 'The saved text description is ready to extract.';
-  return 'Upload source files or add a text description to build the profile.';
+  if (!profile.id) return 'Paste a URL or research-profile text to begin.';
+  if (status === 'running') return 'Generating… this panel will refresh automatically.';
+  if (status === 'done' && profile.status === 'active') {
+    return 'Ready and active. This profile is available to Studios.';
+  }
+  if (status === 'done') return 'Extracted, but not active. Generate again to refresh it.';
+  if (status === 'error') return 'Generation failed. Review the input and try again.';
+  if (profile.status === 'active') return 'Ready and active. This profile is available to Studios.';
+  if (sources) return 'This saved profile has existing sources. Generate it to refresh and activate it.';
+  return 'Generate this saved profile to extract and activate it.';
 }
 
 function updateProfileActions() {
@@ -1434,25 +1443,14 @@ function updateProfileActions() {
   const extraction = profileExtractionState(profile);
   const running = extraction === 'running';
   const hasId = Boolean(profile.id);
-  const hasSources = profileSources(profile).length > 0;
-  const hasDescription = Boolean(String(profile.notes || '').trim());
-  const name = el('profile-name').value.trim();
-  const files = el('profile-files').files;
+  const hasResearchProfile = Boolean(el('profile-research-profile').value.trim());
   const locked = S.profileLoading || running;
 
   PROFILE_EDIT_IDS.forEach((id) => { el(id).disabled = locked; });
-  el('profile-files').disabled = !hasId || locked || S.profileDirty;
-  el('btn-profile-upload').disabled =
-    !hasId || locked || S.profileDirty || !(files && files.length);
-  el('btn-profile-save').disabled = locked || !name || !S.profileDirty;
-  el('btn-profile-extract').disabled =
-    !hasId || locked || S.profileDirty || !(hasSources || hasDescription);
-  el('btn-profile-activate').disabled =
-    !hasId || locked || S.profileDirty
-    || extraction !== 'done'
-    || profile.status === 'active';
-  el('btn-profile-activate').textContent =
-    profile.status === 'active' ? 'Active' : 'Activate';
+  el('profile-research-profile').required = true;
+  el('profile-research-profile').setAttribute('aria-required', 'true');
+  el('btn-profile-generate').disabled = locked || !hasResearchProfile;
+  el('btn-profile-generate').textContent = running ? 'Generating…' : 'Generate profile';
   el('btn-profile-delete').disabled = !hasId || locked;
 }
 
@@ -1473,43 +1471,76 @@ function scheduleProfilePoll() {
   const id = String(profile.id);
   S.profilePoll = setTimeout(async () => {
     const before = profileExtractionState(S.profile);
-    await loadProfile(id, { polling: true });
-    if (before === 'running' && profileExtractionState(S.profile) !== 'running') {
+    const loaded = await loadProfile(id, { polling: true });
+    if (!loaded || String(loaded.id || '') !== id) return;
+    const after = profileExtractionState(loaded);
+    if (before === 'running' && after !== 'running') {
       await loadProfileSummaries({ silent: true });
+      if (after === 'done' && S.profile && S.profile.status === 'active') {
+        el('profile-modal-status').textContent = 'Ready and active. Available to Studios.';
+        toast(`${publicProfileText(S.profile.name || 'Researcher profile')} is ready.`);
+      } else if (after === 'error') {
+        el('profile-modal-status').textContent = 'Generation failed. Review the error and try again.';
+      } else if (after === 'done') {
+        el('profile-modal-status').textContent =
+          'Generation finished, but the profile is not active. Generate it again to retry.';
+      }
     }
   }, 2500);
 }
 
 function renderProfile() {
   const profile = S.profile || blankProfile();
-  setProfileInput('profile-name', profile.name);
-  setProfileInput('profile-fit-mode', normalFitMode(profile.fit_mode));
+  setProfileInput('profile-research-profile', profile.research_profile);
   setProfileInput('profile-notes', profile.notes);
-  setProfileInput('profile-summary', profile.summary);
-  setProfileInput('profile-interests', profileStringItems(profile.interests).join('\n'));
-  setProfileInput('profile-avoid', profileStringItems(profile.avoid).join('\n'));
-  setProfileInput('profile-resources', profileStringItems(profile.resources).join('\n'));
 
   const status = el('profile-status');
-  status.textContent = profile.id ? (profile.status === 'active' ? 'active' : 'draft') : 'new';
-  status.className = `rf-pill${profile.status === 'active' ? ' rf-pill--done' : ''}`;
+  const extraction = profileExtractionState(profile);
+  if (!profile.id) {
+    status.textContent = 'new';
+    status.className = 'rf-pill';
+  } else if (extraction === 'running') {
+    status.textContent = 'generating';
+    status.className = 'rf-pill rf-pill--wait';
+  } else if (extraction === 'error') {
+    status.textContent = 'needs attention';
+    status.className = 'rf-pill rf-pill--stuck';
+  } else if (profile.status === 'active') {
+    status.textContent = 'Ready · active';
+    status.className = 'rf-pill rf-pill--live';
+  } else {
+    status.textContent = 'draft';
+    status.className = 'rf-pill';
+  }
   el('profile-extraction-status').textContent = extractionStatusText(profile);
 
   const error = el('profile-extraction-error');
   error.textContent = publicProfileText(profile.extraction_error || '');
   error.hidden = !error.textContent;
 
+  const generatedName = publicProfileText(profile.name || '').trim();
+  el('profile-generated-name').textContent = generatedName;
+  el('profile-generated-name-wrap').hidden = !profile.id || !generatedName;
+
+  const summary = publicProfileText(profile.summary || '').trim();
+  el('profile-summary-output').textContent = summary;
+  el('profile-summary-wrap').hidden = !summary;
+
   const sources = profileSources(profile);
   el('profile-source-list').innerHTML = sources.map((file) => {
-    const name = safeSourceName(file && (file.name || file.filename));
+    const source = file && typeof file === 'object' ? file : {};
+    const name = safeSourceName(
+      typeof file === 'string' ? file : (source.name || source.filename || source.source),
+    );
     const detail = [
       publicProfileText(
-        (file && (file.kind || file.media_type || file.content_type)) || '',
+        source.kind || source.media_type || source.content_type || '',
       ),
-      formatProfileBytes(file && file.size),
+      formatProfileBytes(source.size),
     ].filter(Boolean).join(' · ');
     return `<li><span>${esc(name)}</span><small>${esc(detail)}</small></li>`;
-  }).join('') || '<li class="rf-hint">No source files uploaded.</li>';
+  }).join('');
+  el('profile-sources-wrap').hidden = !sources.length;
   renderProfileFields(profile);
 
   if (profile.id && S.profiles.some((item) => String(item.id || '') === String(profile.id))) {
@@ -1521,20 +1552,13 @@ function renderProfile() {
   scheduleProfilePoll();
 }
 
-function profileListFromInput(id) {
-  return el(id).value.split('\n').map((value) => value.trim()).filter(Boolean);
-}
-
 function profilePayloadFromForm() {
-  return {
-    name: el('profile-name').value.trim(),
-    fit_mode: normalFitMode(el('profile-fit-mode').value),
+  const payload = {
+    research_profile: el('profile-research-profile').value.trim(),
     notes: el('profile-notes').value.trim(),
-    summary: el('profile-summary').value.trim(),
-    interests: profileListFromInput('profile-interests'),
-    avoid: profileListFromInput('profile-avoid'),
-    resources: profileListFromInput('profile-resources'),
   };
+  if (S.profile && S.profile.id) payload.id = String(S.profile.id);
+  return payload;
 }
 
 function beginNewProfile({ focus = true } = {}) {
@@ -1543,10 +1567,10 @@ function beginNewProfile({ focus = true } = {}) {
   S.profile = blankProfile();
   S.profileDirty = false;
   el('profile-select').selectedIndex = -1;
-  el('profile-files').value = '';
-  el('profile-modal-status').textContent = 'Enter a name, notes, and default fit mode, then save.';
+  el('profile-modal-status').textContent =
+    'Paste a research-profile URL or text, then generate your profile.';
   renderProfile();
-  if (focus) el('profile-name').focus();
+  if (focus) el('profile-research-profile').focus();
 }
 
 async function loadProfile(id, { polling = false } = {}) {
@@ -1560,9 +1584,18 @@ async function loadProfile(id, { polling = false } = {}) {
   try {
     const data = await api(`/api/ar/profiles/${encodeURIComponent(id)}`);
     if (S.profileRequest !== token) return null;
-    S.profile = data.profile || blankProfile();
+    const returned = data.profile || blankProfile();
+    const previousResearchProfile =
+      S.profile && String(S.profile.id || '') === String(returned.id || '')
+        ? S.profile.research_profile
+        : '';
+    S.profile = {
+      ...returned,
+      research_profile: Object.prototype.hasOwnProperty.call(returned, 'research_profile')
+        ? returned.research_profile
+        : previousResearchProfile,
+    };
     S.profileDirty = false;
-    el('profile-files').value = '';
     if (!polling) el('profile-modal-status').textContent = '';
     return S.profile;
   } catch (err) {
@@ -1616,180 +1649,61 @@ function closeProfiles() {
   return true;
 }
 
-async function saveProfile() {
+async function generateProfile() {
+  const previous = S.profile || blankProfile();
   const payload = profilePayloadFromForm();
-  if (!payload.name) {
-    el('profile-modal-status').textContent = 'A profile name is required.';
-    el('profile-name').focus();
+  if (!payload.research_profile) {
+    el('profile-modal-status').textContent =
+      'Paste a Google Scholar or personal homepage URL, or research-profile text.';
+    el('profile-research-profile').focus();
     return null;
   }
+
   S.profileLoading = true;
-  el('profile-modal-status').textContent = 'Saving…';
+  el('profile-modal-status').textContent = 'Starting profile generation…';
   updateProfileActions();
-  let created = null;
+  let accepted = false;
   try {
-    let data;
-    if (S.profile && S.profile.id) {
-      data = await api(`/api/ar/profiles/${encodeURIComponent(S.profile.id)}`, {
-        method: 'PUT',
-        body: JSON.stringify(payload),
-      });
-    } else {
-      data = await api('/api/ar/profiles', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: payload.name,
-          notes: payload.notes,
-          fit_mode: payload.fit_mode,
-        }),
-      });
-      created = data.profile || {};
-      if (created.id) S.profile = { ...created, ...payload };
-      const hasExtended = payload.summary
-        || payload.interests.length || payload.avoid.length || payload.resources.length;
-      if (created.id && hasExtended) {
-        data = await api(`/api/ar/profiles/${encodeURIComponent(created.id)}`, {
-          method: 'PUT',
-          body: JSON.stringify(payload),
-        });
-      }
+    const data = await api('/api/ar/profiles/generate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    const returned = data.profile;
+    if (!returned || !returned.id) {
+      throw new Error('Generation response did not include a profile.');
     }
-    S.profile = data.profile || S.profile || blankProfile();
+    S.profile = {
+      ...previous,
+      ...returned,
+      research_profile: Object.prototype.hasOwnProperty.call(returned, 'research_profile')
+        ? returned.research_profile
+        : payload.research_profile,
+      notes: Object.prototype.hasOwnProperty.call(returned, 'notes')
+        ? returned.notes
+        : payload.notes,
+    };
     S.profileDirty = false;
-    el('profile-files').value = '';
+    accepted = true;
     await loadProfileSummaries({ silent: true });
-    el('profile-modal-status').textContent = 'Saved.';
-    renderProfile();
+    const extraction = profileExtractionState(S.profile);
+    if (extraction === 'done' && S.profile.status === 'active') {
+      el('profile-modal-status').textContent = 'Ready and active. Available to Studios.';
+    } else if (extraction === 'error') {
+      el('profile-modal-status').textContent =
+        'Generation failed. Review the error and try again.';
+    } else {
+      el('profile-modal-status').textContent =
+        'Generation started. This panel will refresh automatically.';
+    }
     return S.profile;
   } catch (err) {
-    if (created && created.id) {
-      S.profile = { ...created, ...payload };
-      await loadProfileSummaries({ silent: true });
-      renderProfile();
-      el('profile-modal-status').textContent =
-        `Profile created, but extra fields were not saved: ${publicProfileText(err.message)}`;
-    } else {
-      el('profile-modal-status').textContent =
-        `Save failed: ${publicProfileText(err.message)}`;
-    }
+    el('profile-modal-status').textContent =
+      `Could not generate profile: ${publicProfileText(err.message)}`;
     return null;
   } finally {
     S.profileLoading = false;
-    updateProfileActions();
-  }
-}
-
-function profileMimeType(file) {
-  if (file.type) return file.type;
-  const name = String(file.name || '').toLowerCase();
-  if (name.endsWith('.pdf')) return 'application/pdf';
-  if (name.endsWith('.png')) return 'image/png';
-  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
-  if (name.endsWith('.webp')) return 'image/webp';
-  if (name.endsWith('.md')) return 'text/markdown';
-  if (name.endsWith('.txt')) return 'text/plain';
-  return 'application/octet-stream';
-}
-
-async function uploadProfileFiles() {
-  const profile = S.profile || {};
-  const files = [...(el('profile-files').files || [])];
-  if (!profile.id || !files.length || S.profileDirty) return;
-  const unsupported = files.filter((file) => !PROFILE_UPLOAD_RE.test(file.name || ''));
-  if (unsupported.length) {
-    el('profile-modal-status').textContent =
-      `Unsupported file: ${safeSourceName(unsupported[0].name)}`;
-    return;
-  }
-
-  S.profileLoading = true;
-  updateProfileActions();
-  let latest = profile;
-  try {
-    for (let i = 0; i < files.length; i += 1) {
-      const file = files[i];
-      const filename = safeSourceName(file.name);
-      el('profile-modal-status').textContent =
-        `Uploading ${i + 1} of ${files.length}: ${filename}`;
-      const data = await api(
-        `/api/ar/profiles/${encodeURIComponent(profile.id)}/sources?filename=${
-          encodeURIComponent(filename)
-        }`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': profileMimeType(file) },
-          body: file,
-        },
-      );
-      // The contract returns the full profile. During a rolling backend
-      // upgrade an older handler may return only source metadata, so accept a
-      // response here only when it still identifies the profile.
-      if (data.profile && data.profile.id) latest = data.profile;
-    }
-    const refreshed = await api(`/api/ar/profiles/${encodeURIComponent(profile.id)}`);
-    latest = refreshed.profile || latest;
-    S.profile = latest;
-    el('profile-files').value = '';
-    await loadProfileSummaries({ silent: true });
-    el('profile-modal-status').textContent =
-      `Uploaded ${files.length} file${files.length === 1 ? '' : 's'}.`;
-    renderProfile();
-  } catch (err) {
-    S.profile = latest;
-    el('profile-modal-status').textContent =
-      `Upload failed: ${publicProfileText(err.message)}`;
-    renderProfile();
-  } finally {
-    S.profileLoading = false;
-    updateProfileActions();
-  }
-}
-
-async function extractProfile() {
-  const profile = S.profile || {};
-  if (!profile.id || S.profileDirty) return;
-  S.profileLoading = true;
-  el('profile-modal-status').textContent = 'Starting extraction…';
-  updateProfileActions();
-  try {
-    const data = await api(`/api/ar/profiles/${encodeURIComponent(profile.id)}/extract`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    });
-    S.profile = data.profile || profile;
-    el('profile-modal-status').textContent = 'Extraction started. You can close this panel while it runs.';
-    await loadProfileSummaries({ silent: true });
-  } catch (err) {
-    el('profile-modal-status').textContent =
-      `Extraction failed to start: ${publicProfileText(err.message)}`;
-  } finally {
-    S.profileLoading = false;
-    renderProfile();
-  }
-}
-
-async function activateProfile() {
-  const profile = S.profile || {};
-  if (!profile.id || S.profileDirty || profileExtractionState(profile) !== 'done') return;
-  S.profileLoading = true;
-  el('profile-modal-status').textContent = 'Activating…';
-  updateProfileActions();
-  try {
-    const data = await api(`/api/ar/profiles/${encodeURIComponent(profile.id)}/activate`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    });
-    S.profile = data.profile || profile;
-    S.profileDirty = false;
-    await loadProfileSummaries({ silent: true });
-    el('profile-modal-status').textContent = 'Active and available to Studios.';
-    toast(`${publicProfileText(S.profile.name || 'Researcher profile')} activated.`);
-  } catch (err) {
-    el('profile-modal-status').textContent =
-      `Activation failed: ${publicProfileText(err.message)}`;
-  } finally {
-    S.profileLoading = false;
-    renderProfile();
+    if (accepted) renderProfile();
+    else updateProfileActions();
   }
 }
 
@@ -1797,7 +1711,7 @@ async function deleteProfile() {
   const profile = S.profile || {};
   if (!profile.id) return;
   const name = publicProfileText(profile.name || 'this profile');
-  if (!window.confirm(`Delete "${name}" and its uploaded sources? This cannot be undone.`)) return;
+  if (!window.confirm(`Delete "${name}" and its stored profile data? This cannot be undone.`)) return;
   S.profileLoading = true;
   el('profile-modal-status').textContent = 'Deleting…';
   updateProfileActions();
@@ -2325,17 +2239,13 @@ el('profile-select').addEventListener('change', (ev) => {
   loadProfile(next);
 });
 PROFILE_EDIT_IDS.forEach((id) => {
-  el(id).addEventListener(id === 'profile-fit-mode' ? 'change' : 'input', () => {
+  el(id).addEventListener('input', () => {
     S.profileDirty = true;
     el('profile-modal-status').textContent = 'Unsaved changes.';
     updateProfileActions();
   });
 });
-el('profile-files').addEventListener('change', updateProfileActions);
-el('btn-profile-save').addEventListener('click', saveProfile);
-el('btn-profile-upload').addEventListener('click', uploadProfileFiles);
-el('btn-profile-extract').addEventListener('click', extractProfile);
-el('btn-profile-activate').addEventListener('click', activateProfile);
+el('btn-profile-generate').addEventListener('click', generateProfile);
 el('btn-profile-delete').addEventListener('click', deleteProfile);
 
 el('btn-skills').addEventListener('click', openSkills);

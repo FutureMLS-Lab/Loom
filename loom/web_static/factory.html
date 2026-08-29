@@ -359,7 +359,7 @@
           </select>
         </div>
       </div>
-      <p class="rf-hint">Only explicitly activated profiles can guide a studio.</p>
+      <p class="rf-hint">Only ready, active profiles can guide a studio.</p>
     </fieldset>
     <label for="new-venue-url" id="new-venue-url-label" hidden>Venue page to start from (required — it decides which venue gets researched)</label>
     <input type="text" id="new-venue-url" placeholder="https://… — awards / accepted-papers / program page; the research agent crawls from here" hidden />
@@ -388,7 +388,7 @@
       <button type="button" class="rf-x" id="btn-profiles-close" aria-label="Close researcher profiles">×</button>
     </div>
     <p class="rf-hint" id="profiles-modal-description">
-      Add research materials, inspect the extracted background, then activate it explicitly before attaching it to a studio.
+      Paste a research profile, add an optional note, and generate a profile that is ready to use in Studios.
     </p>
 
     <div class="rf-profile-workspace">
@@ -402,66 +402,46 @@
       <div class="rf-profile-editor">
         <div class="rf-profile-state">
           <span class="rf-pill" id="profile-status">new</span>
-          <span class="rf-hint" id="profile-extraction-status">Save the profile before adding sources.</span>
+          <span class="rf-hint" id="profile-extraction-status" aria-live="polite">
+            Paste a URL or research-profile text to begin.
+          </span>
         </div>
 
-        <div class="rf-row">
-          <div>
-            <label for="profile-name">Name</label>
-            <input type="text" id="profile-name" autocomplete="off" placeholder="e.g. My systems research" />
-          </div>
-          <div>
-            <label for="profile-fit-mode">Default fit mode</label>
-            <select id="profile-fit-mode">
-              <option value="strict">Strict</option>
-              <option value="balanced" selected>Balanced</option>
-              <option value="exploratory">Exploratory</option>
-            </select>
-          </div>
+        <div class="rf-profile-inputs">
+          <label for="profile-research-profile">Research profile</label>
+          <textarea id="profile-research-profile" rows="6"
+                    aria-describedby="profile-research-profile-hint"
+                    placeholder="Paste a Google Scholar or personal homepage URL, or paste research-profile text."></textarea>
+          <p class="rf-hint" id="profile-research-profile-hint">
+            Paste at least one URL or a short description of the research background.
+          </p>
+
+          <label for="profile-notes">Extra note <span class="rf-hint">(optional)</span></label>
+          <textarea id="profile-notes" rows="3"
+                    placeholder="Add context the research profile may not capture."></textarea>
         </div>
-
-        <label for="profile-notes">Notes</label>
-        <textarea id="profile-notes" rows="3" placeholder="Context the source files may not capture."></textarea>
-        <label for="profile-summary">Summary</label>
-        <textarea id="profile-summary" rows="3" placeholder="A concise, editable description of the research background."></textarea>
-
-        <div class="rf-profile-list-fields">
-          <div>
-            <label for="profile-interests">Interests <span class="rf-hint">one per line</span></label>
-            <textarea id="profile-interests" rows="4"></textarea>
-          </div>
-          <div>
-            <label for="profile-avoid">Avoid <span class="rf-hint">one per line</span></label>
-            <textarea id="profile-avoid" rows="4"></textarea>
-          </div>
-          <div>
-            <label for="profile-resources">Resources <span class="rf-hint">one per line</span></label>
-            <textarea id="profile-resources" rows="4"></textarea>
-          </div>
-        </div>
-
-        <section class="rf-profile-sources" aria-labelledby="profile-sources-title">
-          <div class="rf-profile-subhead">
-            <div>
-              <h3 id="profile-sources-title">Source files</h3>
-              <p class="rf-hint">PDF, PNG, JPG, WebP, TXT, or Markdown. Files are stored only on this host; extraction sends their contents to the configured Cursor model.</p>
-            </div>
-            <button type="button" class="rf-btn rf-btn--sm" id="btn-profile-upload">Upload selected</button>
-          </div>
-          <label for="profile-files">Choose one or more files</label>
-          <input type="file" id="profile-files" multiple
-                 accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.md,application/pdf,image/png,image/jpeg,image/webp,text/plain,text/markdown" />
-          <ul class="rf-profile-source-list" id="profile-source-list"></ul>
-        </section>
 
         <section class="rf-profile-extracted" aria-labelledby="profile-extracted-title">
           <div class="rf-profile-subhead">
             <div>
-              <h3 id="profile-extracted-title">Extracted background</h3>
-              <p class="rf-hint">Review these fields before activation. Edit the summary and preference lists above when needed.</p>
+              <h3 id="profile-extracted-title">Generated profile</h3>
+              <p class="rf-hint">This extracted background is read-only. Generate again to refresh it.</p>
             </div>
           </div>
+          <div class="rf-profile-generated-name" id="profile-generated-name-wrap" hidden>
+            <span>Profile</span>
+            <strong id="profile-generated-name"></strong>
+          </div>
+          <section class="rf-profile-summary" id="profile-summary-wrap" aria-labelledby="profile-summary-title" hidden>
+            <h4 id="profile-summary-title">Summary</h4>
+            <p id="profile-summary-output"></p>
+          </section>
           <div class="rf-profile-fields" id="profile-fields"></div>
+          <section class="rf-profile-existing-sources" id="profile-sources-wrap"
+                   aria-labelledby="profile-sources-title" hidden>
+            <h4 id="profile-sources-title">Existing sources</h4>
+            <ul class="rf-profile-source-list" id="profile-source-list"></ul>
+          </section>
           <p class="rf-profile-error" id="profile-extraction-error" role="alert" hidden></p>
         </section>
       </div>
@@ -471,9 +451,7 @@
       <button type="button" class="rf-btn rf-btn--danger rf-btn--sm" id="btn-profile-delete">Delete</button>
       <span class="rf-hint" id="profile-modal-status" role="status" aria-live="polite"></span>
       <button type="button" class="rf-btn rf-btn--ghost" id="btn-profile-close">Close</button>
-      <button type="button" class="rf-btn" id="btn-profile-save">Save</button>
-      <button type="button" class="rf-btn" id="btn-profile-extract">Extract</button>
-      <button type="button" class="rf-btn rf-btn--primary" id="btn-profile-activate">Activate</button>
+      <button type="button" class="rf-btn rf-btn--primary" id="btn-profile-generate">Generate profile</button>
     </div>
   </div>
 </div>

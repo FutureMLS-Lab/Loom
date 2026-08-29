@@ -20,6 +20,8 @@ from loom import researcher_profile as profiles
 from loom import routes_ar
 from loom.rud_task import create_task
 
+REPO = Path(__file__).resolve().parents[1]
+
 
 @pytest.fixture(autouse=True)
 def isolated_profiles_root(tmp_path, monkeypatch):
@@ -118,6 +120,74 @@ def test_profile_http_route_contract_hides_storage_metadata():
         parsed=urlparse(""),
     )
     assert detail.response[0] == 200
+
+
+def test_generate_http_route_uses_two_field_contract(monkeypatch):
+    captured = {}
+
+    def fake_generate(research_profile, **kwargs):
+        captured["research_profile"] = research_profile
+        captured.update(kwargs)
+        return {
+            "id": "research-profile",
+            "name": "Research profile",
+            "status": "draft",
+            "fit_mode": "balanced",
+            "research_profile": research_profile,
+            "notes": kwargs["notes"],
+            "extraction_status": "running",
+            "source_files": [],
+        }
+
+    monkeypatch.setattr(
+        routes_ar.researcher_profiles, "generate_profile", fake_generate
+    )
+    handler = _RouteHandler()
+    parsed = urlparse("/api/ar/profiles/generate")
+    assert routes_ar.handle_post(
+        handler,
+        parsed.path,
+        parsed,
+        {
+            "research_profile": "https://scholar.google.com/example",
+            "notes": "Prefer efficient methods.",
+        },
+    )
+    assert handler.response[0] == 202
+    assert captured == {
+        "research_profile": "https://scholar.google.com/example",
+        "notes": "Prefer efficient methods.",
+        "profile_id": "",
+    }
+    assert handler.response[1]["profile"]["extraction_status"] == "running"
+
+
+def test_factory_profile_creation_exposes_only_two_content_inputs():
+    html = (REPO / "loom" / "web_static" / "factory.html").read_text(
+        encoding="utf-8"
+    )
+    javascript = (REPO / "loom" / "web_static" / "factory.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert html.count('id="profile-research-profile"') == 1
+    assert html.count('id="profile-notes"') == 1
+    for removed_id in (
+        "profile-name",
+        "profile-fit-mode",
+        "profile-summary",
+        "profile-interests",
+        "profile-avoid",
+        "profile-resources",
+        "profile-files",
+        "btn-profile-save",
+        "btn-profile-upload",
+        "btn-profile-extract",
+        "btn-profile-activate",
+    ):
+        assert f'id="{removed_id}"' not in html
+    assert 'id="btn-profile-generate"' in html
+    assert "api/ar/profiles/generate" in javascript
 
 
 def test_studio_background_action_snapshots_and_clears_profile(tmp_path):
@@ -486,12 +556,12 @@ def test_text_description_can_be_extracted_without_uploaded_files():
 
     def fake_runner(prompt, model, workspace, *, timeout):
         assert not list((workspace / "sources").iterdir())
-        assert (workspace / "user-description.txt").read_text() == (
+        assert (workspace / "extra-note.txt").read_text() == (
             "I study efficient inference and can use one GPU."
         )
         manifest = json.loads((workspace / "source-manifest.json").read_text())
         assert manifest["sources"] == []
-        assert manifest["user_description"] == "user-description.txt"
+        assert manifest["profile_inputs"] == {"notes": "extra-note.txt"}
         return {
             "summary": "Studies efficient inference.",
             "resources": ["one GPU"],
@@ -501,6 +571,61 @@ def test_text_description_can_be_extracted_without_uploaded_files():
     assert extracted["extraction_status"] == "succeeded"
     assert extracted["summary"] == "Studies efficient inference."
     assert extracted["notes"].startswith("I study efficient inference")
+
+
+def test_two_field_generation_extracts_and_activates_automatically():
+    seen = {}
+
+    def fake_runner(prompt, model, workspace, *, timeout):
+        assert "public http(s) profile URLs" in prompt
+        seen["research_profile"] = (
+            workspace / "research-profile.txt"
+        ).read_text()
+        seen["notes"] = (workspace / "extra-note.txt").read_text()
+        manifest = json.loads((workspace / "source-manifest.json").read_text())
+        assert manifest["profile_inputs"] == {
+            "research_profile": "research-profile.txt",
+            "notes": "extra-note.txt",
+        }
+        return {
+            "name": "Ada Researcher",
+            "summary": "Studies efficient machine learning.",
+            "methods": ["quantization"],
+            "resources": ["one GPU"],
+        }
+
+    started = profiles.generate_profile(
+        "https://scholar.google.com/citations?user=public-example",
+        notes="Focus on projects that fit one GPU.",
+        runner=fake_runner,
+    )
+    assert started["extraction_status"] == "running"
+    finished = _wait_for_extraction(started["id"])
+    assert finished["status"] == "active"
+    assert finished["extraction_status"] == "succeeded"
+    assert finished["name"] == "Ada Researcher"
+    assert seen == {
+        "research_profile": (
+            "https://scholar.google.com/citations?user=public-example"
+        ),
+        "notes": "Focus on projects that fit one GPU.",
+    }
+
+
+@pytest.mark.parametrize(
+    "research_profile",
+    [
+        "http://127.0.0.1/profile",
+        "http://localhost/profile",
+        "https://user:password@example.com/profile",
+        "https://example.com:8443/profile",
+    ],
+)
+def test_two_field_generation_rejects_non_public_profile_urls(
+    research_profile,
+):
+    with pytest.raises(ValueError, match="public|standard"):
+        profiles.generate_profile(research_profile)
 
 
 def test_extraction_failure_is_persisted_without_losing_private_fields():
@@ -544,6 +669,8 @@ def test_background_extraction_is_daemonized_and_rejects_duplicates():
         assert profiles._EXTRACTION_JOBS["ada"].daemon is True
         with pytest.raises(ValueError, match="already running"):
             profiles.start_extraction("ada", runner=blocking_runner)
+        with pytest.raises(ValueError, match="while extraction is running"):
+            profiles.update_profile("ada", notes="changed")
         with pytest.raises(ValueError, match="while extraction is running"):
             profiles.save_source("ada", "new.md", b"# changed")
     finally:

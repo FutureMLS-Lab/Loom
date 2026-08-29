@@ -75,14 +75,14 @@ manuscript is handed to the Rebuttal Factory automatically, so the reviews
 have somewhere to land. Needs `latexmk` + TeX Live; methodology lives in
 `loom/skills/ar/`.
 
-The Paper Factory can also ground ideation in an explicitly activated
-**researcher profile**. Upload a Google Scholar PDF, screenshot, or short text
-description, inspect the extracted methods/interests/resources, then choose
-Strict, Balanced, or Exploratory fit for a Studio. Reusable profiles remain
-host-local under `~/.loom/researcher-profiles/`; each Studio stores a bounded
-snapshot so later profile edits do not silently change an existing run.
-Extraction runs through the configured Cursor model using an isolated copy of
-the uploaded sources.
+The Paper Factory can also ground ideation in a generated **researcher
+profile**. Paste a Google Scholar or personal-page URL (or profile
+text), add an optional note, and click Generate; Loom extracts and activates
+the structured background automatically. Strict, Balanced, and Exploratory
+fit remain Studio-level choices. Reusable profiles stay host-local under
+`~/.loom/researcher-profiles/`; each Studio stores a bounded snapshot so later
+profile edits do not silently change an existing run. Extraction runs through
+the configured Cursor model in an isolated workspace.
 
 **Review Factory** — the same three-model panel as a service: paste an arXiv
 / OpenReview / PDF link (or a local directory), and the panel reviews to the

@@ -746,8 +746,8 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
 }
 .rf-prose strong { color: var(--rf-text); }
 
-/* The profile manager keeps identity/navigation narrow and gives the
-   extracted research content the reading width. */
+/* The profile manager keeps navigation narrow and gives generated research
+   content the reading width. */
 .rf-profile-modal__card { width: min(1040px, 100%); }
 .rf-profile-modal__card > .rf-hint { margin: 8px 0 0; max-width: 78ch; }
 .rf-profile-modal__card .rf-eyebrow { margin-bottom: 4px; }
@@ -772,13 +772,12 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
   display: flex; align-items: center; gap: 8px; min-height: 25px; margin-bottom: 2px;
 }
 .rf-profile-editor textarea { resize: vertical; }
-.rf-profile-list-fields {
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
-}
-.rf-profile-list-fields textarea {
-  min-height: 92px; font: 11.5px/1.45 var(--rf-mono);
-}
-.rf-profile-sources, .rf-profile-extracted {
+.rf-profile-inputs { margin-top: 8px; }
+.rf-profile-inputs > label:first-child { margin-top: 8px; }
+.rf-profile-inputs > .rf-hint { margin: 6px 0 0; max-width: 72ch; }
+.rf-profile-inputs #profile-research-profile { min-height: 132px; }
+.rf-profile-inputs #profile-notes { min-height: 78px; }
+.rf-profile-extracted {
   margin-top: 18px; padding-top: 15px; border-top: 1px solid var(--rf-line);
 }
 .rf-profile-subhead {
@@ -787,26 +786,41 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
 }
 .rf-profile-subhead h3 { font-size: 0.9rem; }
 .rf-profile-subhead p { margin: 3px 0 0; }
-.rf-profile-sources > label { margin-top: 10px; }
-.rf-profile-sources input[type="file"] {
-  display: block; width: 100%; padding: 8px;
-  border: 1px dashed var(--rf-line-2); border-radius: 10px;
-  background: var(--rf-bg-2); color: var(--rf-dim); font: inherit; font-size: 12px;
+.rf-profile-generated-name {
+  display: flex; align-items: baseline; gap: 9px;
+  margin-top: 10px; padding: 9px 10px;
+  border-radius: 9px; background: var(--rf-bg-2);
 }
-.rf-profile-sources input[type="file"]::file-selector-button {
-  margin-right: 10px; padding: 5px 10px; cursor: pointer;
-  border: 1px solid var(--rf-line-2); border-radius: 999px;
-  background: var(--rf-bg-1); color: var(--rf-text); font: inherit;
+.rf-profile-generated-name span,
+.rf-profile-summary h4,
+.rf-profile-existing-sources h4 {
+  color: var(--rf-faint); font-size: 9.5px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+.rf-profile-generated-name strong {
+  min-width: 0; overflow-wrap: anywhere; color: var(--rf-text); font-size: 13px;
+}
+.rf-profile-summary {
+  margin-top: 10px; padding: 10px;
+  border-radius: 9px; background: var(--rf-bg-2);
+}
+.rf-profile-summary h4, .rf-profile-existing-sources h4 { margin: 0 0 6px; }
+.rf-profile-summary p {
+  margin: 0; color: var(--rf-dim); font-size: 12px;
+  line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.rf-profile-existing-sources {
+  margin-top: 10px; padding: 10px;
+  border-radius: 9px; background: var(--rf-bg-2);
 }
 .rf-profile-source-list {
-  list-style: none; display: grid; gap: 5px; margin: 10px 0 0; padding: 0;
+  list-style: none; display: grid; gap: 5px; margin: 0; padding: 0;
 }
 .rf-profile-source-list li {
   display: flex; align-items: baseline; justify-content: space-between;
   gap: 10px; padding: 6px 8px; border-radius: 8px;
-  background: var(--rf-bg-2); font-size: 12px;
+  background: var(--rf-bg-1); font-size: 12px;
 }
-.rf-profile-source-list li.rf-hint { display: block; background: transparent; padding-left: 0; }
 .rf-profile-source-list span { min-width: 0; overflow-wrap: anywhere; }
 .rf-profile-source-list small { color: var(--rf-faint); white-space: nowrap; }
 .rf-profile-fields {
@@ -893,7 +907,6 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
   .rf-profile-attach__controls { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
   .rf-profile-workspace { grid-template-columns: 1fr; }
   .rf-profile-picker select { min-height: 106px; }
-  .rf-profile-list-fields { grid-template-columns: 1fr; }
 }
 
 /* On a phone the wrapped sticky bar would pin a third of the viewport.
