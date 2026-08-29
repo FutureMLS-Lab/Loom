@@ -66,6 +66,27 @@ def test_find_loom_by_explicit_port(monkeypatch: pytest.MonkeyPatch) -> None:
     assert hot_restart.find_loom(8766) == expected
 
 
+def test_find_turbogate_when_launched_through_dynamic_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = hot_restart.Process(
+        pid=123456,
+        ppid=1,
+        argv=(
+            "/lib64/ld-linux-x86-64.so.2",
+            "/home/user/.turbogate/bin/turbogate",
+            "http",
+            "8766",
+            "p-test",
+            "--public",
+        ),
+        cwd=Path("/tmp"),
+        env={},
+    )
+    monkeypatch.setattr(hot_restart, "_processes", lambda: [expected])
+    assert hot_restart.find_turbogate(8766) == expected
+
+
 def test_launch_command_preserves_web_flags(tmp_path: Path) -> None:
     source = tmp_path / "loom"
     (source / "loom").mkdir(parents=True)

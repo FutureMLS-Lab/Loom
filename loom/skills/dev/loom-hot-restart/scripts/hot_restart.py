@@ -117,8 +117,13 @@ def find_turbogate(port: int) -> Process | None:
     matches = []
     for process in _processes():
         args = process.argv
+        # Some installations invoke the packaged binary through ld-linux, so
+        # Turbogate is argv[1] rather than argv[0].
+        is_turbogate = any(
+            Path(value).name == "turbogate" for value in args[:2]
+        )
         if (
-            Path(args[0]).name == "turbogate"
+            is_turbogate
             and "http" in args
             and str(port) in args
             and "--public" in args
