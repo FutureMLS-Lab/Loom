@@ -109,6 +109,10 @@ a.fx-switch__item--home:hover { color: var(--rf-text); }
 .rf-mark { display: block; border-radius: 7px; box-shadow: 0 2px 8px rgba(15, 23, 42, 0.28); }
 .rf-brand__name { font-weight: 640; letter-spacing: -0.01em; }
 .rf-top__nav { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+@media (max-width: 1200px) {
+  #btn-profiles { font-size: 0; }
+  #btn-profiles::after { content: 'Profiles'; font-size: 12px; }
+}
 .rf-stat { font-size: 12px; color: var(--rf-faint); white-space: nowrap; }
 .rf-stat b { color: var(--rf-text); font-variant-numeric: tabular-nums; font-weight: 620; }
 .rf-stat--alert b { color: var(--rf-warn); }
@@ -186,6 +190,11 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
 }
 .rf-check input[type="number"] { width: 58px; padding: 5px 8px; }
 .rf-check input[type="checkbox"] { width: auto; }
+.rf-sr-only {
+  position: absolute !important; width: 1px !important; height: 1px !important;
+  padding: 0 !important; margin: -1px !important; overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important;
+}
 
 /* ---------- fleet ---------- */
 
@@ -486,6 +495,37 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
 }
 .rf-search-settings .rf-log { margin-top: 10px; }
 
+/* ---------- researcher attachment ---------- */
+
+.rf-profile-attach {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 18px; margin-top: 20px; padding: 12px 14px;
+  border: 1px solid #c7cbfa; border-radius: 12px;
+  background: var(--rf-accent-soft);
+}
+.rf-profile-attach__current { min-width: 180px; }
+.rf-profile-attach__current h2 { font-size: 0.9rem; }
+.rf-profile-attach__current p { margin: 3px 0 0; }
+.rf-profile-attach__controls {
+  display: flex; align-items: center; justify-content: flex-end;
+  gap: 7px; flex: 1; min-width: 0;
+}
+.rf-profile-attach__controls select {
+  width: auto; min-width: 150px; max-width: 240px;
+  padding: 6px 28px 6px 10px; font-size: 12px;
+}
+.rf-profile-attach__controls #studio-profile-fit-mode { min-width: 118px; }
+.rf-studio-profile {
+  margin: 16px 0 0; padding: 10px 14px 12px;
+  border: 1px solid var(--rf-line); border-radius: 12px;
+  background: var(--rf-bg-2);
+}
+.rf-studio-profile legend {
+  padding: 0 5px; color: var(--rf-text); font-size: 12px; font-weight: 650;
+}
+.rf-studio-profile label { margin-top: 2px; }
+.rf-studio-profile p { margin: 7px 0 0; }
+
 /* ---------- ideas ---------- */
 
 .rf-ideas { display: flex; flex-direction: column; gap: 12px; }
@@ -507,6 +547,34 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
 .rf-idea__body { margin: 10px 0 0; font-size: 12.5px; color: var(--rf-dim); }
 .rf-idea__body p { margin: 6px 0 0; }
 .rf-idea__body b { color: var(--rf-text); font-weight: 620; }
+.rf-idea-fit {
+  display: grid; grid-template-columns: minmax(0, 1fr) 94px;
+  gap: 10px; align-items: center; margin: 10px 0 7px;
+  padding: 7px 9px; border: 1px solid #c7cbfa;
+  border-radius: 9px; background: var(--rf-accent-soft);
+}
+.rf-idea-fit > span:first-child {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  color: var(--rf-dim); font-size: 11px;
+}
+.rf-idea-fit strong {
+  color: var(--rf-accent); font: 700 11px/1 var(--rf-mono);
+}
+.rf-idea-fit__track {
+  display: block; height: 6px; overflow: hidden;
+  border-radius: 999px; background: #d9dcfb;
+}
+.rf-idea-fit__track i {
+  display: block; height: 100%; border-radius: inherit;
+  background: linear-gradient(90deg, #818cf8, var(--rf-accent));
+}
+.rf-idea-concepts {
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin-top: 7px;
+}
+.rf-idea-concepts > span {
+  padding: 2px 7px; border: 1px solid #d8cdf8; border-radius: 999px;
+  color: #6d28d9; background: #f5f3ff; font-size: 10px;
+}
 .rf-edges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 .rf-edge-chip {
   font-size: 10px; padding: 2px 8px; border-radius: 999px;
@@ -677,6 +745,102 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
   background: var(--rf-bg-3); border-radius: 5px; color: var(--rf-text);
 }
 .rf-prose strong { color: var(--rf-text); }
+
+/* The profile manager keeps identity/navigation narrow and gives the
+   extracted research content the reading width. */
+.rf-profile-modal__card { width: min(1040px, 100%); }
+.rf-profile-modal__card > .rf-hint { margin: 8px 0 0; max-width: 78ch; }
+.rf-profile-modal__card .rf-eyebrow { margin-bottom: 4px; }
+.rf-profile-workspace {
+  display: grid; grid-template-columns: 190px minmax(0, 1fr);
+  gap: 20px; align-items: start; margin-top: 18px;
+}
+.rf-profile-picker {
+  min-width: 0; padding: 12px;
+  border: 1px solid var(--rf-line); border-radius: 12px;
+  background: var(--rf-bg-2);
+}
+.rf-profile-picker label { margin-top: 0; }
+.rf-profile-picker select {
+  min-height: 170px; padding: 5px; font-size: 12px;
+}
+.rf-profile-picker option { padding: 7px 8px; border-radius: 6px; }
+.rf-profile-picker .rf-btn { width: 100%; margin-top: 10px; }
+.rf-profile-picker p { margin: 8px 2px 0; }
+.rf-profile-editor { min-width: 0; }
+.rf-profile-state {
+  display: flex; align-items: center; gap: 8px; min-height: 25px; margin-bottom: 2px;
+}
+.rf-profile-editor textarea { resize: vertical; }
+.rf-profile-list-fields {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
+}
+.rf-profile-list-fields textarea {
+  min-height: 92px; font: 11.5px/1.45 var(--rf-mono);
+}
+.rf-profile-sources, .rf-profile-extracted {
+  margin-top: 18px; padding-top: 15px; border-top: 1px solid var(--rf-line);
+}
+.rf-profile-subhead {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+}
+.rf-profile-subhead h3 { font-size: 0.9rem; }
+.rf-profile-subhead p { margin: 3px 0 0; }
+.rf-profile-sources > label { margin-top: 10px; }
+.rf-profile-sources input[type="file"] {
+  display: block; width: 100%; padding: 8px;
+  border: 1px dashed var(--rf-line-2); border-radius: 10px;
+  background: var(--rf-bg-2); color: var(--rf-dim); font: inherit; font-size: 12px;
+}
+.rf-profile-sources input[type="file"]::file-selector-button {
+  margin-right: 10px; padding: 5px 10px; cursor: pointer;
+  border: 1px solid var(--rf-line-2); border-radius: 999px;
+  background: var(--rf-bg-1); color: var(--rf-text); font: inherit;
+}
+.rf-profile-source-list {
+  list-style: none; display: grid; gap: 5px; margin: 10px 0 0; padding: 0;
+}
+.rf-profile-source-list li {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px; padding: 6px 8px; border-radius: 8px;
+  background: var(--rf-bg-2); font-size: 12px;
+}
+.rf-profile-source-list li.rf-hint { display: block; background: transparent; padding-left: 0; }
+.rf-profile-source-list span { min-width: 0; overflow-wrap: anywhere; }
+.rf-profile-source-list small { color: var(--rf-faint); white-space: nowrap; }
+.rf-profile-fields {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px; margin-top: 10px;
+}
+.rf-profile-fields section {
+  min-width: 0; padding: 9px 10px; border-radius: 9px; background: var(--rf-bg-2);
+}
+.rf-profile-fields h4 {
+  margin: 0 0 6px; color: var(--rf-faint); font-size: 9.5px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+.rf-profile-fields section > div { display: flex; flex-wrap: wrap; gap: 5px; }
+.rf-profile-fields section > div span {
+  max-width: 100%; padding: 2px 7px; overflow-wrap: anywhere;
+  border: 1px solid var(--rf-line-2); border-radius: 999px;
+  background: var(--rf-bg-1); color: var(--rf-dim); font-size: 10.5px;
+}
+.rf-profile-fields .rf-profile-evidence { grid-column: 1 / -1; }
+.rf-profile-evidence ul { margin: 0; padding-left: 18px; color: var(--rf-dim); font-size: 11.5px; }
+.rf-profile-evidence li + li { margin-top: 4px; }
+.rf-empty--compact { grid-column: 1 / -1; padding: 16px; font-size: 12px; }
+.rf-profile-error {
+  margin: 10px 0 0; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid #f7c6cf; background: var(--rf-bad-soft);
+  color: var(--rf-bad); font-size: 12px;
+}
+.rf-profile-actions { flex-wrap: wrap; }
+.rf-profile-actions #btn-profile-delete { margin-right: 0; }
+.rf-profile-actions #profile-modal-status {
+  flex: 1 1 160px; margin-right: auto; overflow-wrap: anywhere;
+}
+
 .rf-panel-verdict {
   margin: 0 0 14px; padding: 10px 12px;
   border: 1px solid var(--rf-line); border-radius: 10px;
@@ -725,15 +889,29 @@ label { display: block; font-size: 12px; color: var(--rf-dim); margin: 14px 0 6p
   .rf-search-settings__head { align-items: flex-start; }
   .rf-reviewer-report > header { display: block; }
   .rf-reviewer-report__scores { justify-content: flex-start; margin-top: 8px; }
+  .rf-profile-attach { align-items: flex-start; flex-direction: column; }
+  .rf-profile-attach__controls { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
+  .rf-profile-workspace { grid-template-columns: 1fr; }
+  .rf-profile-picker select { min-height: 106px; }
+  .rf-profile-list-fields { grid-template-columns: 1fr; }
 }
 
 /* On a phone the wrapped sticky bar would pin a third of the viewport.
    Informational counters give way; the actionable chips and buttons stay. */
 @media (max-width: 640px) {
-  .rf-top { position: static; padding: 10px 16px; }
+  .rf-top { position: static; padding: 10px 16px; flex-wrap: wrap; }
   .rf-stat--info { display: none; }
   .rf-modal { padding: 14px; }
   .rf-modal__card { padding: 18px 16px; }
+  .rf-top__nav { gap: 4px; margin-left: auto; }
+  .rf-top__nav .rf-btn { padding-inline: 10px; }
+  .rf-profile-attach__controls { display: grid; grid-template-columns: 1fr 1fr; }
+  .rf-profile-attach__controls select { width: 100%; min-width: 0; max-width: none; }
+  .rf-profile-fields { grid-template-columns: 1fr; }
+  .rf-profile-fields .rf-profile-evidence { grid-column: auto; }
+  .rf-profile-actions .rf-btn { flex: 1 1 auto; }
+  .rf-profile-actions #profile-modal-status { flex-basis: 100%; order: -1; }
+  .rf-idea-fit { grid-template-columns: 1fr; }
 }
 
 /* The Skills modal's per-paper header: what this paper was told and used. */

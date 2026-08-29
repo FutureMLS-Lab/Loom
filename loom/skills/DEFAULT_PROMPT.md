@@ -47,7 +47,7 @@ Loom ships exactly 20 skills - 5 pick-and-read, 15 Paper-Factory. This generated
 
 | Skill | What it does / when to use it | Path |
 |---|---|---|
-| charlie_skills | 在开始实现或 review 前，先把任务目标、当前 plan、成功标准整理清楚，只保留对后续执行有用的信息。默认遵守下面的工作习惯： | `loom/skills/charlie_skills.md` |
+| charlie_skills | Personal skills | `loom/skills/charlie_skills.md` |
 | ARIS | ARIS — Autonomous Research-In-Sleep loop | `loom/skills/aris/ARIS.md` |
 | loom-hot-restart | Restarts a running Loom web service from an updated source checkout while preserving its authentication environment, di… | `loom/skills/dev/loom-hot-restart/SKILL.md` |
 | remote_control | loom Remote Control | `loom/skills/remote_control/remote_control.md` |

@@ -75,6 +75,15 @@ manuscript is handed to the Rebuttal Factory automatically, so the reviews
 have somewhere to land. Needs `latexmk` + TeX Live; methodology lives in
 `loom/skills/ar/`.
 
+The Paper Factory can also ground ideation in an explicitly activated
+**researcher profile**. Upload a Google Scholar PDF, screenshot, or short text
+description, inspect the extracted methods/interests/resources, then choose
+Strict, Balanced, or Exploratory fit for a Studio. Reusable profiles remain
+host-local under `~/.loom/researcher-profiles/`; each Studio stores a bounded
+snapshot so later profile edits do not silently change an existing run.
+Extraction runs through the configured Cursor model using an isolated copy of
+the uploaded sources.
+
 **Review Factory** — the same three-model panel as a service: paste an arXiv
 / OpenReview / PDF link (or a local directory), and the panel reviews to the
 venue's own form — thirty CORE-A* venues carry their real sections and score

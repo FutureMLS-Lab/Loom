@@ -11,6 +11,7 @@ from urllib.parse import parse_qs
 
 from loom import ar_task as ar
 from loom import rebuttal_task as rebuttal
+from loom import researcher_profile as researcher_profiles
 from loom.rud_task import list_tasks, path_under_task, read_meta, task_root
 from loom.web_activity import _iso_now
 from loom.web_jobs import (
@@ -28,8 +29,100 @@ from loom.web_jobs import (
 )
 from loom.web_util import _SLUG_RE, _json_bytes
 
+_PROFILE_ID_PATTERN = r"([a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?)"
+
+
+def _profile_for_api(
+    profile: dict[str, Any], *, summary: bool = False
+) -> dict[str, Any]:
+    """Return only fields the authenticated browser needs."""
+    visible = {
+        key: profile.get(key)
+        for key in (
+            "id",
+            "name",
+            "status",
+            "fit_mode",
+            "extraction_status",
+            "updated_at",
+        )
+    }
+    if summary:
+        visible["source_count"] = len(profile.get("source_files") or [])
+        return visible
+    for key in (
+        "extraction_error",
+        "extraction_model",
+        "extraction_started_at",
+        "extraction_completed_at",
+        "created_at",
+        "activated_at",
+    ):
+        visible[key] = profile.get(key)
+    for key in (
+        "notes",
+        "summary",
+        "topics",
+        "methods",
+        "domains",
+        "datasets",
+        "tools",
+        "strengths",
+        "resources",
+        "interests",
+        "avoid",
+        "evidence",
+    ):
+        visible[key] = profile.get(key)
+    sources = [
+        {
+            key: item.get(key)
+            for key in (
+                "name",
+                "filename",
+                "kind",
+                "media_type",
+                "content_type",
+                "size",
+                "saved_at",
+                "uploaded_at",
+            )
+        }
+        for item in (profile.get("source_files") or [])
+        if isinstance(item, dict)
+    ]
+    visible["source_files"] = sources
+    return visible
+
 
 def handle_get(self, path, parsed) -> bool:  # noqa: C901
+    if path == "/api/ar/profiles":
+        st, b, h = _json_bytes(
+            {
+                "ok": True,
+                "profiles": [
+                    _profile_for_api(profile, summary=True)
+                    for profile in researcher_profiles.list_profiles()
+                ],
+            }
+        )
+        self._send(st, b, h)
+        return True
+
+    m_profile = re.match(rf"^/api/ar/profiles/{_PROFILE_ID_PATTERN}$", path)
+    if m_profile:
+        profile = researcher_profiles.read_profile(m_profile.group(1))
+        if profile:
+            st, b, h = _json_bytes(
+                {"ok": True, "profile": _profile_for_api(profile)}
+            )
+        else:
+            st, b, h = _json_bytes(
+                {"ok": False, "error": "researcher profile not found"}, 404
+            )
+        self._send(st, b, h)
+        return True
+
     m_ar_skills_report = re.match(
         r"^/api/tasks/([a-zA-Z0-9][a-zA-Z0-9_-]*)/ar/skills-report$", path
     )
@@ -200,7 +293,101 @@ def handle_get(self, path, parsed) -> bool:  # noqa: C901
 
     return False
 
+
+def handle_raw_post(self, path, parsed) -> bool:
+    """Handle profile source bytes before web.py consumes the body as JSON."""
+    match = re.match(
+        rf"^/api/ar/profiles/{_PROFILE_ID_PATTERN}/sources$", path
+    )
+    if not match:
+        return False
+    query = parse_qs(parsed.query or "")
+    filename = str((query.get("filename") or [""])[0]).strip()
+    if not filename:
+        st, b, h = _json_bytes({"ok": False, "error": "filename is required"}, 400)
+        self._send(st, b, h)
+        return True
+    try:
+        size = int(self.headers.get("Content-Length", "0") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    max_size = int(getattr(researcher_profiles, "MAX_SOURCE_BYTES", 20 * 1024 * 1024))
+    if size <= 0:
+        st, b, h = _json_bytes({"ok": False, "error": "source file is empty"}, 400)
+        self._send(st, b, h)
+        return True
+    if size > max_size:
+        st, b, h = _json_bytes(
+            {"ok": False, "error": f"source file exceeds {max_size // (1024 * 1024)} MiB"},
+            413,
+        )
+        self._send(st, b, h)
+        return True
+    data = self.rfile.read(size)
+    if len(data) != size:
+        st, b, h = _json_bytes(
+            {"ok": False, "error": "source upload ended before Content-Length"}, 400
+        )
+        self._send(st, b, h)
+        return True
+    try:
+        profile = researcher_profiles.save_source(
+            match.group(1),
+            filename,
+            data,
+            content_type=str(self.headers.get("Content-Type") or ""),
+        )
+    except (OSError, ValueError) as exc:
+        st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
+    else:
+        st, b, h = _json_bytes(
+            {"ok": True, "profile": _profile_for_api(profile)}, 201
+        )
+    self._send(st, b, h)
+    return True
+
+
 def handle_post(self, path, parsed, body) -> bool:  # noqa: C901
+    if path == "/api/ar/profiles":
+        try:
+            profile = researcher_profiles.create_profile(
+                str(body.get("name") or ""),
+                notes=str(body.get("notes") or ""),
+                fit_mode=str(body.get("fit_mode") or ""),
+            )
+        except (OSError, ValueError) as exc:
+            st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
+        else:
+            st, b, h = _json_bytes(
+                {"ok": True, "profile": _profile_for_api(profile)}, 201
+            )
+        self._send(st, b, h)
+        return True
+
+    m_profile_action = re.match(
+        rf"^/api/ar/profiles/{_PROFILE_ID_PATTERN}/(extract|activate)$",
+        path,
+    )
+    if m_profile_action:
+        profile_id, action = m_profile_action.groups()
+        try:
+            if action == "extract":
+                profile = researcher_profiles.start_extraction(
+                    profile_id, model=str(body.get("model") or "")
+                )
+                status = 202
+            else:
+                profile = researcher_profiles.activate_profile(profile_id)
+                status = 200
+        except (OSError, ValueError) as exc:
+            st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
+        else:
+            st, b, h = _json_bytes(
+                {"ok": True, "profile": _profile_for_api(profile)}, status
+            )
+        self._send(st, b, h)
+        return True
+
     m_ar_post = re.match(r"^/api/tasks/([^/]+)/ar/([a-z/-]+)$", path)
     if m_ar_post:
         root, pid = self._resolve_scope(parsed)
@@ -220,6 +407,39 @@ def handle_post(self, path, parsed, body) -> bool:  # noqa: C901
 
 
     return False
+
+
+def handle_put(self, path, parsed, body) -> bool:
+    match = re.match(rf"^/api/ar/profiles/{_PROFILE_ID_PATTERN}$", path)
+    if not match:
+        return False
+    try:
+        profile = researcher_profiles.update_profile(match.group(1), body)
+    except (OSError, ValueError) as exc:
+        st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
+    else:
+        st, b, h = _json_bytes(
+            {"ok": True, "profile": _profile_for_api(profile)}
+        )
+    self._send(st, b, h)
+    return True
+
+
+def handle_delete(self, path, parsed) -> bool:
+    match = re.match(rf"^/api/ar/profiles/{_PROFILE_ID_PATTERN}$", path)
+    if not match:
+        return False
+    try:
+        deleted = researcher_profiles.delete_profile(match.group(1))
+    except (OSError, ValueError) as exc:
+        st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
+    else:
+        st, b, h = _json_bytes(
+            {"ok": bool(deleted)},
+            200 if deleted else 404,
+        )
+    self._send(st, b, h)
+    return True
 
 
 def _ar_payload(self, root: Path, project_id: str, slug: str) -> dict[str, Any]:
@@ -398,6 +618,48 @@ def _ar_action(
     so they hand off to a thread and report progress through ar.json;
     the panel polls GET /ar the same way it polls everything else.
     """
+    if action == "background":
+        state, err = _ar_require_state(self, root, slug, ar.ROLE_STUDIO)
+        if state is None:
+            return {"ok": False, "error": err}, 400
+        profile_id = str(body.get("profile_id") or "").strip()
+        if profile_id and not _SLUG_RE.match(profile_id):
+            return {"ok": False, "error": "invalid researcher profile id"}, 400
+        fit_mode = str(
+            body.get("fit_mode") or ar.DEFAULT_BACKGROUND_FIT_MODE
+        ).strip().lower()
+        if fit_mode not in ar.BACKGROUND_FIT_MODES:
+            return {"ok": False, "error": "unknown background exploration mode"}, 400
+        if not profile_id:
+            ar.update_ar_state(
+                root,
+                slug,
+                background_profile_id="",
+                background_profile_snapshot={},
+                background_fit_mode=fit_mode,
+            )
+            return _ar_payload(self, root, project_id, slug), 200
+        try:
+            profile = researcher_profiles.read_profile(profile_id)
+        except ValueError:
+            return {"ok": False, "error": "invalid researcher profile id"}, 400
+        if not profile:
+            return {"ok": False, "error": "researcher profile not found"}, 404
+        if str(profile.get("status") or "") != "active":
+            return {
+                "ok": False,
+                "error": "activate the researcher profile before attaching it",
+            }, 409
+        snapshot = researcher_profiles.profile_snapshot(profile, fit_mode=fit_mode)
+        ar.update_ar_state(
+            root,
+            slug,
+            background_profile_id=profile_id,
+            background_profile_snapshot=snapshot,
+            background_fit_mode=fit_mode,
+        )
+        return _ar_payload(self, root, project_id, slug), 200
+
     if action == "search/suggest":
         state, err = _ar_require_state(self, root, slug, ar.ROLE_STUDIO)
         if state is None:

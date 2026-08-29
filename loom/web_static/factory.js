@@ -29,10 +29,20 @@ const S = {
   studioFp: '',              // last-rendered studio data, so unchanged polls
   paperFp: '',               // ...skip the DOM rebuild that eats hover/scroll
   fleetFp: '',               // same, for the fleet cards
+  profiles: [],              // safe profile summaries from /api/ar/profiles
+  profile: null,             // full profile currently open in the manager
+  profileDirty: false,       // do not silently replace edits in the modal
+  profileLoading: false,
+  profileRequest: '',
+  profilePoll: null,         // extraction polling is independent of task polling
+  profileTrigger: null,      // restore focus when the accessible modal closes
+  backgroundDirty: false,    // preserve an in-progress Studio attachment choice
 };
 
 const $ = (sel) => document.querySelector(sel);
 const el = (id) => document.getElementById(id);
+const FIT_MODES = new Set(['strict', 'balanced', 'exploratory']);
+const PROFILE_UPLOAD_RE = /\.(pdf|png|jpe?g|webp|txt|md)$/i;
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
@@ -113,6 +123,7 @@ function openStudio(slug) {
   S.slug = slug; S.parent = slug; S.picked = new Set(); S.data = null;
   S.graphSel = ''; S.graphHide = new Set();
   S.searchDirty = false;
+  S.backgroundDirty = false;
   S.studioFp = '';
   show('studio');
   loadTask();
@@ -430,6 +441,48 @@ function venueResearchState(state) {
   return 'not researched yet';
 }
 
+function normalFitMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  return FIT_MODES.has(mode) ? mode : 'balanced';
+}
+
+function fitModeLabel(value) {
+  return {
+    strict: 'Strict',
+    balanced: 'Balanced',
+    exploratory: 'Exploratory',
+  }[normalFitMode(value)];
+}
+
+function profileById(id) {
+  return S.profiles.find((profile) => String(profile.id || '') === String(id || '')) || null;
+}
+
+function renderStudioProfileControls(state) {
+  const profileId = String(state.background_profile_id || '');
+  const snapshot = state.background_profile_snapshot;
+  const safeSnapshot = snapshot && typeof snapshot === 'object' ? snapshot : {};
+  const profile = profileById(profileId);
+  const mode = normalFitMode(state.background_fit_mode || safeSnapshot.fit_mode);
+  const name = publicProfileText(
+    safeSnapshot.name || (profile && profile.name) || 'Attached profile',
+  );
+  const current = el('studio-profile-current');
+  current.textContent = profileId
+    ? `Active profile: ${name} · ${fitModeLabel(mode)} fit`
+    : 'No researcher profile attached; ideas use only the studio brief.';
+
+  const select = el('studio-profile-select');
+  const fit = el('studio-profile-fit-mode');
+  if (!S.backgroundDirty) {
+    select.value = profile && profile.status === 'active' ? profileId : '';
+    fit.value = mode;
+  }
+  fit.disabled = !select.value;
+  el('btn-studio-profile-attach').disabled = !select.value || S.busy;
+  el('btn-studio-profile-clear').disabled = !profileId || S.busy;
+}
+
 function renderStudio(d, state) {
   el('studio-title').textContent = d.title || S.slug;
   el('studio-eyebrow').textContent =
@@ -439,6 +492,7 @@ function renderStudio(d, state) {
     : (state.seed_idea
       || `Mining ${d.direction_label} and proposing ideas grounded in what it finds.`);
 
+  renderStudioProfileControls(state);
   const logs = d.logs || {};
   renderLog('papers-log', logs.papers, state.papers_status === 'running');
   renderLog('ideas-log', logs.ideas, state.ideas_status === 'running');
@@ -477,6 +531,34 @@ function renderStudioLists(papers, ideas) {
 
   el('ideas-list').innerHTML = ideas.map((idea) => {
     const spawned = idea.status === 'spawned';
+    const concepts = Array.isArray(idea.new_concepts)
+      ? idea.new_concepts.map((item) => String(item || '').trim()).filter(Boolean)
+      : [];
+    const match = String(idea.background_match || '').trim();
+    const resourceFit = String(idea.resource_fit || '').trim();
+    const understandable = String(idea.why_understandable || '').trim();
+    const rawFit = Number(idea.background_fit);
+    const hasFit = Object.prototype.hasOwnProperty.call(idea, 'background_fit')
+      && Number.isFinite(rawFit);
+    const fit = Math.max(0, Math.min(1, hasFit ? rawFit : 0));
+    // Normalization adds empty background fields to old cards. A zero with no
+    // explanation is therefore not evidence that profile fit was assessed.
+    const hasBackgroundDetail =
+      Boolean(match || resourceFit || understandable || concepts.length);
+    const showFit = hasFit && (fit > 0 || hasBackgroundDetail);
+    const showBackground = hasBackgroundDetail || showFit;
+    const background = showBackground ? `
+      ${showFit ? `<div class="rf-idea-fit" aria-label="Researcher background fit ${Math.round(fit * 100)} percent">
+        <span><b>Researcher fit</b><strong>${Math.round(fit * 100)}%</strong></span>
+        <span class="rf-idea-fit__track"><i style="width:${Math.round(fit * 100)}%"></i></span>
+      </div>` : ''}
+      ${match ? `<p><b>Background match.</b> ${esc(match)}</p>` : ''}
+      ${resourceFit ? `<p><b>Resource fit.</b> ${esc(resourceFit)}</p>` : ''}
+      ${concepts.length ? `<div class="rf-idea-concepts"><b>New concepts.</b> ${
+        concepts.map((item) => `<span>${esc(item)}</span>`).join('')
+      }</div>` : ''}
+      ${understandable ? `<p><b>Why understandable.</b> ${esc(understandable)}</p>` : ''}
+    ` : '';
     const edges = (idea.derived_from || []).map((e) => {
       const mark = e.verified === true ? ' ✓' : (e.paper && e.verified === false ? ' ✗' : '');
       const cls = e.verified === false && e.paper ? ' is-unverified' : '';
@@ -500,6 +582,7 @@ function renderStudioLists(papers, ideas) {
         ${idea.hypothesis ? `<p><b>Hypothesis.</b> ${esc(idea.hypothesis)}</p>` : ''}
         ${idea.novelty ? `<p><b>New because.</b> ${esc(idea.novelty)}</p>` : ''}
         ${idea.metric ? `<p><b>Metric.</b> ${esc(idea.metric)}</p>` : ''}
+        ${background}
         ${edges ? `<div class="rf-edges">${edges}</div>` : ''}
         ${spawned && idea.child_slug ? `<p><a href="#paper/${esc(idea.child_slug)}" data-open-paper="${esc(idea.child_slug)}">Open the paper →</a></p>` : ''}
       </div>
@@ -1111,6 +1194,632 @@ function renderFiles(d) {
   });
 }
 
+// ===== researcher profiles =====
+
+const PROFILE_EDIT_IDS = [
+  'profile-name',
+  'profile-fit-mode',
+  'profile-notes',
+  'profile-summary',
+  'profile-interests',
+  'profile-avoid',
+  'profile-resources',
+];
+
+function publicProfileText(value) {
+  // Profile payloads can contain storage metadata. This UI deliberately
+  // presents research content and original basenames only, never local paths
+  // or content hashes.
+  return String(value == null ? '' : value)
+    .replace(/\/(?:home|data|tmp|var|Users)\/[^\s"'<>]+/g, '[private path]')
+    .replace(/(^|[\s("'`])\/(?!\/)[^\s"'<>]+/g, '$1[private path]')
+    .replace(/(^|[\s("'`])~\/[^\s"'<>]+/g, '$1[private path]')
+    .replace(/[A-Za-z]:\\(?:[^\\\s"'<>]+\\)*[^\\\s"'<>]*/g, '[private path]')
+    .replace(/\b[a-f0-9]{32,}\b/gi, '[redacted]');
+}
+
+function safeSourceName(value) {
+  const parts = String(value == null ? '' : value).split(/[\\/]/);
+  return publicProfileText(parts[parts.length - 1] || 'source');
+}
+
+function profileStringItems(value) {
+  const values = Array.isArray(value) ? value : (value ? [value] : []);
+  return values.map((item) => {
+    if (item == null) return '';
+    if (typeof item !== 'object') return publicProfileText(item).trim();
+    for (const key of ['name', 'label', 'title', 'topic', 'value', 'claim']) {
+      if (item[key]) return publicProfileText(item[key]).trim();
+    }
+    return '';
+  }).filter(Boolean);
+}
+
+function profileEvidenceItems(value) {
+  const values = Array.isArray(value) ? value : (value ? [value] : []);
+  return values.map((item) => {
+    if (item == null) return '';
+    if (typeof item !== 'object') return publicProfileText(item).trim();
+    const claim = ['claim', 'text', 'summary', 'note']
+      .map((key) => item[key])
+      .find(Boolean);
+    const detail = ['detail', 'quote'].map((key) => item[key]).find(Boolean);
+    const sourceValue =
+      item.filename || item.source_file || item.source_name || item.source;
+    const source = sourceValue ? safeSourceName(sourceValue) : '';
+    const page = Number.isFinite(Number(item.page)) ? `p. ${Number(item.page)}` : '';
+    return [
+      claim ? publicProfileText(claim).trim() : '',
+      detail ? publicProfileText(detail).trim() : '',
+      [source, page].filter(Boolean).join(' · '),
+    ].filter(Boolean).join(' — ');
+  }).filter(Boolean);
+}
+
+function formatProfileBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} kB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function replaceProfileOptions(select, profiles, emptyLabel) {
+  const previous = select.value;
+  const options = [];
+  if (emptyLabel != null) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = emptyLabel;
+    options.push(option);
+  }
+  profiles.forEach((profile) => {
+    const option = document.createElement('option');
+    option.value = String(profile.id || '');
+    option.textContent = publicProfileText(profile.name || 'Untitled profile');
+    options.push(option);
+  });
+  select.replaceChildren(...options);
+  select.value = profiles.some((profile) => String(profile.id || '') === previous)
+    ? previous
+    : '';
+}
+
+function syncProfileSelectors() {
+  const active = S.profiles.filter((profile) => profile.status === 'active');
+  replaceProfileOptions(
+    el('new-profile'),
+    active,
+    'No profile — use only the studio brief',
+  );
+  replaceProfileOptions(
+    el('studio-profile-select'),
+    active,
+    active.length ? 'Choose an active profile' : 'No active profiles',
+  );
+
+  const manager = el('profile-select');
+  const wanted = String((S.profile && S.profile.id) || manager.value || '');
+  const options = S.profiles.map((profile) => {
+    const option = document.createElement('option');
+    option.value = String(profile.id || '');
+    option.textContent = `${publicProfileText(profile.name || 'Untitled profile')} · ${
+      profile.status === 'active' ? 'active' : 'draft'
+    }`;
+    return option;
+  });
+  if (!options.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No saved profiles';
+    option.disabled = true;
+    options.push(option);
+  }
+  manager.replaceChildren(...options);
+  if (wanted && S.profiles.some((profile) => String(profile.id || '') === wanted)) {
+    manager.value = wanted;
+  } else if (S.profiles.length) {
+    manager.value = String(S.profiles[0].id || '');
+  }
+  el('profile-count').textContent = S.profiles.length
+    ? `${S.profiles.length} saved · ${active.length} active`
+    : 'No profiles yet.';
+
+  const newFit = el('new-profile-fit-mode');
+  newFit.disabled = !el('new-profile').value;
+  if (newFit.disabled) newFit.value = 'balanced';
+  const state = (S.data && S.data.state) || {};
+  if (S.view === 'studio') renderStudioProfileControls(state);
+}
+
+async function loadProfileSummaries({ silent = false } = {}) {
+  try {
+    const data = await api('/api/ar/profiles');
+    S.profiles = Array.isArray(data.profiles) ? data.profiles : [];
+    syncProfileSelectors();
+    return true;
+  } catch (err) {
+    if (!silent) {
+      el('profile-modal-status').textContent =
+        `Could not load profiles: ${publicProfileText(err.message)}`;
+    }
+    return false;
+  }
+}
+
+function blankProfile() {
+  return {
+    id: '',
+    name: '',
+    status: 'draft',
+    fit_mode: 'balanced',
+    notes: '',
+    summary: '',
+    interests: [],
+    avoid: [],
+    resources: [],
+    topics: [],
+    methods: [],
+    domains: [],
+    datasets: [],
+    tools: [],
+    strengths: [],
+    evidence: [],
+    source_files: [],
+    extraction_status: 'idle',
+    extraction_error: '',
+  };
+}
+
+function profileSources(profile) {
+  if (Array.isArray(profile && profile.source_files)) return profile.source_files;
+  // `sources` was the pre-contract backend name. Reading it keeps the UI
+  // compatible during rolling upgrades; only safe fields are rendered.
+  return Array.isArray(profile && profile.sources) ? profile.sources : [];
+}
+
+function profileExtractionState(profile) {
+  const status = String((profile && profile.extraction_status) || 'idle');
+  if (status === 'succeeded') return 'done';
+  if (status === 'failed') return 'error';
+  return status;
+}
+
+function setProfileInput(id, value) {
+  const input = el(id);
+  const next = String(value == null ? '' : value);
+  if (input.value !== next) input.value = next;
+}
+
+function renderProfileFields(profile) {
+  const groups = [
+    ['Topics', profile.topics],
+    ['Methods', profile.methods],
+    ['Domains', profile.domains],
+    ['Datasets', profile.datasets],
+    ['Tools', profile.tools],
+    ['Strengths', profile.strengths],
+  ];
+  const sections = groups.map(([label, values]) => {
+    const items = profileStringItems(values);
+    if (!items.length) return '';
+    return `<section><h4>${label}</h4><div>${
+      items.map((item) => `<span>${esc(item)}</span>`).join('')
+    }</div></section>`;
+  }).filter(Boolean);
+  const evidence = profileEvidenceItems(profile.evidence);
+  if (evidence.length) {
+    sections.push(`<section class="rf-profile-evidence"><h4>Evidence</h4><ul>${
+      evidence.map((item) => `<li>${esc(item)}</li>`).join('')
+    }</ul></section>`);
+  }
+  el('profile-fields').innerHTML = sections.join('')
+    || '<div class="rf-empty rf-empty--compact">No extracted fields yet.</div>';
+}
+
+function extractionStatusText(profile) {
+  const status = profileExtractionState(profile);
+  const sources = profileSources(profile).length;
+  if (!profile.id) return 'Save the profile before adding sources.';
+  if (status === 'running') return 'Extracting… this panel will refresh automatically.';
+  if (status === 'done') return 'Extraction complete. Review the fields before activation.';
+  if (status === 'error') return 'Extraction failed. Correct the sources and try again.';
+  if (sources) return 'Sources are ready to extract.';
+  if (String(profile.notes || '').trim()) return 'The saved text description is ready to extract.';
+  return 'Upload source files or add a text description to build the profile.';
+}
+
+function updateProfileActions() {
+  const profile = S.profile || blankProfile();
+  const extraction = profileExtractionState(profile);
+  const running = extraction === 'running';
+  const hasId = Boolean(profile.id);
+  const hasSources = profileSources(profile).length > 0;
+  const hasDescription = Boolean(String(profile.notes || '').trim());
+  const name = el('profile-name').value.trim();
+  const files = el('profile-files').files;
+  const locked = S.profileLoading || running;
+
+  PROFILE_EDIT_IDS.forEach((id) => { el(id).disabled = locked; });
+  el('profile-files').disabled = !hasId || locked || S.profileDirty;
+  el('btn-profile-upload').disabled =
+    !hasId || locked || S.profileDirty || !(files && files.length);
+  el('btn-profile-save').disabled = locked || !name || !S.profileDirty;
+  el('btn-profile-extract').disabled =
+    !hasId || locked || S.profileDirty || !(hasSources || hasDescription);
+  el('btn-profile-activate').disabled =
+    !hasId || locked || S.profileDirty
+    || extraction !== 'done'
+    || profile.status === 'active';
+  el('btn-profile-activate').textContent =
+    profile.status === 'active' ? 'Active' : 'Activate';
+  el('btn-profile-delete').disabled = !hasId || locked;
+}
+
+function clearProfilePoll() {
+  if (S.profilePoll) clearTimeout(S.profilePoll);
+  S.profilePoll = null;
+}
+
+function scheduleProfilePoll() {
+  clearProfilePoll();
+  const profile = S.profile;
+  if (
+    el('profiles-modal').hidden
+    || !profile
+    || !profile.id
+    || profileExtractionState(profile) !== 'running'
+  ) return;
+  const id = String(profile.id);
+  S.profilePoll = setTimeout(async () => {
+    const before = profileExtractionState(S.profile);
+    await loadProfile(id, { polling: true });
+    if (before === 'running' && profileExtractionState(S.profile) !== 'running') {
+      await loadProfileSummaries({ silent: true });
+    }
+  }, 2500);
+}
+
+function renderProfile() {
+  const profile = S.profile || blankProfile();
+  setProfileInput('profile-name', profile.name);
+  setProfileInput('profile-fit-mode', normalFitMode(profile.fit_mode));
+  setProfileInput('profile-notes', profile.notes);
+  setProfileInput('profile-summary', profile.summary);
+  setProfileInput('profile-interests', profileStringItems(profile.interests).join('\n'));
+  setProfileInput('profile-avoid', profileStringItems(profile.avoid).join('\n'));
+  setProfileInput('profile-resources', profileStringItems(profile.resources).join('\n'));
+
+  const status = el('profile-status');
+  status.textContent = profile.id ? (profile.status === 'active' ? 'active' : 'draft') : 'new';
+  status.className = `rf-pill${profile.status === 'active' ? ' rf-pill--done' : ''}`;
+  el('profile-extraction-status').textContent = extractionStatusText(profile);
+
+  const error = el('profile-extraction-error');
+  error.textContent = publicProfileText(profile.extraction_error || '');
+  error.hidden = !error.textContent;
+
+  const sources = profileSources(profile);
+  el('profile-source-list').innerHTML = sources.map((file) => {
+    const name = safeSourceName(file && (file.name || file.filename));
+    const detail = [
+      publicProfileText(
+        (file && (file.kind || file.media_type || file.content_type)) || '',
+      ),
+      formatProfileBytes(file && file.size),
+    ].filter(Boolean).join(' · ');
+    return `<li><span>${esc(name)}</span><small>${esc(detail)}</small></li>`;
+  }).join('') || '<li class="rf-hint">No source files uploaded.</li>';
+  renderProfileFields(profile);
+
+  if (profile.id && S.profiles.some((item) => String(item.id || '') === String(profile.id))) {
+    el('profile-select').value = String(profile.id);
+  } else {
+    el('profile-select').selectedIndex = -1;
+  }
+  updateProfileActions();
+  scheduleProfilePoll();
+}
+
+function profileListFromInput(id) {
+  return el(id).value.split('\n').map((value) => value.trim()).filter(Boolean);
+}
+
+function profilePayloadFromForm() {
+  return {
+    name: el('profile-name').value.trim(),
+    fit_mode: normalFitMode(el('profile-fit-mode').value),
+    notes: el('profile-notes').value.trim(),
+    summary: el('profile-summary').value.trim(),
+    interests: profileListFromInput('profile-interests'),
+    avoid: profileListFromInput('profile-avoid'),
+    resources: profileListFromInput('profile-resources'),
+  };
+}
+
+function beginNewProfile({ focus = true } = {}) {
+  clearProfilePoll();
+  S.profileRequest = '';
+  S.profile = blankProfile();
+  S.profileDirty = false;
+  el('profile-select').selectedIndex = -1;
+  el('profile-files').value = '';
+  el('profile-modal-status').textContent = 'Enter a name, notes, and default fit mode, then save.';
+  renderProfile();
+  if (focus) el('profile-name').focus();
+}
+
+async function loadProfile(id, { polling = false } = {}) {
+  if (!id) { beginNewProfile(); return null; }
+  clearProfilePoll();
+  const token = {};
+  S.profileRequest = token;
+  S.profileLoading = true;
+  if (!polling) el('profile-modal-status').textContent = 'Loading profile…';
+  updateProfileActions();
+  try {
+    const data = await api(`/api/ar/profiles/${encodeURIComponent(id)}`);
+    if (S.profileRequest !== token) return null;
+    S.profile = data.profile || blankProfile();
+    S.profileDirty = false;
+    el('profile-files').value = '';
+    if (!polling) el('profile-modal-status').textContent = '';
+    return S.profile;
+  } catch (err) {
+    if (S.profileRequest === token) {
+      el('profile-modal-status').textContent =
+        `Could not load profile: ${publicProfileText(err.message)}`;
+    }
+    return null;
+  } finally {
+    if (S.profileRequest === token) {
+      S.profileLoading = false;
+      renderProfile();
+    }
+  }
+}
+
+async function openProfiles() {
+  S.profileTrigger = document.activeElement;
+  el('profiles-modal').hidden = false;
+  el('profiles-modal').querySelector('[role="dialog"]').focus();
+  el('profile-modal-status').textContent = 'Loading profiles…';
+  const loaded = await loadProfileSummaries();
+  if (!loaded || el('profiles-modal').hidden) return;
+
+  if (S.profileDirty) {
+    renderProfile();
+    el('profile-modal-status').textContent = 'Unsaved changes.';
+    return;
+  }
+  const currentId = String((S.profile && S.profile.id) || '');
+  const selected = S.profiles.some((profile) => String(profile.id || '') === currentId)
+    ? currentId
+    : String((S.profiles[0] && S.profiles[0].id) || '');
+  if (selected) await loadProfile(selected);
+  else beginNewProfile({ focus: false });
+}
+
+function closeProfiles() {
+  if (
+    S.profileDirty
+    && !window.confirm('Discard the unsaved profile changes?')
+  ) return false;
+  clearProfilePoll();
+  S.profileRequest = '';
+  S.profileLoading = false;
+  S.profileDirty = false;
+  el('profiles-modal').hidden = true;
+  if (S.profileTrigger && typeof S.profileTrigger.focus === 'function') {
+    S.profileTrigger.focus();
+  }
+  return true;
+}
+
+async function saveProfile() {
+  const payload = profilePayloadFromForm();
+  if (!payload.name) {
+    el('profile-modal-status').textContent = 'A profile name is required.';
+    el('profile-name').focus();
+    return null;
+  }
+  S.profileLoading = true;
+  el('profile-modal-status').textContent = 'Saving…';
+  updateProfileActions();
+  let created = null;
+  try {
+    let data;
+    if (S.profile && S.profile.id) {
+      data = await api(`/api/ar/profiles/${encodeURIComponent(S.profile.id)}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      });
+    } else {
+      data = await api('/api/ar/profiles', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: payload.name,
+          notes: payload.notes,
+          fit_mode: payload.fit_mode,
+        }),
+      });
+      created = data.profile || {};
+      if (created.id) S.profile = { ...created, ...payload };
+      const hasExtended = payload.summary
+        || payload.interests.length || payload.avoid.length || payload.resources.length;
+      if (created.id && hasExtended) {
+        data = await api(`/api/ar/profiles/${encodeURIComponent(created.id)}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+      }
+    }
+    S.profile = data.profile || S.profile || blankProfile();
+    S.profileDirty = false;
+    el('profile-files').value = '';
+    await loadProfileSummaries({ silent: true });
+    el('profile-modal-status').textContent = 'Saved.';
+    renderProfile();
+    return S.profile;
+  } catch (err) {
+    if (created && created.id) {
+      S.profile = { ...created, ...payload };
+      await loadProfileSummaries({ silent: true });
+      renderProfile();
+      el('profile-modal-status').textContent =
+        `Profile created, but extra fields were not saved: ${publicProfileText(err.message)}`;
+    } else {
+      el('profile-modal-status').textContent =
+        `Save failed: ${publicProfileText(err.message)}`;
+    }
+    return null;
+  } finally {
+    S.profileLoading = false;
+    updateProfileActions();
+  }
+}
+
+function profileMimeType(file) {
+  if (file.type) return file.type;
+  const name = String(file.name || '').toLowerCase();
+  if (name.endsWith('.pdf')) return 'application/pdf';
+  if (name.endsWith('.png')) return 'image/png';
+  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
+  if (name.endsWith('.webp')) return 'image/webp';
+  if (name.endsWith('.md')) return 'text/markdown';
+  if (name.endsWith('.txt')) return 'text/plain';
+  return 'application/octet-stream';
+}
+
+async function uploadProfileFiles() {
+  const profile = S.profile || {};
+  const files = [...(el('profile-files').files || [])];
+  if (!profile.id || !files.length || S.profileDirty) return;
+  const unsupported = files.filter((file) => !PROFILE_UPLOAD_RE.test(file.name || ''));
+  if (unsupported.length) {
+    el('profile-modal-status').textContent =
+      `Unsupported file: ${safeSourceName(unsupported[0].name)}`;
+    return;
+  }
+
+  S.profileLoading = true;
+  updateProfileActions();
+  let latest = profile;
+  try {
+    for (let i = 0; i < files.length; i += 1) {
+      const file = files[i];
+      const filename = safeSourceName(file.name);
+      el('profile-modal-status').textContent =
+        `Uploading ${i + 1} of ${files.length}: ${filename}`;
+      const data = await api(
+        `/api/ar/profiles/${encodeURIComponent(profile.id)}/sources?filename=${
+          encodeURIComponent(filename)
+        }`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': profileMimeType(file) },
+          body: file,
+        },
+      );
+      // The contract returns the full profile. During a rolling backend
+      // upgrade an older handler may return only source metadata, so accept a
+      // response here only when it still identifies the profile.
+      if (data.profile && data.profile.id) latest = data.profile;
+    }
+    const refreshed = await api(`/api/ar/profiles/${encodeURIComponent(profile.id)}`);
+    latest = refreshed.profile || latest;
+    S.profile = latest;
+    el('profile-files').value = '';
+    await loadProfileSummaries({ silent: true });
+    el('profile-modal-status').textContent =
+      `Uploaded ${files.length} file${files.length === 1 ? '' : 's'}.`;
+    renderProfile();
+  } catch (err) {
+    S.profile = latest;
+    el('profile-modal-status').textContent =
+      `Upload failed: ${publicProfileText(err.message)}`;
+    renderProfile();
+  } finally {
+    S.profileLoading = false;
+    updateProfileActions();
+  }
+}
+
+async function extractProfile() {
+  const profile = S.profile || {};
+  if (!profile.id || S.profileDirty) return;
+  S.profileLoading = true;
+  el('profile-modal-status').textContent = 'Starting extraction…';
+  updateProfileActions();
+  try {
+    const data = await api(`/api/ar/profiles/${encodeURIComponent(profile.id)}/extract`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    S.profile = data.profile || profile;
+    el('profile-modal-status').textContent = 'Extraction started. You can close this panel while it runs.';
+    await loadProfileSummaries({ silent: true });
+  } catch (err) {
+    el('profile-modal-status').textContent =
+      `Extraction failed to start: ${publicProfileText(err.message)}`;
+  } finally {
+    S.profileLoading = false;
+    renderProfile();
+  }
+}
+
+async function activateProfile() {
+  const profile = S.profile || {};
+  if (!profile.id || S.profileDirty || profileExtractionState(profile) !== 'done') return;
+  S.profileLoading = true;
+  el('profile-modal-status').textContent = 'Activating…';
+  updateProfileActions();
+  try {
+    const data = await api(`/api/ar/profiles/${encodeURIComponent(profile.id)}/activate`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    S.profile = data.profile || profile;
+    S.profileDirty = false;
+    await loadProfileSummaries({ silent: true });
+    el('profile-modal-status').textContent = 'Active and available to Studios.';
+    toast(`${publicProfileText(S.profile.name || 'Researcher profile')} activated.`);
+  } catch (err) {
+    el('profile-modal-status').textContent =
+      `Activation failed: ${publicProfileText(err.message)}`;
+  } finally {
+    S.profileLoading = false;
+    renderProfile();
+  }
+}
+
+async function deleteProfile() {
+  const profile = S.profile || {};
+  if (!profile.id) return;
+  const name = publicProfileText(profile.name || 'this profile');
+  if (!window.confirm(`Delete "${name}" and its uploaded sources? This cannot be undone.`)) return;
+  S.profileLoading = true;
+  el('profile-modal-status').textContent = 'Deleting…';
+  updateProfileActions();
+  try {
+    await api(`/api/ar/profiles/${encodeURIComponent(profile.id)}`, { method: 'DELETE' });
+    S.profile = null;
+    S.profileDirty = false;
+    clearProfilePoll();
+    await loadProfileSummaries({ silent: true });
+    toast('Researcher profile deleted.');
+    const next = S.profiles[0];
+    if (next) await loadProfile(String(next.id || ''));
+    else beginNewProfile({ focus: false });
+  } catch (err) {
+    el('profile-modal-status').textContent =
+      `Delete failed: ${publicProfileText(err.message)}`;
+  } finally {
+    S.profileLoading = false;
+    updateProfileActions();
+  }
+}
+
 // ===== skills =====
 
 // When a paper is open, the modal leads with what THIS paper was told and
@@ -1426,7 +2135,11 @@ el('btn-refresh').addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = 'Refreshing…';
   try {
-    await Promise.all([loadFleet(), S.view !== 'fleet' ? loadTask() : null]);
+    await Promise.all([
+      loadFleet(),
+      S.view !== 'fleet' ? loadTask() : null,
+      loadProfileSummaries({ silent: true }),
+    ]);
   } finally {
     btn.disabled = false;
     btn.textContent = 'Refresh';
@@ -1549,6 +2262,82 @@ el('btn-spawn').addEventListener('click', async () => {
   loadTask();
 });
 
+el('studio-profile-select').addEventListener('change', () => {
+  S.backgroundDirty = true;
+  const profile = profileById(el('studio-profile-select').value);
+  if (profile) el('studio-profile-fit-mode').value = normalFitMode(profile.fit_mode);
+  const state = (S.data && S.data.state) || {};
+  renderStudioProfileControls(state);
+});
+el('studio-profile-fit-mode').addEventListener('change', () => {
+  S.backgroundDirty = true;
+});
+el('btn-studio-profile-attach').addEventListener('click', async () => {
+  const profileId = el('studio-profile-select').value;
+  const profile = profileById(profileId);
+  if (!profileId || !profile || profile.status !== 'active') {
+    toast('Choose an active researcher profile first.', true);
+    return;
+  }
+  const fitMode = normalFitMode(el('studio-profile-fit-mode').value);
+  const result = await act(S.slug, 'background', {
+    profile_id: profileId,
+    fit_mode: fitMode,
+  }, 'Attaching researcher profile');
+  if (result) {
+    S.backgroundDirty = false;
+    toast(`${publicProfileText(profile.name || 'Researcher profile')} attached with ${fitModeLabel(fitMode).toLowerCase()} fit.`);
+  }
+  loadTask();
+});
+el('btn-studio-profile-clear').addEventListener('click', async () => {
+  const result = await act(S.slug, 'background', {
+    profile_id: '',
+    fit_mode: 'balanced',
+  }, 'Clearing researcher profile');
+  if (result) {
+    S.backgroundDirty = false;
+    el('studio-profile-select').value = '';
+    el('studio-profile-fit-mode').value = 'balanced';
+    toast('Researcher profile cleared from this studio.');
+  }
+  loadTask();
+});
+
+el('btn-profiles').addEventListener('click', openProfiles);
+el('btn-profiles-close').addEventListener('click', closeProfiles);
+el('btn-profile-close').addEventListener('click', closeProfiles);
+el('profiles-modal').addEventListener('click', (ev) => {
+  if (ev.target.id === 'profiles-modal') closeProfiles();
+});
+el('btn-profile-new').addEventListener('click', () => {
+  if (S.profileDirty && !window.confirm('Discard the unsaved profile changes?')) return;
+  beginNewProfile();
+});
+el('profile-select').addEventListener('change', (ev) => {
+  const next = ev.target.value;
+  const current = String((S.profile && S.profile.id) || '');
+  if (S.profileDirty && !window.confirm('Discard the unsaved profile changes?')) {
+    if (current) ev.target.value = current;
+    else ev.target.selectedIndex = -1;
+    return;
+  }
+  loadProfile(next);
+});
+PROFILE_EDIT_IDS.forEach((id) => {
+  el(id).addEventListener(id === 'profile-fit-mode' ? 'change' : 'input', () => {
+    S.profileDirty = true;
+    el('profile-modal-status').textContent = 'Unsaved changes.';
+    updateProfileActions();
+  });
+});
+el('profile-files').addEventListener('change', updateProfileActions);
+el('btn-profile-save').addEventListener('click', saveProfile);
+el('btn-profile-upload').addEventListener('click', uploadProfileFiles);
+el('btn-profile-extract').addEventListener('click', extractProfile);
+el('btn-profile-activate').addEventListener('click', activateProfile);
+el('btn-profile-delete').addEventListener('click', deleteProfile);
+
 el('btn-skills').addEventListener('click', openSkills);
 el('btn-skills-close').addEventListener('click', () => { el('skills-modal').hidden = true; });
 el('btn-goto-ideas').addEventListener('click', () => {
@@ -1608,13 +2397,47 @@ el('review-modal').addEventListener('click', (ev) => {
   if (ev.target.id === 'review-modal') el('review-modal').hidden = true;
 });
 const anyModalOpen = () =>
-  ['review-modal', 'studio-modal', 'skills-modal'].some((id) => !el(id).hidden);
+  ['profiles-modal', 'review-modal', 'studio-modal', 'skills-modal']
+    .some((id) => !el(id).hidden);
 
 document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Tab' && !el('profiles-modal').hidden) {
+    const dialog = el('profiles-modal').querySelector('[role="dialog"]');
+    const focusable = [...dialog.querySelectorAll(
+      'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])',
+    )].filter((node) => node.offsetParent !== null);
+    if (focusable.length) {
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (document.activeElement === dialog) {
+        ev.preventDefault();
+        (ev.shiftKey ? last : first).focus();
+      } else if (ev.shiftKey && document.activeElement === first) {
+        ev.preventDefault();
+        last.focus();
+      } else if (!ev.shiftKey && document.activeElement === last) {
+        ev.preventDefault();
+        first.focus();
+      } else if (!dialog.contains(document.activeElement)) {
+        ev.preventDefault();
+        first.focus();
+      }
+    }
+    return;
+  }
   if (ev.key !== 'Escape') return;
-  if (!el('review-modal').hidden) el('review-modal').hidden = true;
+  let handled = true;
+  if (!el('profiles-modal').hidden) closeProfiles();
+  else if (!el('review-modal').hidden) el('review-modal').hidden = true;
   else if (!el('studio-modal').hidden) el('studio-modal').hidden = true;
   else if (!el('skills-modal').hidden) el('skills-modal').hidden = true;
+  else handled = false;
+  if (handled) {
+    // The same Escape must not also clear a graph selection underneath the
+    // dialog in the later keyboard listener.
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+  }
 });
 
 // --- new studio ---
@@ -1628,6 +2451,7 @@ el('btn-new-studio').addEventListener('click', () => {
     if (cat.default_venue) el('new-venue').value = cat.default_venue;
     if (cat.default_max_rounds) el('new-rounds').value = cat.default_max_rounds;
   }
+  syncProfileSelectors();
   el('studio-modal-status').textContent = '';
   syncStudioModalMode();
   el('studio-modal').hidden = false;
@@ -1640,6 +2464,12 @@ el('new-title').addEventListener('keydown', (ev) => {
 });
 el('new-direction').addEventListener('change', () => {
   el('new-custom-direction').hidden = el('new-direction').value !== 'custom';
+});
+el('new-profile').addEventListener('change', () => {
+  const profile = profileById(el('new-profile').value);
+  if (profile) el('new-profile-fit-mode').value = normalFitMode(profile.fit_mode);
+  else el('new-profile-fit-mode').value = 'balanced';
+  el('new-profile-fit-mode').disabled = !profile;
 });
 // Last-cycle studios take their direction from what the venue rewarded, so
 // the Direction picker disappears in that mode; the Venue picker stays - it
@@ -1666,9 +2496,17 @@ el('btn-studio-create').addEventListener('click', async () => {
   const mode = document.querySelector('input[name="new-mode"]:checked').value;
   const seed = el('new-seed').value.trim();
   const direction = el('new-direction').value;
+  const backgroundProfileId = el('new-profile').value;
+  const backgroundProfile = profileById(backgroundProfileId);
+  const backgroundFitMode = normalFitMode(el('new-profile-fit-mode').value);
   const status = el('studio-modal-status');
   if (!title) { status.textContent = 'A name is required.'; return; }
   if (mode === 'seed' && !seed) { status.textContent = 'Describe the idea, or switch to auto.'; return; }
+  if (backgroundProfileId && (!backgroundProfile || backgroundProfile.status !== 'active')) {
+    status.textContent = 'That researcher profile is no longer active. Choose another one.';
+    await loadProfileSummaries({ silent: true });
+    return;
+  }
   // "Last cycle" is a kickoff choice, not a studio state: the backend still
   // runs the studio in auto mode, but the first job is the venue deep
   // research, and ideas chain from its report instead of an arXiv haul.
@@ -1700,10 +2538,15 @@ el('btn-studio-create').addEventListener('click', async () => {
         ar_venue_url: venueKickoff ? venueUrl : '',
         ar_venue_kickoff: venueKickoff,
         ar_max_rounds: Number(el('new-rounds').value || 10),
+        ar_background_profile_id: backgroundProfileId,
+        ar_background_fit_mode: backgroundFitMode,
       }),
     });
     el('studio-modal').hidden = true;
     el('new-title').value = ''; el('new-seed').value = ''; el('new-venue-url').value = '';
+    el('new-profile').value = '';
+    el('new-profile-fit-mode').value = 'balanced';
+    el('new-profile-fit-mode').disabled = true;
     openStudio(meta.slug);
     if (venueKickoff) {
       const started = await act(
@@ -1735,6 +2578,9 @@ el('btn-studio-create').addEventListener('click', async () => {
   if (!S.project) {
     toast('No AR project registered yet — restart Loom to create one.', true);
   }
+  // Profiles are optional; do not hold the existing Factory boot path behind
+  // this extra request. The selectors fill as soon as it returns.
+  loadProfileSummaries({ silent: true });
   readHash();
   loadFleet();
   startPolling();

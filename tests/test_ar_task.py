@@ -286,12 +286,32 @@ def test_normalize_idea_fills_missing_fields() -> None:
     assert idea["id"] == "idea-1"
     assert idea["experiments"] == ["one run"]
     assert idea["score"] == 0.5
+    assert idea["background_fit"] == 0.0
+    assert idea["new_concepts"] == []
     assert idea["status"] == ar.IDEA_STATUS_PROPOSED
 
     blank = ar.normalize_idea("not a dict", 3)
     assert blank["id"] == "idea-4"
     assert blank["title"] == "Idea 4"
     assert blank["score"] == 0.0
+
+
+def test_normalize_idea_carries_background_fit_fields() -> None:
+    idea = ar.normalize_idea(
+        {
+            "title": "Profile-aware idea",
+            "background_fit": "1.4",
+            "background_match": "Reuses quantization experience.",
+            "why_understandable": "Only the benchmark is new.",
+            "new_concepts": "KV-cache evaluation",
+            "resource_fit": "One local GPU.",
+        }
+    )
+    assert idea["background_fit"] == 1.0
+    assert idea["background_match"] == "Reuses quantization experience."
+    assert idea["why_understandable"] == "Only the benchmark is new."
+    assert idea["new_concepts"] == ["KV-cache evaluation"]
+    assert idea["resource_fit"] == "One local GPU."
 
 
 def test_normalize_edge() -> None:
@@ -1822,12 +1842,57 @@ def test_studio_prompt_reflects_mode(tmp_path: Path) -> None:
     auto = ar.studio_prompt(tmp_path, ar.new_studio_state(mode="auto"), "goal")
     assert "Mode: auto direction" in auto
     assert "goal" in auto
+    assert "=== Researcher background (" not in auto
 
     seed = ar.studio_prompt(
         tmp_path, ar.new_studio_state(mode="seed", seed_idea="try rescaling"), ""
     )
     assert "Mode: seed idea" in seed
     assert "try rescaling" in seed
+
+
+def test_researcher_background_is_snapshotted_and_injected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = ar.new_studio_state(
+        direction="quantization",
+        background_profile_id="profile-one",
+        background_profile_snapshot={
+            "id": "profile-one",
+            "name": "Researcher One",
+            "summary": "Works on low-bit inference.",
+            "methods": ["post-training quantization"],
+            "resources": ["one GPU"],
+        },
+        background_fit_mode="strict",
+    )
+    assert state["background_profile_id"] == "profile-one"
+    assert state["background_profile_snapshot"]["fit_mode"] == "strict"
+
+    pane_prompt = ar.studio_prompt(tmp_path, state, "")
+    assert "Researcher background" in pane_prompt
+    assert "Works on low-bit inference." in pane_prompt
+    assert "Strict" in pane_prompt
+
+    captured: list[str] = []
+
+    def fake_run(prompt: str, **_kwargs: object) -> dict[str, object]:
+        captured.append(prompt)
+        if "bounded arXiv search" in prompt:
+            return {
+                "ok": True,
+                "text": '{"terms":["low-bit inference"],"categories":["cs.LG"]}',
+            }
+        return {
+            "ok": True,
+            "text": '[{"title":"T","background_fit":0.9}]',
+        }
+
+    monkeypatch.setattr(ar, "_run_headless", fake_run)
+    assert ar.suggest_search_settings(state)["ok"]
+    assert ar.propose_ideas(state, "skill")["ok"]
+    assert len(captured) == 2
+    assert all("Works on low-bit inference." in prompt for prompt in captured)
 
 
 # --- catalog ----------------------------------------------------------------
