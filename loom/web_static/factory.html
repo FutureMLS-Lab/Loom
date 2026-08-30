@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Paper Factory</title>
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
-  <link rel="stylesheet" href="/static/factory.css?v=20260818-1" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260829-2" />
 </head>
 <body>
 
@@ -42,6 +42,7 @@
     <span class="rf-stat rf-stat--live" id="stat-running" hidden><b>—</b> running</span>
     <span class="rf-stat rf-stat--alert" id="stat-waiting" hidden><b>—</b> waiting on you</span>
     <span class="rf-stat rf-stat--info" id="stat-cost"><b>—</b> spent</span>
+    <button type="button" class="rf-btn rf-btn--ghost" id="btn-profiles">Manage researcher profiles</button>
     <button type="button" class="rf-btn rf-btn--ghost" id="btn-skills">Skills</button>
     <button type="button" class="rf-btn rf-btn--ghost" id="btn-refresh">Refresh</button>
   </nav>
@@ -94,6 +95,27 @@
       <p class="rf-lede" id="studio-sub"></p>
     </div>
     <button type="button" class="rf-btn rf-btn--danger rf-btn--sm" id="btn-studio-delete">Delete studio</button>
+  </section>
+
+  <section class="rf-profile-attach" aria-labelledby="studio-profile-title">
+    <div class="rf-profile-attach__current">
+      <h2 id="studio-profile-title">Researcher profile</h2>
+      <p class="rf-hint" id="studio-profile-current" aria-live="polite">No researcher profile attached.</p>
+    </div>
+    <div class="rf-profile-attach__controls">
+      <label class="rf-sr-only" for="studio-profile-select">Active researcher profile</label>
+      <select id="studio-profile-select" aria-describedby="studio-profile-current">
+        <option value="">No active profiles</option>
+      </select>
+      <label class="rf-sr-only" for="studio-profile-fit-mode">Background fit mode</label>
+      <select id="studio-profile-fit-mode" aria-label="Background fit mode">
+        <option value="strict">Strict fit</option>
+        <option value="balanced" selected>Balanced fit</option>
+        <option value="exploratory">Exploratory fit</option>
+      </select>
+      <button type="button" class="rf-btn rf-btn--sm" id="btn-studio-profile-attach">Attach</button>
+      <button type="button" class="rf-btn rf-btn--ghost rf-btn--sm" id="btn-studio-profile-clear">Clear</button>
+    </div>
   </section>
 
   <!-- The studio is a sequence, so show it as one: each step says what it is
@@ -319,6 +341,26 @@
       <label class="rf-mode"><input type="radio" name="new-mode" value="venue" />
         <span><b>Last cycle</b><small>Deep-research what this venue rewarded last cycle — best papers, orals, hot topics — and propose ideas from that. No arXiv mining.</small></span></label>
     </div>
+    <fieldset class="rf-studio-profile">
+      <legend>Researcher background <span class="rf-hint">optional</span></legend>
+      <div class="rf-row">
+        <div>
+          <label for="new-profile">Active profile</label>
+          <select id="new-profile">
+            <option value="">No profile — use only the studio brief</option>
+          </select>
+        </div>
+        <div>
+          <label for="new-profile-fit-mode">Fit mode</label>
+          <select id="new-profile-fit-mode">
+            <option value="strict">Strict — stay close to established work</option>
+            <option value="balanced" selected>Balanced — mix familiar and new</option>
+            <option value="exploratory">Exploratory — favor new territory</option>
+          </select>
+        </div>
+      </div>
+      <p class="rf-hint">Only ready, active profiles can guide a studio.</p>
+    </fieldset>
     <label for="new-venue-url" id="new-venue-url-label" hidden>Venue page to start from (required — it decides which venue gets researched)</label>
     <input type="text" id="new-venue-url" placeholder="https://… — awards / accepted-papers / program page; the research agent crawls from here" hidden />
     <label for="new-seed" id="new-seed-label">What the paper should be about (optional)</label>
@@ -329,6 +371,86 @@
       <span class="rf-hint" id="studio-modal-status"></span>
       <button type="button" class="rf-btn" id="btn-studio-cancel">Cancel</button>
       <button type="button" class="rf-btn rf-btn--primary" id="btn-studio-create">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Researcher profiles ============ -->
+<div class="rf-modal" id="profiles-modal" hidden>
+  <div class="rf-modal__card rf-modal__card--wide rf-profile-modal__card"
+       role="dialog" aria-modal="true" aria-labelledby="profiles-modal-title"
+       aria-describedby="profiles-modal-description" tabindex="-1">
+    <div class="rf-modal__head">
+      <div>
+        <p class="rf-eyebrow">Idea fit</p>
+        <h2 id="profiles-modal-title">Researcher profiles</h2>
+      </div>
+      <button type="button" class="rf-x" id="btn-profiles-close" aria-label="Close researcher profiles">×</button>
+    </div>
+    <p class="rf-hint" id="profiles-modal-description">
+      Choose a Google Scholar profile PDF, add an optional note, and generate a profile that is ready to use in Studios.
+    </p>
+
+    <div class="rf-profile-workspace">
+      <aside class="rf-profile-picker" aria-label="Saved researcher profiles">
+        <label for="profile-select">Saved profiles</label>
+        <select id="profile-select" size="6" aria-label="Select a researcher profile"></select>
+        <button type="button" class="rf-btn rf-btn--ghost rf-btn--sm" id="btn-profile-new">New profile</button>
+        <p class="rf-hint" id="profile-count"></p>
+      </aside>
+
+      <div class="rf-profile-editor">
+        <div class="rf-profile-state">
+          <span class="rf-pill" id="profile-status">new</span>
+          <span class="rf-hint" id="profile-extraction-status" aria-live="polite">
+            Choose one Google Scholar profile PDF to begin.
+          </span>
+        </div>
+
+        <div class="rf-profile-inputs">
+          <label for="profile-pdf">Google Scholar profile PDF</label>
+          <input type="file" id="profile-pdf" accept=".pdf,application/pdf"
+                 aria-describedby="profile-pdf-hint" />
+          <p class="rf-hint" id="profile-pdf-hint">
+            Choose one PDF exported from Google Scholar. A saved PDF can be reused when regenerating.
+          </p>
+
+          <label for="profile-notes">Extra note <span class="rf-hint">(optional)</span></label>
+          <textarea id="profile-notes" rows="3"
+                    placeholder="Add context the research profile may not capture."></textarea>
+        </div>
+
+        <section class="rf-profile-extracted" aria-labelledby="profile-extracted-title">
+          <div class="rf-profile-subhead">
+            <div>
+              <h3 id="profile-extracted-title">Generated profile</h3>
+              <p class="rf-hint">This extracted background is read-only. Generate again to refresh it.</p>
+            </div>
+          </div>
+          <div class="rf-profile-generated-name" id="profile-generated-name-wrap" hidden>
+            <span>Profile</span>
+            <strong id="profile-generated-name"></strong>
+          </div>
+          <section class="rf-profile-summary" id="profile-summary-wrap" aria-labelledby="profile-summary-title" hidden>
+            <h4 id="profile-summary-title">Summary</h4>
+            <p id="profile-summary-output"></p>
+          </section>
+          <div class="rf-profile-fields" id="profile-fields"></div>
+          <section class="rf-profile-existing-sources" id="profile-sources-wrap"
+                   aria-labelledby="profile-sources-title" hidden>
+            <h4 id="profile-sources-title">Existing sources</h4>
+            <ul class="rf-profile-source-list" id="profile-source-list"></ul>
+          </section>
+          <p class="rf-profile-error" id="profile-extraction-error" role="alert" hidden></p>
+        </section>
+      </div>
+    </div>
+
+    <div class="rf-modal__foot rf-profile-actions">
+      <button type="button" class="rf-btn rf-btn--danger rf-btn--sm" id="btn-profile-delete">Delete</button>
+      <span class="rf-hint" id="profile-modal-status" role="status" aria-live="polite"></span>
+      <button type="button" class="rf-btn rf-btn--ghost" id="btn-profile-close">Close</button>
+      <button type="button" class="rf-btn rf-btn--primary" id="btn-profile-generate">Generate profile</button>
     </div>
   </div>
 </div>
@@ -366,6 +488,6 @@
 
 <div class="rf-toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/factory.js?v=20260816-1"></script>
+<script src="/static/factory.js?v=20260829-2"></script>
 </body>
 </html>

@@ -37,6 +37,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from loom import agent_hooks
+from loom import researcher_profile as researcher_profiles
 from loom.web_jobs import (
     ARLoopManager,
     _ar_read_text,
@@ -2022,6 +2023,8 @@ def make_handler(
             if not self._require_auth():
                 return
             path = parsed.path
+            if routes_ar.handle_raw_post(self, path, parsed):
+                return
             body = _read_json(self)
 
             if routes_rebuttal.handle_post(self, path, parsed, body):
@@ -2081,6 +2084,56 @@ def make_handler(
                         )
                         self._send(st, b, h)
                         return
+                    profile_id = str(
+                        body.get("ar_background_profile_id") or ""
+                    ).strip()
+                    if profile_id and not _SLUG_RE.match(profile_id):
+                        st, b, h = _json_bytes(
+                            {"error": "invalid researcher profile id"}, 400
+                        )
+                        self._send(st, b, h)
+                        return
+                    fit_mode = str(
+                        body.get("ar_background_fit_mode")
+                        or ar.DEFAULT_BACKGROUND_FIT_MODE
+                    ).strip().lower()
+                    if fit_mode not in ar.BACKGROUND_FIT_MODES:
+                        st, b, h = _json_bytes(
+                            {"error": "unknown background exploration mode"}, 400
+                        )
+                        self._send(st, b, h)
+                        return
+                    profile_snapshot: dict[str, Any] = {}
+                    if profile_id:
+                        try:
+                            profile = researcher_profiles.read_profile(profile_id)
+                        except ValueError:
+                            st, b, h = _json_bytes(
+                                {"error": "invalid researcher profile id"}, 400
+                            )
+                            self._send(st, b, h)
+                            return
+                        if not profile:
+                            st, b, h = _json_bytes(
+                                {"error": "researcher profile not found"}, 404
+                            )
+                            self._send(st, b, h)
+                            return
+                        if str(profile.get("status") or "") != "active":
+                            st, b, h = _json_bytes(
+                                {
+                                    "error": (
+                                        "activate the researcher profile before "
+                                        "creating a Studio with it"
+                                    )
+                                },
+                                409,
+                            )
+                            self._send(st, b, h)
+                            return
+                        profile_snapshot = researcher_profiles.profile_snapshot(
+                            profile, fit_mode=fit_mode
+                        )
                     ar_state = ar.new_studio_state(
                         direction=str(body.get("ar_direction", "")),
                         custom_direction=str(body.get("ar_custom_direction", "")),
@@ -2090,6 +2143,9 @@ def make_handler(
                         venue_url=venue_url,
                         venue_kickoff=bool(body.get("ar_venue_kickoff")),
                         max_rounds=body.get("ar_max_rounds", ar.DEFAULT_MAX_ROUNDS),
+                        background_profile_id=profile_id,
+                        background_profile_snapshot=profile_snapshot,
+                        background_fit_mode=fit_mode,
                     )
                     # AR asks for the paper's content, not a goal to interview
                     # about, so derive the stored goal from the AR fields.
@@ -3064,6 +3120,8 @@ def make_handler(
             path = parsed.path
             body = _read_json(self)
 
+            if routes_ar.handle_put(self, path, parsed, body):
+                return
             if path == "/api/notes":
                 root, _pid = self._resolve_scope(parsed)
                 if root is None:
@@ -3219,6 +3277,8 @@ def make_handler(
             if routes_rebuttal.handle_delete(self, path, parsed):
                 return
             if routes_review.handle_delete(self, path, parsed):
+                return
+            if routes_ar.handle_delete(self, path, parsed):
                 return
             m_mon_del = re.match(r"^/api/tasks/([^/]+)/monitor$", path)
             if m_mon_del:
