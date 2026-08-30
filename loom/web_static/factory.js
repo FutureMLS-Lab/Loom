@@ -1196,7 +1196,7 @@ function renderFiles(d) {
 // ===== researcher profiles =====
 
 const PROFILE_EDIT_IDS = [
-  'profile-research-profile',
+  'profile-pdf',
   'profile-notes',
 ];
 
@@ -1215,6 +1215,41 @@ function publicProfileText(value) {
 function safeSourceName(value) {
   const parts = String(value == null ? '' : value).split(/[\\/]/);
   return publicProfileText(parts[parts.length - 1] || 'source');
+}
+
+function profilePdfSelection() {
+  const files = Array.from(el('profile-pdf').files || []);
+  if (!files.length) return { file: null, filename: '', error: '' };
+  if (files.length !== 1) {
+    return { file: null, filename: '', error: 'Choose one PDF file.' };
+  }
+  const file = files[0];
+  const filename = String(file.name || '')
+    .split(/[\\/]/)
+    .pop()
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .trim();
+  if (!filename || !/\.pdf$/i.test(filename)) {
+    return { file: null, filename: '', error: 'Choose one PDF file.' };
+  }
+  if (Number(file.size || 0) > 20 * 1024 * 1024) {
+    return {
+      file: null,
+      filename: '',
+      error: 'The PDF must be 20 MB or smaller.',
+    };
+  }
+  return { file, filename, error: '' };
+}
+
+function provisionalProfileName(filename) {
+  const name = safeSourceName(filename)
+    .replace(/\.pdf$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 200);
+  return name || 'Google Scholar profile';
 }
 
 function profileStringItems(value) {
@@ -1380,6 +1415,22 @@ function profileSources(profile) {
     : legacySources;
 }
 
+function profileHasPdfSource(profile) {
+  return profileSources(profile).some((file) => {
+    const source = file && typeof file === 'object' ? file : {};
+    const filename = typeof file === 'string'
+      ? file
+      : (source.name || source.filename || source.source || '');
+    const kind = String(source.kind || '').trim().toLowerCase();
+    const mediaType = String(
+      source.media_type || source.content_type || source.type || '',
+    ).split(';', 1)[0].trim().toLowerCase();
+    return /\.pdf$/i.test(safeSourceName(filename))
+      || kind === 'pdf'
+      || mediaType === 'application/pdf';
+  });
+}
+
 function profileExtractionState(profile) {
   const status = String((profile && profile.extraction_status) || 'idle').toLowerCase();
   if (['succeeded', 'complete', 'completed', 'done'].includes(status)) return 'done';
@@ -1425,8 +1476,8 @@ function renderProfileFields(profile) {
 
 function extractionStatusText(profile) {
   const status = profileExtractionState(profile);
-  const sources = profileSources(profile).length;
-  if (!profile.id) return 'Paste a URL or research-profile text to begin.';
+  const hasPdf = profileHasPdfSource(profile);
+  if (!profile.id) return 'Choose one Google Scholar profile PDF to begin.';
   if (status === 'running') return 'Generating… this panel will refresh automatically.';
   if (status === 'done' && profile.status === 'active') {
     return 'Ready and active. This profile is available to Studios.';
@@ -1434,8 +1485,8 @@ function extractionStatusText(profile) {
   if (status === 'done') return 'Extracted, but not active. Generate again to refresh it.';
   if (status === 'error') return 'Generation failed. Review the input and try again.';
   if (profile.status === 'active') return 'Ready and active. This profile is available to Studios.';
-  if (sources) return 'This saved profile has existing sources. Generate it to refresh and activate it.';
-  return 'Generate this saved profile to extract and activate it.';
+  if (hasPdf) return 'This saved profile has a PDF. Generate it to refresh and activate it.';
+  return 'Choose one Google Scholar profile PDF to generate this profile.';
 }
 
 function updateProfileActions() {
@@ -1443,13 +1494,14 @@ function updateProfileActions() {
   const extraction = profileExtractionState(profile);
   const running = extraction === 'running';
   const hasId = Boolean(profile.id);
-  const hasResearchProfile = Boolean(el('profile-research-profile').value.trim());
+  const needsPdf = !hasId || !profileHasPdfSource(profile);
+  const hasSelectedPdf = Boolean(profilePdfSelection().file);
   const locked = S.profileLoading || running;
 
   PROFILE_EDIT_IDS.forEach((id) => { el(id).disabled = locked; });
-  el('profile-research-profile').required = true;
-  el('profile-research-profile').setAttribute('aria-required', 'true');
-  el('btn-profile-generate').disabled = locked || !hasResearchProfile;
+  el('profile-pdf').required = needsPdf;
+  el('profile-pdf').setAttribute('aria-required', String(needsPdf));
+  el('btn-profile-generate').disabled = locked || (needsPdf && !hasSelectedPdf);
   el('btn-profile-generate').textContent = running ? 'Generating…' : 'Generate profile';
   el('btn-profile-delete').disabled = !hasId || locked;
 }
@@ -1491,8 +1543,10 @@ function scheduleProfilePoll() {
 
 function renderProfile() {
   const profile = S.profile || blankProfile();
-  setProfileInput('profile-research-profile', profile.research_profile);
   setProfileInput('profile-notes', profile.notes);
+  el('profile-pdf-hint').textContent = profileHasPdfSource(profile)
+    ? 'Leave blank to reuse the saved PDF, or choose one PDF to replace it.'
+    : 'Choose one PDF exported from Google Scholar.';
 
   const status = el('profile-status');
   const extraction = profileExtractionState(profile);
@@ -1552,30 +1606,23 @@ function renderProfile() {
   scheduleProfilePoll();
 }
 
-function profilePayloadFromForm() {
-  const payload = {
-    research_profile: el('profile-research-profile').value.trim(),
-    notes: el('profile-notes').value.trim(),
-  };
-  if (S.profile && S.profile.id) payload.id = String(S.profile.id);
-  return payload;
-}
-
 function beginNewProfile({ focus = true } = {}) {
   clearProfilePoll();
   S.profileRequest = '';
   S.profile = blankProfile();
   S.profileDirty = false;
+  el('profile-pdf').value = '';
   el('profile-select').selectedIndex = -1;
   el('profile-modal-status').textContent =
-    'Paste a research-profile URL or text, then generate your profile.';
+    'Choose one Google Scholar profile PDF, then generate your profile.';
   renderProfile();
-  if (focus) el('profile-research-profile').focus();
+  if (focus) el('profile-pdf').focus();
 }
 
 async function loadProfile(id, { polling = false } = {}) {
   if (!id) { beginNewProfile(); return null; }
   clearProfilePoll();
+  if (!polling) el('profile-pdf').value = '';
   const token = {};
   S.profileRequest = token;
   S.profileLoading = true;
@@ -1651,39 +1698,89 @@ function closeProfiles() {
 
 async function generateProfile() {
   const previous = S.profile || blankProfile();
-  const payload = profilePayloadFromForm();
-  if (!payload.research_profile) {
-    el('profile-modal-status').textContent =
-      'Paste a Google Scholar or personal homepage URL, or research-profile text.';
-    el('profile-research-profile').focus();
+  const selected = profilePdfSelection();
+  if (selected.error) {
+    el('profile-modal-status').textContent = selected.error;
+    el('profile-pdf').focus();
+    return null;
+  }
+  if (!selected.file && (!previous.id || !profileHasPdfSource(previous))) {
+    el('profile-modal-status').textContent = 'Choose one PDF file.';
+    el('profile-pdf').focus();
     return null;
   }
 
   S.profileLoading = true;
-  el('profile-modal-status').textContent = 'Starting profile generation…';
+  el('profile-modal-status').textContent = previous.id
+    ? 'Saving profile…'
+    : 'Creating profile…';
   updateProfileActions();
-  let accepted = false;
+  let persisted = false;
   try {
-    const data = await api('/api/ar/profiles/generate', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    const returned = data.profile;
-    if (!returned || !returned.id) {
+    const notes = el('profile-notes').value.trim();
+    let profile = previous;
+    if (profile.id) {
+      const changes = { notes };
+      if (selected.file) changes.research_profile = '';
+      const data = await api(`/api/ar/profiles/${encodeURIComponent(profile.id)}`, {
+        method: 'PUT',
+        body: JSON.stringify(changes),
+      });
+      if (!data.profile || !data.profile.id) {
+        throw new Error('Save response did not include a profile.');
+      }
+      profile = { ...profile, ...data.profile };
+    } else {
+      const data = await api('/api/ar/profiles', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: provisionalProfileName(selected.filename),
+          notes,
+          fit_mode: 'balanced',
+        }),
+      });
+      if (!data.profile || !data.profile.id) {
+        throw new Error('Create response did not include a profile.');
+      }
+      profile = { ...profile, ...data.profile };
+    }
+    S.profile = profile;
+    persisted = true;
+    S.profileDirty = Boolean(selected.file);
+
+    if (selected.file) {
+      el('profile-modal-status').textContent = 'Uploading PDF…';
+      const bytes = await selected.file.arrayBuffer();
+      const data = await api(
+        `/api/ar/profiles/${encodeURIComponent(profile.id)}/sources?filename=${encodeURIComponent(selected.filename)}&replace=1`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/pdf' },
+          body: bytes,
+        },
+      );
+      if (!data.profile || !data.profile.id) {
+        throw new Error('Upload response did not include a profile.');
+      }
+      profile = { ...profile, ...data.profile };
+      S.profile = profile;
+      S.profileDirty = false;
+      el('profile-pdf').value = '';
+    }
+
+    el('profile-modal-status').textContent = 'Starting profile generation…';
+    const data = await api(
+      `/api/ar/profiles/${encodeURIComponent(profile.id)}/extract`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ activate_on_success: true }),
+      },
+    );
+    if (!data.profile || !data.profile.id) {
       throw new Error('Generation response did not include a profile.');
     }
-    S.profile = {
-      ...previous,
-      ...returned,
-      research_profile: Object.prototype.hasOwnProperty.call(returned, 'research_profile')
-        ? returned.research_profile
-        : payload.research_profile,
-      notes: Object.prototype.hasOwnProperty.call(returned, 'notes')
-        ? returned.notes
-        : payload.notes,
-    };
+    S.profile = { ...profile, ...data.profile };
     S.profileDirty = false;
-    accepted = true;
     await loadProfileSummaries({ silent: true });
     const extraction = profileExtractionState(S.profile);
     if (extraction === 'done' && S.profile.status === 'active') {
@@ -1697,12 +1794,13 @@ async function generateProfile() {
     }
     return S.profile;
   } catch (err) {
+    if (persisted) await loadProfileSummaries({ silent: true });
     el('profile-modal-status').textContent =
       `Could not generate profile: ${publicProfileText(err.message)}`;
     return null;
   } finally {
     S.profileLoading = false;
-    if (accepted) renderProfile();
+    if (persisted) renderProfile();
     else updateProfileActions();
   }
 }
@@ -2239,9 +2337,15 @@ el('profile-select').addEventListener('change', (ev) => {
   loadProfile(next);
 });
 PROFILE_EDIT_IDS.forEach((id) => {
-  el(id).addEventListener('input', () => {
+  el(id).addEventListener(id === 'profile-pdf' ? 'change' : 'input', () => {
     S.profileDirty = true;
-    el('profile-modal-status').textContent = 'Unsaved changes.';
+    if (id === 'profile-pdf') {
+      const selected = profilePdfSelection();
+      el('profile-modal-status').textContent = selected.error
+        || (selected.file ? `Selected ${safeSourceName(selected.filename)}.` : 'No PDF selected.');
+    } else {
+      el('profile-modal-status').textContent = 'Unsaved changes.';
+    }
     updateProfileActions();
   });
 });

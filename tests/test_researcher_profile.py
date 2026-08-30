@@ -97,12 +97,20 @@ def test_profile_http_route_contract_hides_storage_metadata():
     assert upload.response[0] == 201
     assert "sha256" not in upload.response[1]["profile"]["source_files"][0]
 
+    replacement = _RouteHandler(_pdf(), "application/pdf")
+    parsed = urlparse(
+        f"/api/ar/profiles/{profile_id}/sources"
+        "?filename=google-scholar.pdf&replace=1"
+    )
+    assert routes_ar.handle_raw_post(replacement, parsed.path, parsed)
+    assert replacement.response[0] == 201
+
     detail = _RouteHandler()
     parsed = urlparse(f"/api/ar/profiles/{profile_id}")
     assert routes_ar.handle_get(detail, parsed.path, parsed)
     payload = detail.response[1]["profile"]
     assert payload["notes"] == "systems"
-    assert payload["source_files"][0]["name"] == "scholar.md"
+    assert payload["source_files"][0]["name"] == "google-scholar.pdf"
     assert "sha256" not in payload["source_files"][0]
     assert "sources" not in payload
 
@@ -162,6 +170,40 @@ def test_generate_http_route_uses_two_field_contract(monkeypatch):
     assert handler.response[1]["profile"]["extraction_status"] == "running"
 
 
+def test_extract_route_can_request_automatic_activation(monkeypatch):
+    captured = {}
+
+    def fake_start(profile_id, **kwargs):
+        captured["profile_id"] = profile_id
+        captured.update(kwargs)
+        return {
+            "id": profile_id,
+            "name": "Scholar export",
+            "status": "draft",
+            "fit_mode": "balanced",
+            "extraction_status": "running",
+            "source_files": [],
+        }
+
+    monkeypatch.setattr(
+        routes_ar.researcher_profiles, "start_extraction", fake_start
+    )
+    handler = _RouteHandler()
+    parsed = urlparse("/api/ar/profiles/scholar-export/extract")
+    assert routes_ar.handle_post(
+        handler,
+        parsed.path,
+        parsed,
+        {"activate_on_success": True},
+    )
+    assert handler.response[0] == 202
+    assert captured == {
+        "profile_id": "scholar-export",
+        "model": "",
+        "activate_on_success": True,
+    }
+
+
 def test_factory_profile_creation_exposes_only_two_content_inputs():
     html = (REPO / "loom" / "web_static" / "factory.html").read_text(
         encoding="utf-8"
@@ -170,9 +212,11 @@ def test_factory_profile_creation_exposes_only_two_content_inputs():
         encoding="utf-8"
     )
 
-    assert html.count('id="profile-research-profile"') == 1
+    assert html.count('id="profile-pdf"') == 1
     assert html.count('id="profile-notes"') == 1
+    assert 'accept=".pdf,application/pdf"' in html
     for removed_id in (
+        "profile-research-profile",
         "profile-name",
         "profile-fit-mode",
         "profile-summary",
@@ -187,7 +231,8 @@ def test_factory_profile_creation_exposes_only_two_content_inputs():
     ):
         assert f'id="{removed_id}"' not in html
     assert 'id="btn-profile-generate"' in html
-    assert "api/ar/profiles/generate" in javascript
+    assert "replace=1" in javascript
+    assert "activate_on_success: true" in javascript
 
 
 def test_studio_background_action_snapshots_and_clears_profile(tmp_path):
@@ -389,6 +434,75 @@ def test_source_permissions_hash_and_size_limits(
     # Replacing a file subtracts the old copy from the aggregate.
     replacement = profiles.save_source("ada", "notes.txt", b"tiny")
     assert replacement["source_files"][0]["size"] == 4
+
+
+def test_replace_all_sources_keeps_only_new_pdf(isolated_profiles_root):
+    profiles.create_profile("Ada", profile_id="ada")
+    profiles.save_source("ada", "old.md", b"# Old profile")
+    profiles.save_source("ada", "old.pdf", _pdf())
+
+    replaced = profiles.save_source(
+        "ada",
+        "google-scholar.pdf",
+        _pdf(),
+        content_type="application/pdf",
+        replace_all=True,
+    )
+    assert [item["filename"] for item in replaced["source_files"]] == [
+        "google-scholar.pdf"
+    ]
+    source_names = sorted(
+        path.name
+        for path in (isolated_profiles_root / "ada" / "sources").iterdir()
+    )
+    assert source_names == ["google-scholar.pdf"]
+
+
+def test_uploaded_pdf_extraction_can_activate_automatically():
+    profiles.create_profile(
+        "Google Scholar export",
+        profile_id="scholar-export",
+        notes="Prefer one-GPU projects.",
+    )
+    profiles.save_source(
+        "scholar-export",
+        "google-scholar.pdf",
+        _pdf(),
+        content_type="application/pdf",
+        replace_all=True,
+    )
+    extracted = profiles.extract_profile(
+        "scholar-export",
+        runner=lambda *args, **kwargs: {
+            "name": "Ada Researcher",
+            "summary": "Studies efficient inference.",
+            "methods": ["quantization"],
+        },
+        activate_on_success=True,
+    )
+    assert extracted["status"] == "active"
+    assert extracted["extraction_status"] == "succeeded"
+    assert extracted["name"] == "Ada Researcher"
+
+
+def test_automatic_activation_rejects_unstructured_failure_summary():
+    profiles.create_profile("Google Scholar export", profile_id="scholar-export")
+    profiles.save_source(
+        "scholar-export",
+        "google-scholar.pdf",
+        _pdf(),
+        content_type="application/pdf",
+    )
+    extracted = profiles.extract_profile(
+        "scholar-export",
+        runner=lambda *args, **kwargs: {
+            "summary": "No research background could be established.",
+        },
+        activate_on_success=True,
+    )
+    assert extracted["status"] == "draft"
+    assert extracted["extraction_status"] == "failed"
+    assert "structured research evidence" in extracted["extraction_error"]
 
 
 def test_activation_snapshot_and_fit_mode_prompts():

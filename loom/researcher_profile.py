@@ -807,6 +807,7 @@ def save_source(
     data: Any = None,
     *,
     content_type: str = "",
+    replace_all: bool = False,
 ) -> dict[str, Any]:
     """Validate, hash, and privately store one source document.
 
@@ -830,7 +831,12 @@ def save_source(
         target = directory / safe_name
         if target.parent != directory or target.is_symlink():
             raise ValueError("invalid source path")
-        if _source_total(directory, replacing=target) + len(body) > MAX_PROFILE_SOURCE_BYTES:
+        existing_bytes = (
+            0
+            if replace_all
+            else _source_total(directory, replacing=target)
+        )
+        if existing_bytes + len(body) > MAX_PROFILE_SOURCE_BYTES:
             raise ValueError(
                 f"profile sources exceed {MAX_PROFILE_SOURCE_BYTES} byte limit"
             )
@@ -846,6 +852,10 @@ def save_source(
                 os.fsync(stream.fileno())
             os.replace(temporary_path, target)
             target.chmod(0o600)
+            if replace_all:
+                for existing in directory.iterdir():
+                    if existing != target and existing.is_file():
+                        existing.unlink()
         finally:
             if fd >= 0:
                 os.close(fd)
@@ -866,7 +876,7 @@ def save_source(
             "saved_at": now,
             "uploaded_at": now,
         }
-        sources = [
+        sources = [] if replace_all else [
             item
             for item in profile.get("source_files", profile.get("sources", []))
             if isinstance(item, Mapping) and item.get("filename") != safe_name
@@ -895,6 +905,21 @@ def _has_research_content(profile: Mapping[str, Any]) -> bool:
     if str(profile.get("summary") or "").strip():
         return True
     return any(profile.get(field) for field in (*STRUCTURED_FIELDS, "evidence"))
+
+
+def _has_structured_research_content(profile: Mapping[str, Any]) -> bool:
+    return any(
+        profile.get(field)
+        for field in (
+            "topics",
+            "methods",
+            "domains",
+            "datasets",
+            "tools",
+            "strengths",
+            "evidence",
+        )
+    )
 
 
 def activate_profile(profile_id: str) -> dict[str, Any]:
@@ -1439,6 +1464,10 @@ def _perform_extraction(
             timeout=timeout,
         )
         extracted = _extracted_payload(result)
+        if activate_on_success and not _has_structured_research_content(extracted):
+            raise ValueError(
+                "profile extraction did not produce structured research evidence"
+            )
 
     with _STORE_LOCK:
         latest = _require_profile_unlocked(profile_id)

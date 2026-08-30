@@ -76,9 +76,9 @@ have somewhere to land. Needs `latexmk` + TeX Live; methodology lives in
 `loom/skills/ar/`.
 
 The Paper Factory can also ground ideation in a generated **researcher
-profile**. Paste a Google Scholar or personal-page URL (or profile
-text), add an optional note, and click Generate; Loom extracts and activates
-the structured background automatically. Strict, Balanced, and Exploratory
+profile**. Select a local PDF export of a Google Scholar profile, add an
+optional note, and click Generate; Loom uploads the PDF, extracts the structured
+background, and activates it automatically. Strict, Balanced, and Exploratory
 fit remain Studio-level choices. Reusable profiles stay host-local under
 `~/.loom/researcher-profiles/`; each Studio stores a bounded snapshot so later
 profile edits do not silently change an existing run. Extraction runs through

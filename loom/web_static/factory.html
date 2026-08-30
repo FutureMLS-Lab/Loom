@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Paper Factory</title>
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
-  <link rel="stylesheet" href="/static/factory.css?v=20260829-1" />
+  <link rel="stylesheet" href="/static/factory.css?v=20260829-2" />
 </head>
 <body>
 
@@ -388,7 +388,7 @@
       <button type="button" class="rf-x" id="btn-profiles-close" aria-label="Close researcher profiles">×</button>
     </div>
     <p class="rf-hint" id="profiles-modal-description">
-      Paste a research profile, add an optional note, and generate a profile that is ready to use in Studios.
+      Choose a Google Scholar profile PDF, add an optional note, and generate a profile that is ready to use in Studios.
     </p>
 
     <div class="rf-profile-workspace">
@@ -403,17 +403,16 @@
         <div class="rf-profile-state">
           <span class="rf-pill" id="profile-status">new</span>
           <span class="rf-hint" id="profile-extraction-status" aria-live="polite">
-            Paste a URL or research-profile text to begin.
+            Choose one Google Scholar profile PDF to begin.
           </span>
         </div>
 
         <div class="rf-profile-inputs">
-          <label for="profile-research-profile">Research profile</label>
-          <textarea id="profile-research-profile" rows="6"
-                    aria-describedby="profile-research-profile-hint"
-                    placeholder="Paste a Google Scholar or personal homepage URL, or paste research-profile text."></textarea>
-          <p class="rf-hint" id="profile-research-profile-hint">
-            Paste at least one URL or a short description of the research background.
+          <label for="profile-pdf">Google Scholar profile PDF</label>
+          <input type="file" id="profile-pdf" accept=".pdf,application/pdf"
+                 aria-describedby="profile-pdf-hint" />
+          <p class="rf-hint" id="profile-pdf-hint">
+            Choose one PDF exported from Google Scholar. A saved PDF can be reused when regenerating.
           </p>
 
           <label for="profile-notes">Extra note <span class="rf-hint">(optional)</span></label>
@@ -489,6 +488,6 @@
 
 <div class="rf-toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/factory.js?v=20260829-1"></script>
+<script src="/static/factory.js?v=20260829-2"></script>
 </body>
 </html>

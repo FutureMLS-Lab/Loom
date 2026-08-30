@@ -304,6 +304,11 @@ def handle_raw_post(self, path, parsed) -> bool:
         return False
     query = parse_qs(parsed.query or "")
     filename = str((query.get("filename") or [""])[0]).strip()
+    replace_all = str((query.get("replace") or [""])[0]).lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     if not filename:
         st, b, h = _json_bytes({"ok": False, "error": "filename is required"}, 400)
         self._send(st, b, h)
@@ -337,6 +342,7 @@ def handle_raw_post(self, path, parsed) -> bool:
             filename,
             data,
             content_type=str(self.headers.get("Content-Type") or ""),
+            replace_all=replace_all,
         )
     except (OSError, ValueError) as exc:
         st, b, h = _json_bytes({"ok": False, "error": str(exc)}, 400)
@@ -389,8 +395,15 @@ def handle_post(self, path, parsed, body) -> bool:  # noqa: C901
         profile_id, action = m_profile_action.groups()
         try:
             if action == "extract":
+                activate_value = body.get("activate_on_success")
+                activate_on_success = (
+                    activate_value is True
+                    or str(activate_value or "").lower() in {"1", "true", "yes"}
+                )
                 profile = researcher_profiles.start_extraction(
-                    profile_id, model=str(body.get("model") or "")
+                    profile_id,
+                    model=str(body.get("model") or ""),
+                    activate_on_success=activate_on_success,
                 )
                 status = 202
             else:
