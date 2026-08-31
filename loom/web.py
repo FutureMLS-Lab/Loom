@@ -296,6 +296,16 @@ def _available_skill_options(
 def _skill_summary(path: Path, limit: int = 140) -> str:
     """A skill file's one-line pitch: its frontmatter ``description:`` when
     it has one, else the first substantive line after the frontmatter."""
+    # The bundled personal skills file is per-user and skip-worktree: its real
+    # first line differs from machine to machine and may hold private notes.
+    # Pin a fixed label so neither the generated skills table nor the picker
+    # ever embeds local personal content (and the freshness test stays stable
+    # everywhere, not just on a clean checkout).
+    try:
+        if path.resolve() == bundled_skills_path().resolve():
+            return "Personal skills"
+    except OSError:
+        pass
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:

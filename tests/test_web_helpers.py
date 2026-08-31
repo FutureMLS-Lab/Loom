@@ -28,6 +28,16 @@ def test_skill_summary_prefers_frontmatter_description(tmp_path):
     assert w._skill_summary(plain) == "Heading"
 
 
+def test_skill_summary_pins_personal_skills_label():
+    """The bundled personal skills file is per-user and skip-worktree; its
+    first line must never leak into the generated table or picker, so its
+    summary is a fixed label regardless of local content."""
+    from loom import web as w
+    from loom.rud_task import bundled_skills_path
+
+    assert w._skill_summary(bundled_skills_path()) == "Personal skills"
+
+
 def test_skills_index_is_fresh():
     """The generated section of DEFAULT_PROMPT.md matches a fresh render;
     fails when a skill was added without rerunning gen_skills_index.py."""
