@@ -687,11 +687,16 @@ def test_text_description_can_be_extracted_without_uploaded_files():
     assert extracted["notes"].startswith("I study efficient inference")
 
 
-def test_two_field_generation_extracts_and_activates_automatically():
+def test_two_field_generation_extracts_and_activates_automatically(monkeypatch):
+    # Keep the test hermetic: the profile names a live URL, so stub the
+    # server-side fetch instead of hitting the network.
+    monkeypatch.setattr(
+        profiles, "_fetch_public_url", lambda url: _SCHOLAR_FIXTURE
+    )
     seen = {}
 
     def fake_runner(prompt, model, workspace, *, timeout):
-        assert "public http(s) profile URLs" in prompt
+        assert "fetched_profile_pages" in prompt
         seen["research_profile"] = (
             workspace / "research-profile.txt"
         ).read_text()
@@ -843,3 +848,92 @@ def test_cursor_runner_uses_read_only_print_mode_without_leaking_stderr(
     with pytest.raises(RuntimeError) as error:
         profiles._run_cursor_agent("JSON only", "gpt-test", tmp_path)
     assert "TOP-SECRET" not in str(error.value)
+
+
+# --- Direct profile-URL import (server-side fetch → source → extraction) -----
+
+_SCHOLAR_FIXTURE = (
+    "<html><head><title>‪Ada Lovelace‬ - ‪Google Scholar‬"
+    "</title></head><body>"
+    '<a class="gsc_prf_inta gs_ibl">Machine learning</a>'
+    '<a class="gsc_prf_inta gs_ibl">Analytical engines</a>'
+    '<td class="gsc_rsb_std">4096</td><td class="gsc_rsb_std">2048</td>'
+    '<td class="gsc_rsb_std">21</td><td class="gsc_rsb_std">15</td>'
+    '<td class="gsc_rsb_std">18</td><td class="gsc_rsb_std">12</td>'
+    '<a href="x" class="gsc_a_at">Notes on the Analytical Engine</a>'
+    '<div class="gs_gray">A Lovelace, C Babbage</div>'
+    '<div class="gs_gray">Memoirs</div>'
+    '<span class="gsc_a_h gsc_a_hc gs_ibl">1843</span>'
+    "</body></html>"
+)
+
+
+def test_scholar_html_parses_name_interests_and_papers():
+    text = profiles._scholar_html_to_text(_SCHOLAR_FIXTURE)
+    assert "Researcher: Ada Lovelace" in text  # bidi format marks stripped
+    assert "Machine learning" in text and "Analytical engines" in text
+    assert "Total citations: 4096" in text
+    assert "h-index 21" in text and "i10-index 18" in text
+    assert "Notes on the Analytical Engine (1843)" in text
+    assert "A Lovelace, C Babbage" in text
+
+
+@pytest.mark.parametrize(
+    "host,public",
+    [
+        ("8.8.8.8", True),  # public IP literal - no DNS needed
+        ("localhost", False),
+        ("127.0.0.1", False),
+        ("10.0.0.1", False),
+        ("169.254.169.254", False),  # cloud metadata endpoint
+        ("service.internal", False),
+    ],
+)
+def test_host_public_guard(host, public):
+    assert profiles._host_is_public(host) is public
+
+
+def test_html_to_text_strips_markup_and_scripts():
+    page = (
+        "<html><head><style>.x{color:red}</style>"
+        "<script>steal()</script></head><body>"
+        "<h1>Jane Q. Researcher</h1><p>Works on &amp; studies systems.</p>"
+        "</body></html>"
+    )
+    text = profiles._html_to_text(page)
+    assert "Jane Q. Researcher" in text
+    assert "Works on & studies systems." in text
+    assert "steal()" not in text and "color:red" not in text
+
+
+def test_url_only_profile_fetches_page_then_extracts(monkeypatch):
+    # The extraction agent cannot browse, so Loom fetches the page itself and
+    # feeds it as workspace evidence. Mock the fetch; assert the page reaches
+    # the agent and yields an active profile - no PDF involved.
+    monkeypatch.setattr(profiles, "_fetch_public_url", lambda url: _SCHOLAR_FIXTURE)
+    profiles.create_profile(
+        "Research profile",
+        profile_id="url-profile",
+        research_profile="https://scholar.google.com/citations?user=TEST",
+    )
+    seen: dict[str, object] = {}
+
+    def runner(prompt, model, workspace, timeout=0):
+        fetched = sorted((Path(workspace) / "extracted-text").glob("fetched-url-*.txt"))
+        seen["files"] = [p.name for p in fetched]
+        seen["text"] = "\n".join(p.read_text(encoding="utf-8") for p in fetched)
+        return {
+            "name": "Ada Lovelace",
+            "summary": "Foundational work on analytical engines.",
+            "methods": ["mechanical computation"],
+        }
+
+    extracted = profiles.extract_profile(
+        "url-profile", runner=runner, activate_on_success=True
+    )
+    assert seen["files"], "no profile page was fetched into the workspace"
+    assert "Notes on the Analytical Engine" in seen["text"]
+    assert "Source URL: https://scholar.google.com" in seen["text"]
+    assert extracted["status"] == "active"
+    assert extracted["extraction_status"] == "succeeded"
+    assert extracted["name"] == "Ada Lovelace"

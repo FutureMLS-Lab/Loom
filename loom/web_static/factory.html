@@ -388,7 +388,7 @@
       <button type="button" class="rf-x" id="btn-profiles-close" aria-label="Close researcher profiles">×</button>
     </div>
     <p class="rf-hint" id="profiles-modal-description">
-      Choose a Google Scholar profile PDF, add an optional note, and generate a profile that is ready to use in Studios.
+      Paste your Google Scholar profile URL (Loom fetches it for you) or upload a profile PDF, add an optional note, and generate a profile that is ready to use in Studios.
     </p>
 
     <div class="rf-profile-workspace">
@@ -403,16 +403,24 @@
         <div class="rf-profile-state">
           <span class="rf-pill" id="profile-status">new</span>
           <span class="rf-hint" id="profile-extraction-status" aria-live="polite">
-            Choose one Google Scholar profile PDF to begin.
+            Paste your Google Scholar profile URL to begin.
           </span>
         </div>
 
         <div class="rf-profile-inputs">
-          <label for="profile-pdf">Google Scholar profile PDF</label>
+          <label for="profile-url">Google Scholar profile URL</label>
+          <input type="text" id="profile-url" inputmode="url"
+                 placeholder="https://scholar.google.com/citations?user=…"
+                 aria-describedby="profile-url-hint" />
+          <p class="rf-hint" id="profile-url-hint">
+            Paste a public profile URL — Google Scholar, OpenAlex, or a homepage. Loom fetches the page and builds the profile. No PDF export needed.
+          </p>
+
+          <label for="profile-pdf">Or upload a profile PDF <span class="rf-hint">(optional)</span></label>
           <input type="file" id="profile-pdf" accept=".pdf,application/pdf"
                  aria-describedby="profile-pdf-hint" />
           <p class="rf-hint" id="profile-pdf-hint">
-            Choose one PDF exported from Google Scholar. A saved PDF can be reused when regenerating.
+            Alternative to the URL: one PDF exported from Google Scholar. A saved PDF can be reused when regenerating.
           </p>
 
           <label for="profile-notes">Extra note <span class="rf-hint">(optional)</span></label>
@@ -488,6 +496,6 @@
 
 <div class="rf-toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/static/factory.js?v=20260829-2"></script>
+<script src="/static/factory.js?v=20260903-1"></script>
 </body>
 </html>

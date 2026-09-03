@@ -1196,6 +1196,7 @@ function renderFiles(d) {
 // ===== researcher profiles =====
 
 const PROFILE_EDIT_IDS = [
+  'profile-url',
   'profile-pdf',
   'profile-notes',
 ];
@@ -1494,14 +1495,17 @@ function updateProfileActions() {
   const extraction = profileExtractionState(profile);
   const running = extraction === 'running';
   const hasId = Boolean(profile.id);
-  const needsPdf = !hasId || !profileHasPdfSource(profile);
+  const savedPdf = hasId && profileHasPdfSource(profile);
   const hasSelectedPdf = Boolean(profilePdfSelection().file);
+  const hasUrl = Boolean(el('profile-url').value.trim());
+  const hasSource = savedPdf || hasSelectedPdf || hasUrl;
   const locked = S.profileLoading || running;
 
   PROFILE_EDIT_IDS.forEach((id) => { el(id).disabled = locked; });
-  el('profile-pdf').required = needsPdf;
-  el('profile-pdf').setAttribute('aria-required', String(needsPdf));
-  el('btn-profile-generate').disabled = locked || (needsPdf && !hasSelectedPdf);
+  // A profile URL is an alternative to the PDF, so neither is hard-required.
+  el('profile-pdf').required = false;
+  el('profile-pdf').setAttribute('aria-required', 'false');
+  el('btn-profile-generate').disabled = locked || !hasSource;
   el('btn-profile-generate').textContent = running ? 'Generating…' : 'Generate profile';
   el('btn-profile-delete').disabled = !hasId || locked;
 }
@@ -1543,6 +1547,7 @@ function scheduleProfilePoll() {
 
 function renderProfile() {
   const profile = S.profile || blankProfile();
+  setProfileInput('profile-url', profile.research_profile);
   setProfileInput('profile-notes', profile.notes);
   el('profile-pdf-hint').textContent = profileHasPdfSource(profile)
     ? 'Leave blank to reuse the saved PDF, or choose one PDF to replace it.'
@@ -1611,12 +1616,13 @@ function beginNewProfile({ focus = true } = {}) {
   S.profileRequest = '';
   S.profile = blankProfile();
   S.profileDirty = false;
+  el('profile-url').value = '';
   el('profile-pdf').value = '';
   el('profile-select').selectedIndex = -1;
   el('profile-modal-status').textContent =
-    'Choose one Google Scholar profile PDF, then generate your profile.';
+    'Paste your Google Scholar profile URL, then generate your profile.';
   renderProfile();
-  if (focus) el('profile-pdf').focus();
+  if (focus) el('profile-url').focus();
 }
 
 async function loadProfile(id, { polling = false } = {}) {
@@ -1704,9 +1710,16 @@ async function generateProfile() {
     el('profile-pdf').focus();
     return null;
   }
-  if (!selected.file && (!previous.id || !profileHasPdfSource(previous))) {
-    el('profile-modal-status').textContent = 'Choose one PDF file.';
-    el('profile-pdf').focus();
+  const url = el('profile-url').value.trim();
+  if (url && !/^https?:\/\//i.test(url)) {
+    el('profile-modal-status').textContent = 'The profile URL must start with http:// or https://';
+    el('profile-url').focus();
+    return null;
+  }
+  const savedPdf = previous.id && profileHasPdfSource(previous);
+  if (!url && !selected.file && !savedPdf) {
+    el('profile-modal-status').textContent = 'Paste your Google Scholar profile URL, or choose a PDF.';
+    el('profile-url').focus();
     return null;
   }
 
@@ -1721,7 +1734,8 @@ async function generateProfile() {
     let profile = previous;
     if (profile.id) {
       const changes = { notes };
-      if (selected.file) changes.research_profile = '';
+      if (url) changes.research_profile = url;
+      else if (selected.file) changes.research_profile = '';
       const data = await api(`/api/ar/profiles/${encodeURIComponent(profile.id)}`, {
         method: 'PUT',
         body: JSON.stringify(changes),
@@ -1734,8 +1748,9 @@ async function generateProfile() {
       const data = await api('/api/ar/profiles', {
         method: 'POST',
         body: JSON.stringify({
-          name: provisionalProfileName(selected.filename),
+          name: provisionalProfileName(selected.filename) || 'Research profile',
           notes,
+          research_profile: url,
           fit_mode: 'balanced',
         }),
       });
