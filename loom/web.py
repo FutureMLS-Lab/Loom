@@ -40,6 +40,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from loom import agent_hooks
+from loom import development_task as development
 from loom import researcher_profile as researcher_profiles
 from loom.web_jobs import (
     ARLoopManager,
@@ -51,6 +52,7 @@ from loom.web_jobs import (
 from loom import routes_agent
 from loom import routes_oauth
 from loom import routes_ar
+from loom import routes_development
 from loom import routes_rebuttal
 from loom import routes_review
 from loom import routes_tmux
@@ -327,6 +329,11 @@ def _available_skill_options(
         # prompts - they are not choices (read them in the Factory instead).
         if rel.startswith("ar/") or rel.startswith("ar\\"):
             return
+        # Development Tasks inject these role contracts automatically. Letting
+        # users select a reviewer-only contract for an ordinary writing agent
+        # would invert its permissions and duplicate context.
+        if rel.startswith("dev/sde-") or rel.startswith("dev\\sde-"):
+            return
         # Inside a packaged skill directory only SKILL.md is the skill; its
         # PROMPT_TEMPLATE/EXAMPLE/SOURCE siblings are the skill's own reading
         # material and would inject as half a skill.
@@ -531,6 +538,18 @@ def _build_claude_prompt(
     if ar.is_ar_kind(meta.kind):
         return _build_ar_prompt(project_root, slug, meta, td, skills)
     memory_path, memory = _project_memory_text(project_root)
+    development_contract = ""
+    if meta.kind == development.KIND_DEVELOPMENT:
+        development_contract = f"""
+Development Task contract:
+- You are the sole writer. Reviewer A and Reviewer B run later in independent,
+  read-only sessions with different SDE skills.
+- Work only in the isolated worktree shown above. When a checkpoint is ready,
+  run the configured tests, commit every intended change, leave the worktree
+  clean, and report the commit SHA. Loom reviews commits, never mutable files.
+- Do not push or merge. Loom stops at a human approval gate after at most
+  {development.read_state(project_root, slug).get('max_review_rounds', development.DEFAULT_MAX_REVIEW_ROUNDS)} review rounds.
+"""
     return f"""You are running Loom's {agent_label(meta.agent)} pane for this task.
 
 You start in this task's work directory (your git worktree is a subdirectory here - cd into it to touch code):
@@ -558,6 +577,8 @@ Default skills:
 ---
 {skills or "(none)"}
 ---
+
+{development_contract}
 
 RUD workflow:
 1. Start from the General goal above and run a short deep-interview. Ask
@@ -1875,6 +1896,8 @@ def make_handler(
                 return
             if routes_rebuttal.handle_get(self, path, parsed):
                 return
+            if routes_development.handle_get(self, path, parsed):
+                return
             if path == "/api/tasks":
                 root, _pid = self._resolve_scope(parsed)
                 if root is None:
@@ -2445,6 +2468,15 @@ def make_handler(
                 return
             if routes_review.handle_post(self, path, parsed, body):
                 return
+            if routes_development.handle_post(
+                self,
+                path,
+                parsed,
+                body,
+                claude_registry=claude_registry,
+                default_skills=default_skills,
+            ):
+                return
             if path == "/api/activity/ack":
                 root, project_id = self._resolve_scope(parsed)
                 if project_id is None:
@@ -2485,9 +2517,13 @@ def make_handler(
                     return
                 title = str(body.get("title", "")).strip()
                 general_goal = str(body.get("general_goal", "")).strip()
-                kind = {"ar": ar.KIND_AR, "aris": ar.KIND_AR}.get(
-                    str(body.get("kind", "")).strip().lower(), "agent"
-                )
+                raw_kind = str(body.get("kind", "")).strip().lower()
+                kind = {
+                    "ar": ar.KIND_AR,
+                    "aris": ar.KIND_AR,
+                    development.KIND_DEVELOPMENT: development.KIND_DEVELOPMENT,
+                    "dev": development.KIND_DEVELOPMENT,
+                }.get(raw_kind, "agent")
                 ar_state: dict[str, Any] | None = None
                 if kind == ar.KIND_AR:
                     venue_url = str(body.get("ar_venue_url", "")).strip()
@@ -2582,6 +2618,10 @@ def make_handler(
                         default_skills.resolve() if default_skills.is_file()
                         else bundled_skills_path().resolve()
                     ]
+                if kind == development.KIND_DEVELOPMENT:
+                    implementer_skill = development.implementer_skill_path().resolve()
+                    if implementer_skill not in requested:
+                        requested.append(implementer_skill)
                 skills_path = join_skills_paths(requested)
                 raw_agent = str(body.get("agent", AGENT_CURSOR)).strip().lower()
                 if raw_agent and raw_agent not in SUPPORTED_AGENTS:
@@ -2634,6 +2674,40 @@ def make_handler(
                         # task-created event already name the worktree.
                         detect_and_persist_worktree(root, meta.slug)
                 meta = read_meta(root, meta.slug) or meta
+                if kind == development.KIND_DEVELOPMENT:
+                    if wt is None:
+                        delete_task(root, meta.slug)
+                        st, b, h = _json_bytes(
+                            {
+                                "error": (
+                                    "Development tasks require a git repository and an "
+                                    f"isolated worktree: {auto_msg}"
+                                )
+                            },
+                            400,
+                        )
+                        self._send(st, b, h)
+                        return
+                    try:
+                        development.initialize_task(
+                            root,
+                            meta.slug,
+                            test_command=str(body.get("development_test_command", "")),
+                            max_review_rounds=body.get(
+                                "development_max_rounds",
+                                development.DEFAULT_MAX_REVIEW_ROUNDS,
+                            ),
+                            reviewer_model=str(
+                                body.get("development_reviewer_model", "")
+                                or development.DEFAULT_REVIEWER_MODEL
+                            ),
+                        )
+                    except ValueError as exc:
+                        delete_task(root, meta.slug)
+                        st, b, h = _json_bytes({"error": str(exc)}, 400)
+                        self._send(st, b, h)
+                        return
+                cands = _project_worktree_candidates(pr, root, project_id)
                 hint = ""
                 if not meta.worktree_path:
                     cands = (

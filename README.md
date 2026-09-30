@@ -78,6 +78,23 @@ The Changes tab shows each task's diff; **Push** or **Merge ↩** when you like
 what you see, one task at a time. Loom never commits or pushes on its own:
 ask the agent to commit on its branch, or commit in the Terminal tab.
 
+### Development Task
+
+Choose **Development — implement, then two independent code reviews** for a
+bounded long-running coding job. One interactive Cursor implementer (Grok
+4.7 High Fast by default) is the only writer in the isolated worktree. Once it
+has run tests and committed a clean checkpoint, Loom creates an immutable
+detached snapshot and starts two fresh read-only reviewers in parallel:
+
+- Reviewer A imports the correctness/testing SDE skill.
+- Reviewer B imports the architecture/operational-risk SDE skill.
+
+Reviews are keyed to the exact base and candidate SHAs. An unchanged commit is
+never reviewed twice; if one reviewer fails, retrying runs only that reviewer.
+P0/P1 findings open a fresh repair session for the implementer. After at most
+two review rounds by default, Loom stops at a human gate. It never pushes or
+merges the branch.
+
 To try it on a throwaway repository first, run
 `scripts/make-parallel-demo.sh` from a clone of this repo. It builds a small
 project and prints four tasks to paste: three merge cleanly, and one
