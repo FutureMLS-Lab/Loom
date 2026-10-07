@@ -107,6 +107,11 @@ To try it on a throwaway repository first, run
 project and prints four tasks to paste: three merge cleanly, and one
 conflicts on purpose.
 
+For the complete b2 + CI Kubernetes workflow—including task creation, model
+selection, durable experiment runs, GPU-worker provisioning, monitoring,
+review, recovery, and cleanup—follow the
+**[Loom CI Development Onboarding](docs/LOOM-CI-DEVELOPMENT-ONBOARDING.md)**.
+
 ## Parallel runs
 
 Run as many tasks on one repository as you want, without collisions: every
