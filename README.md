@@ -9,7 +9,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue" alt="License: PolyForm Noncommercial" /></a>
   <img src="https://img.shields.io/badge/platform-Web,%20macOS,%20iOS,%20watchOS-lightgrey" alt="Platforms" />
-  <img src="https://img.shields.io/badge/agents-Claude,%20Codex,%20Cursor-orange" alt="Agents" />
+  <img src="https://img.shields.io/static/v1?label=agents&message=Claude,+Codex,+Cursor&color=orange" alt="Agents" />
 </p>
 
 <p align="center">
@@ -126,10 +126,8 @@ One server, same auth token — start on one screen, continue on another.
 </tr>
 <tr>
 <td align="center" valign="top" width="50%">
-<!-- Phone shot: drop it at docs/images/client-phone.png and uncomment.
-<img src="docs/images/client-phone.png" alt="Phone app">
-<br> -->
-<b>Phone</b> — the fleet and agent replies in your pocket (<a href="https://github.com/FutureMLS-Lab/loom-app">loom-app</a>) · <i>screenshot coming</i>
+<img src="docs/images/client-phone.png" alt="Phone app: reply to an agent">
+<br><b>Phone</b> — the fleet and agent replies in your pocket (<a href="https://github.com/FutureMLS-Lab/loom-app">loom-app</a>)
 </td>
 <td align="center" valign="top" width="50%">
 <img src="docs/images/client-watch.png" alt="Apple Watch app">
