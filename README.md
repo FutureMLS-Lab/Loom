@@ -8,8 +8,8 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue" alt="License: PolyForm Noncommercial" /></a>
-  <img src="https://img.shields.io/badge/platform-Web%20%7C%20macOS%20%7C%20iOS%20%7C%20watchOS-lightgrey" alt="Platforms" />
-  <img src="https://img.shields.io/badge/agents-Claude%20%7C%20Codex%20%7C%20Cursor-orange" alt="Agents" />
+  <img src="https://img.shields.io/badge/platform-Web,%20macOS,%20iOS,%20watchOS-lightgrey" alt="Platforms" />
+  <img src="https://img.shields.io/badge/agents-Claude,%20Codex,%20Cursor-orange" alt="Agents" />
 </p>
 
 <p align="center">
