@@ -65,10 +65,11 @@ CURSOR_DEFAULT_MODEL = (
 # Logical transcript footprint is not an exact token count (the supported
 # agents expose JSONL with different schemas), but it is a stable, provider-neutral
 # signal for the failure mode that matters here: every subsequent tool turn
-# re-reading an ever-growing conversation. Warn at 4 MiB and require a compact
-# handoff at 8 MiB. Operators can tune both thresholds without rebuilding Loom.
+# re-reading an ever-growing conversation. Mark a session at 4 MiB; requiring a
+# compact handoff is opt-in (LOOM_SESSION_CONTEXT_BUDGET_MB), so by default
+# nothing moves a task to a fresh session. Both are tunable without a rebuild.
 DEFAULT_SESSION_CONTEXT_WARNING_BYTES = 4 * 1024 * 1024
-DEFAULT_SESSION_CONTEXT_BUDGET_BYTES = 8 * 1024 * 1024
+DEFAULT_SESSION_CONTEXT_BUDGET_BYTES = 0
 DEFAULT_CLAUDE_EFFORT = "max"
 
 # Models currently available to this installation. These feed the web pickers;
@@ -1488,11 +1489,12 @@ def _list_cursor_session_files(cwd: Path) -> list[Path]:
 
 
 def session_context_budget_bytes() -> int:
-    """Configured per-session transcript budget in bytes.
+    """Configured per-session transcript budget in bytes; ``0`` means none.
 
-    ``LOOM_SESSION_CONTEXT_BUDGET_MB=0`` disables the guard.  Invalid values
-    fall back to the safe default; positive values are clamped to a practical
-    range so a typo cannot accidentally create a near-zero or unbounded limit.
+    Off unless ``LOOM_SESSION_CONTEXT_BUDGET_MB`` sets a limit: unset, invalid
+    and ``0`` values all leave the guard off.  Positive values are clamped to a
+    practical range so a typo cannot accidentally create a near-zero or
+    unbounded limit.
     """
     raw = os.environ.get("LOOM_SESSION_CONTEXT_BUDGET_MB", "").strip()
     if not raw:
@@ -1508,10 +1510,10 @@ def session_context_budget_bytes() -> int:
 
 
 def session_context_warning_bytes() -> int:
-    """Soft warning threshold; the hard budget still controls blocking."""
-    budget = session_context_budget_bytes()
-    if budget == 0:
-        return 0
+    """Soft "CONTEXT GROWING" threshold; ``LOOM_SESSION_CONTEXT_WARNING_MB=0``
+    hides it.  It only labels a session, so it applies without a hard budget;
+    with one, it never exceeds that budget, which alone controls blocking.
+    """
     raw = os.environ.get("LOOM_SESSION_CONTEXT_WARNING_MB", "").strip()
     if not raw:
         configured = DEFAULT_SESSION_CONTEXT_WARNING_BYTES
@@ -1524,7 +1526,8 @@ def session_context_warning_bytes() -> int:
             if mb == 0:
                 return 0
             configured = int(max(0.25, min(64.0, mb)) * 1024 * 1024)
-    return min(configured, budget)
+    budget = session_context_budget_bytes()
+    return min(configured, budget) if budget else configured
 
 
 def _cursor_transcript_for_meta(path: Path) -> Path | None:

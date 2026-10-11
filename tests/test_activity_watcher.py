@@ -121,6 +121,41 @@ def test_activity_watcher_interrupts_runaway_turn_once(tmp_path, monkeypatch):
     assert stop["interrupt_ok"] is True
 
 
+def test_a_runaway_turn_is_never_interrupted_by_default(tmp_path, monkeypatch):
+    """Every limit is opt-in: with no settings Loom leaves the agent alone."""
+    project = tmp_path / "proj"
+    task = project / ".RUD" / "long-task"
+    task.mkdir(parents=True)
+    for name in (
+        "LOOM_TURN_TOKEN_BUDGET",
+        "LOOM_CONTEXT_PERCENT_BUDGET",
+        "LOOM_AUTO_ROTATE_BUDGET_LIMIT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    keys = []
+    monkeypatch.setattr(
+        "loom.web_activity.send_pane_key",
+        lambda target, key: (keys.append((target, key)), (True, ""))[1],
+    )
+    watcher = AgentActivityWatcher(FakeRegistry([]))
+    pane = (
+        "Running subagent  9.80M tokens\n"
+        "→ Add a follow-up  ctrl+c to stop\n"
+        "GPT-5.6 Sol 272K Max Fast · 99.0% · 1 file edited  Run Everything\n"
+    )
+
+    watcher._observe_pane("p1", project, "long-task", "loom-x:0.0", pane, 10.0)
+    watcher._observe_pane("p1", project, "long-task", "loom-x:0.0", pane, 14.0)
+
+    assert keys == []
+    assert read_budget_marker(task) == {}
+    entry = watcher.snapshot()["tasks"]["p1/long-task"]
+    assert entry["working"] is True
+    assert entry["budget_stop"] == {}
+    assert entry["usage"]["token_budget"] == 0
+    assert entry["usage"]["context_percent_budget"] == 0
+
+
 def test_auto_rotation_quota_is_persistent_and_bounded(tmp_path, monkeypatch):
     monkeypatch.setenv("LOOM_AUTO_ROTATE_BUDGET_LIMIT", "2")
     task = tmp_path / "task"

@@ -199,7 +199,7 @@ loom web --project /path --openclaw \
 | `--auth-token TOKEN` | Require auth (bearer / basic, password = token). Also reads `LOOM_WEB_AUTH_TOKEN`. |
 | `--daemon` | Run in the background; logs in `<project>/.RUD/web.log`. |
 | `--openclaw …` | Notifications + reply-back (full flags in `loom/cli.py`). |
-| `~/.loom/env` | Per-host `LOOM_*` settings (default model, usage budgets, …) every `loom` command loads; the real environment wins. See [docs/USAGE_BUDGETS.md](docs/USAGE_BUDGETS.md). |
+| `~/.loom/env` | Per-host `LOOM_*` settings (default model, opt-in usage limits, …) every `loom` command loads; the real environment wins. See [docs/USAGE_BUDGETS.md](docs/USAGE_BUDGETS.md). |
 
 ## Going deeper
 
@@ -212,8 +212,9 @@ loom web --project /path --openclaw \
   everything lives on disk.
 - **[docs/PAPER-PIPELINE.md](docs/PAPER-PIPELINE.md)** — how a paper actually
   gets written: studio steps, gates, the readiness gate, the reviewer panel.
-- **[docs/USAGE_BUDGETS.md](docs/USAGE_BUDGETS.md)** — context rotation,
-  cost-safe model defaults, AR round limits, and their environment overrides.
+- **[docs/USAGE_BUDGETS.md](docs/USAGE_BUDGETS.md)** — opt-in context and
+  turn limits (all off by default), cost-safe model defaults, AR round limits,
+  and their environment overrides.
 - **[docs/OPENCLAW.md](docs/OPENCLAW.md)** — notifications in Slack and
   replying to agents from there.
 - **[docs/AGENT-GATEWAY.md](docs/AGENT-GATEWAY.md)** — Loom over MCP: how

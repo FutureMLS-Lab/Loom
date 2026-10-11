@@ -336,6 +336,25 @@ def test_cursor_session_usage_warns_before_hard_budget(
     assert usage["over_budget"] is False
 
 
+def test_session_size_is_labelled_but_never_blocked_by_default(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The transcript limit is opt-in; the CONTEXT GROWING label is not."""
+    monkeypatch.delenv("LOOM_SESSION_CONTEXT_BUDGET_MB", raising=False)
+    monkeypatch.delenv("LOOM_SESSION_CONTEXT_WARNING_MB", raising=False)
+    transcript = tmp_path / "chat-3.jsonl"
+    with transcript.open("wb") as handle:
+        handle.truncate(9 * 1024 * 1024)  # sparse; past the old 8 MiB default
+
+    usage = rud_task.session_usage(transcript, "cursor")
+    assert usage["budget_bytes"] == 0
+    assert usage["over_budget"] is False
+    assert usage["near_budget"] is True
+
+    monkeypatch.setenv("LOOM_SESSION_CONTEXT_WARNING_MB", "0")
+    assert rud_task.session_usage(transcript, "cursor")["near_budget"] is False
+
+
 def test_cursor_meta_without_transcript_does_not_false_positive(
     tmp_path: Path, monkeypatch
 ) -> None:

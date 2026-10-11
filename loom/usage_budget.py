@@ -3,8 +3,12 @@
 Cursor's terminal UI exposes two numbers that are materially more useful than
 the size of its on-disk SQLite store: cumulative tokens for the active goal and
 the percentage of the model context currently occupied.  Loom samples those
-status lines while it already polls panes for activity, and interrupts a turn
-before a single click can grow into a multi-million-token request chain.
+status lines while it already polls panes for activity, and can interrupt a
+turn before a single click grows into a multi-million-token request chain.
+
+Every limit here is opt-in. By default Loom never stops an agent mid-turn and
+never rotates a task to a fresh session; an operator enables a guard by
+setting its environment variable (see docs/USAGE_BUDGETS.md).
 """
 
 from __future__ import annotations
@@ -17,9 +21,9 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_TURN_TOKEN_BUDGET = 1_500_000
-DEFAULT_CONTEXT_PERCENT_BUDGET = 50.0
-DEFAULT_AUTO_ROTATE_LIMIT = 2
+DEFAULT_TURN_TOKEN_BUDGET = 0
+DEFAULT_CONTEXT_PERCENT_BUDGET = 0.0
+DEFAULT_AUTO_ROTATE_LIMIT = 0
 AUTO_ROTATE_WINDOW_SECONDS = 24 * 60 * 60
 _TOKEN_RE = re.compile(r"\b([0-9]+(?:\.[0-9]+)?)\s*([KMG]?)\s+tokens\b", re.I)
 _PERCENT_RE = re.compile(r"(?:^|[·|])\s*([0-9]+(?:\.[0-9]+)?)%\s*(?:[·|]|$)")
@@ -39,7 +43,7 @@ def _bounded_float_env(name: str, default: float, *, maximum: float) -> float:
 
 
 def turn_token_budget() -> int:
-    """Maximum tokens shown for one active agent turn; ``0`` disables it."""
+    """Maximum tokens shown for one active agent turn; ``0`` (default) is off."""
     return int(
         _bounded_float_env(
             "LOOM_TURN_TOKEN_BUDGET",
@@ -50,7 +54,7 @@ def turn_token_budget() -> int:
 
 
 def context_percent_budget() -> float:
-    """Maximum live context occupancy; ``0`` disables the percentage guard."""
+    """Maximum live context occupancy; ``0`` (default) is off."""
     return _bounded_float_env(
         "LOOM_CONTEXT_PERCENT_BUDGET",
         DEFAULT_CONTEXT_PERCENT_BUDGET,
@@ -59,7 +63,8 @@ def context_percent_budget() -> float:
 
 
 def auto_rotate_limit() -> int:
-    """Maximum unattended budget rotations per task in a rolling day."""
+    """Unattended budget rotations per task in a rolling day; ``0`` (default)
+    leaves a paused task paused."""
     return int(
         _bounded_float_env(
             "LOOM_AUTO_ROTATE_BUDGET_LIMIT",

@@ -55,8 +55,8 @@ def test_settings_reach_import_time_defaults(tmp_path: Path) -> None:
     (home / ".loom").mkdir(parents=True)
     (home / ".loom" / "env").write_text(
         "LOOM_CURSOR_DEFAULT_MODEL=gpt-5.6-sol-max-fast\n"
-        "LOOM_AUTO_ROTATE_BUDGET_LIMIT=0\n"
-        "LOOM_TURN_TOKEN_BUDGET=0\n"
+        "LOOM_AUTO_ROTATE_BUDGET_LIMIT=3\n"
+        "LOOM_TURN_TOKEN_BUDGET=2000000\n"
         "LOOM_CONTEXT_PERCENT_BUDGET=80\n"
     )
     env = {k: v for k, v in os.environ.items() if not k.startswith("LOOM_")}
@@ -71,4 +71,4 @@ def test_settings_reach_import_time_defaults(tmp_path: Path) -> None:
         [sys.executable, "-c", probe], env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60
     )
     assert out.returncode == 0, out.stderr
-    assert out.stdout.split() == ["gpt-5.6-sol-max-fast", "0", "0", "80.0"]
+    assert out.stdout.split() == ["gpt-5.6-sol-max-fast", "3", "2000000", "80.0"]
