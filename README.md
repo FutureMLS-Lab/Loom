@@ -1,8 +1,24 @@
-<img src="loom/web_static/loom-logo.png" alt="Loom" width="160">
+<p align="center">
+  <img src="loom/web_static/loom-logo.png" alt="Loom" width="280" />
+</p>
 
-# Loom
+<h1 align="center">Loom</h1>
 
-*Stop jumping between terminals. All your agents in one place — Mac, iPhone, browser — each task on its own worktree, branch and terminal, still working after you close your laptop.*
+<p align="center"><em>Stop jumping between terminals. All your agents in one place — Mac, iPhone, browser — each task on its own worktree, branch and terminal, still working after you close your laptop.</em></p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue" alt="License: PolyForm Noncommercial" /></a>
+  <img src="https://img.shields.io/badge/platform-Web%20%7C%20macOS%20%7C%20iOS%20%7C%20watchOS-lightgrey" alt="Platforms" />
+  <img src="https://img.shields.io/badge/agents-Claude%20%7C%20Codex%20%7C%20Cursor-orange" alt="Agents" />
+</p>
+
+<p align="center">
+  <a href="#install"><b>Get Started</b></a> ·
+  <a href="https://github.com/FutureMLS-Lab/loom-desktop">macOS App</a> ·
+  <a href="https://github.com/FutureMLS-Lab/loom-app">iPhone App</a> ·
+  <a href="https://github.com/FutureMLS-Lab/loom-desktop#apple-watch">Watch App</a> ·
+  <a href="#mcp">MCP</a>
+</p>
 
 **Loom** runs on your own server and drives Claude Code, Codex and Cursor's agent CLI. Give each task a goal: it gets a terminal, a `PLAN.md`, and an isolated worktree on its own branch — run as many in parallel as you want, then review each diff and **Merge ↩** or **Push**. Loom never commits or pushes on its own.
 
