@@ -7,8 +7,8 @@ from loom.web import (
     _conversation_terminal_answer_keys,
     _conversation_terminal_question,
     _parse_conversation_transcript,
-    _session_last_active,
 )
+from loom.web_conversation import _session_last_active
 
 
 def _write_jsonl(path, rows) -> None:

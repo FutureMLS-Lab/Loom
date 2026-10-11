@@ -164,7 +164,7 @@ def test_budget_marker_blocks_same_session_nudge(tmp_path, monkeypatch):
 
 def test_new_round_rotates_context_once_before_prompt(tmp_path, monkeypatch):
     slug = "paper-x"
-    task = make_paper(tmp_path, slug)
+    make_paper(tmp_path, slug)
     state = ar.read_ar_state(tmp_path, slug)
     state["rounds"][0]["prompt_sent_at"] = ""
     ar.write_ar_state(tmp_path, slug, state)

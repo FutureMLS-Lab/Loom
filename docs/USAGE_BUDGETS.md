@@ -57,6 +57,19 @@ was repeated tool turns inside very large conversations.
 
 ## Configuration
 
+Every setting below is an environment variable. To make one stick on a host,
+put it in `~/.loom/env` (`KEY=VALUE` lines, `#` comments); every `loom`
+command loads that file first, and a variable already set in the real
+environment wins. For example, to keep GPT as the Cursor default and turn the
+automatic interruptions down:
+
+```bash
+LOOM_CURSOR_DEFAULT_MODEL=gpt-5.6-sol-max-fast
+LOOM_AUTO_ROTATE_BUDGET_LIMIT=0
+LOOM_TURN_TOKEN_BUDGET=0
+LOOM_CONTEXT_PERCENT_BUDGET=80
+```
+
 Set `LOOM_SESSION_CONTEXT_BUDGET_MB` before starting Loom to tune the
 per-session hard limit. Set `LOOM_SESSION_CONTEXT_WARNING_MB` to tune the soft
 warning. `0` disables the corresponding threshold; positive values are

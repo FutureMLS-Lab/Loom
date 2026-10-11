@@ -20,6 +20,12 @@ import typer
 from rich.console import Console
 
 from loom import __version__
+from loom.user_env import load_user_env, user_env_path
+
+# Per-host settings before anything else: some modules read their LOOM_*
+# knobs when they are imported.
+_USER_ENV_APPLIED = load_user_env()
+
 from loom.openclaw import build_openclaw_config, openclaw_status
 from loom.paths import bundled_skills_path
 
@@ -260,6 +266,8 @@ def web_cmd(
         raise typer.Exit(1)
 
     root = (project or Path.cwd()).resolve()
+    if _USER_ENV_APPLIED:
+        console.print(f"[dim]Settings:[/dim] {user_env_path()}  ({', '.join(_USER_ENV_APPLIED)})")
     web_auth_token = (auth_token or os.environ.get("LOOM_WEB_AUTH_TOKEN", "")).strip()
     openclaw_cfg = build_openclaw_config(
         enabled=openclaw,

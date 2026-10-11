@@ -199,6 +199,7 @@ loom web --project /path --openclaw \
 | `--auth-token TOKEN` | Require auth (bearer / basic, password = token). Also reads `LOOM_WEB_AUTH_TOKEN`. |
 | `--daemon` | Run in the background; logs in `<project>/.RUD/web.log`. |
 | `--openclaw …` | Notifications + reply-back (full flags in `loom/cli.py`). |
+| `~/.loom/env` | Per-host `LOOM_*` settings (default model, usage budgets, …) every `loom` command loads; the real environment wins. See [docs/USAGE_BUDGETS.md](docs/USAGE_BUDGETS.md). |
 
 ## Going deeper
 

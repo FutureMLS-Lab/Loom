@@ -78,7 +78,6 @@ from loom.web_conversation import (
     _conversation_terminal_question,
     _conversation_transcript_path,
     _parse_conversation_transcript,
-    _session_last_active,
 )
 from loom import ar_task as ar
 from loom.oauth import OAuthStore
