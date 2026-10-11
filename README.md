@@ -1,65 +1,35 @@
-<p align="center">
-  <img src="loom/web_static/loom-logo.png" alt="Loom" width="200" />
-</p>
+![Loom](loom/web_static/loom-logo.png)
 
-<h1 align="center">Loom</h1>
+# Loom
 
-<p align="center"><em>Many coding agents on one repository, without collisions: every task gets its own git worktree, branch and terminal.</em></p>
+*Stop jumping between terminals. All your agents in one place — Mac, iPhone, browser — each task on its own worktree, branch and terminal, still working after you close your laptop.*
 
-**Loom** is a console you run on your own server for Claude Code, Codex and
-Cursor's agent CLI. Each task gets a fresh worktree on a new branch (cut from
-your HEAD commit), a tmux terminal that keeps running when you close the
-browser, and a `PLAN.md` that a short interview writes. Start a second task
-while the first is working, then a third; your own checkout is not touched.
-When a task is done, read its diff and **Merge ↩** or **Push** it, one task at
-a time. Loom never commits or pushes on its own.
+**Loom** runs on your own server and drives Claude Code, Codex and Cursor's agent CLI. Give each task a goal: it gets a terminal, a `PLAN.md`, and an isolated worktree on its own branch — run as many in parallel as you want, then review each diff and **Merge ↩** or **Push**. Loom never commits or pushes on its own.
 
-<p align="center">
-  <img src="docs/images/parallel-tasks.png" alt="The Loom console with three agent tasks running on one repository, each on its own loom/ branch" width="900">
-</p>
+<!-- DEMO GIF slot: drop your gif at docs/images/demo.gif and uncomment the line below. -->
+<!-- ![Loom demo](docs/images/demo.gif) -->
 
-```
-               agent   branch       worktree
-           ┌─▶ Claude  loom/login   .RUD/login/work/app   ─┐
-app ───────┼─▶ Codex   loom/export  .RUD/export/work/app  ─┼─▶ review the diff
-your repo  └─▶ Cursor  loom/docs    .RUD/docs/work/app    ─┘          │
-                                                                      ▼
-                                                               Merge ↩ or Push
-                                                                one at a time
-```
-
-| Isolated per task | Not isolated |
-|---|---|
-| Files: its own worktree, `.RUD/<slug>/work/<repo>` | GPUs, CPU, memory and ports |
-| Branch: `loom/<slug>`, from your HEAD commit | Global caches and installs |
-| Terminal: its own tmux session and agent | Databases and other outside services |
-| Plan: its own `PLAN.md` and results table | `.env` and other untracked files: not copied in |
-| Review: its own diff in the Changes tab | Lines two tasks both edit: a conflict at merge time |
-
-The full guide (task layout, merging and conflicts, ports and GPUs, recipes):
-**[docs/PARALLEL-TASKS.md](docs/PARALLEL-TASKS.md)**.
-
-Around the tasks: one server for three clients (browser, macOS app, phone),
-Loom's tools over MCP for agents and bots, and a Research Factory that turns
-directions into reviewed papers.
-
-> **Shortest path:** open a coding agent on the target machine and say
-> *"follow [AGENT.md](AGENT.md) and deploy Loom"* — install, auth token,
-> and a reachable URL, end to end.
+![Loom overview: every screen drives one server; each task gets a tmux pane, a PLAN and a worktree; the pane runs Claude, Codex, Cursor or any CLI](docs/images/loom-diagram.png)
 
 ## Install
 
-Needs **Python 3.10+**, **git**, **tmux**, and one agent CLI (`claude`,
-`codex`, or Cursor's `agent`) you have logged into.
+> **Fastest path:** open a coding agent on the target machine and say
+> *"follow [AGENT.md](AGENT.md) and deploy Loom"* — install, auth token,
+> and a reachable URL, end to end.
+
+Or do it by hand. Needs **Python 3.10+**, **git**, **tmux**, and one agent CLI
+(`claude`, `codex`, or Cursor's `agent`) you have logged into.
 
 ```bash
 pipx install git+https://github.com/FutureMLS-Lab/Loom.git
-loom doctor        # names anything missing (LaTeX only matters for the Factory)
+loom doctor        # names anything missing
 ```
 
 Hacking on Loom itself: clone, `pip install -e '.[dev]'`, `pytest tests`.
 
 ## Quickstart
+
+Installed via an agent ([AGENT.md](AGENT.md))? It already printed you a URL — open it.
 
 ```bash
 loom web --projects --project ~    # → http://127.0.0.1:8765
@@ -67,7 +37,7 @@ loom web --projects --project ~    # → http://127.0.0.1:8765
 
 Your home folder becomes the workspace: add any project under it, or create a
 **New empty folder** (Loom makes it a git repo with a first commit, so its
-tasks get worktrees). Loom's own research folder is `~/loom`.
+tasks get worktrees).
 
 Each task runs the same loop:
 
@@ -97,97 +67,88 @@ To try it on a throwaway repository first, run
 project and prints four tasks to paste: three merge cleanly, and one
 conflicts on purpose.
 
-## Three clients, one server
+## Parallel runs
 
-| Client | What it is |
+Run as many tasks on one repository as you want, without collisions: every
+task gets its own worktree, branch and terminal.
+
+```
+               agent   branch       worktree
+           ┌─▶ Claude  loom/login   .RUD/login/work/app   ─┐
+app ───────┼─▶ Codex   loom/export  .RUD/export/work/app  ─┼─▶ review the diff
+your repo  └─▶ Cursor  loom/docs    .RUD/docs/work/app    ─┘          │
+                                                                      ▼
+                                                               Merge ↩ or Push
+                                                                one at a time
+```
+
+| Isolated per task | Not isolated |
 |---|---|
-| **Web** (built-in) | The full console at `:8765` — projects and tasks in one sidebar, Chat / Terminal / Files / Changes per task, a dock of active tasks, Factory. |
-| **[loom-desktop](https://github.com/FutureMLS-Lab/loom-desktop)** | macOS dock & console: live task pills, inline chat, terminal and diffs without a browser tab. |
-| **[loom-app](https://github.com/FutureMLS-Lab/loom-app)** | Mobile & web client for checking the fleet and replying to agents from a phone. |
+| Files: its own worktree, `.RUD/<slug>/work/<repo>` | GPUs, CPU, memory and ports |
+| Branch: `loom/<slug>`, from your HEAD commit | Global caches and installs |
+| Terminal: its own tmux session and agent | Databases and other outside services |
+| Plan: its own `PLAN.md` and results table | `.env` and other untracked files: not copied in |
+| Review: its own diff in the Changes tab | Lines two tasks both edit: a conflict at merge time |
 
-All three speak to the same server and auth token; [AGENT.md](AGENT.md) step 5
-covers making it reachable (SSH tunnel / Tailscale / Cloudflare Tunnel / your
-own domain).
+The full guide (task layout, merging and conflicts, ports and GPUs, recipes):
+**[docs/PARALLEL-TASKS.md](docs/PARALLEL-TASKS.md)**.
 
-Agents and bots get their own door: Loom's tools over **MCP** (`POST /mcp`,
-or `loom mcp` over stdio) for Claude Code / Codex / Cursor / OpenClaw — tasks,
-agent conversations, tmux sessions and keys, and the factories, with a scoped
-token for bots. **ChatGPT** connects over OAuth: you approve it on Loom's own
-page and it gets a revocable token for `/mcp` only, never yours. `loom agent-config` prints the setup for each client; see
-[docs/AGENT-GATEWAY.md](docs/AGENT-GATEWAY.md).
+## Clients: one server, every screen
 
-## Research Factory
+One server, same auth token — start on one screen, continue on another.
 
-`/factory` — the front door to three production lines that share one panel
-of reviewers and call each other's APIs:
+<table>
+<tr>
+<td align="center" valign="top" width="50%">
+<img src="docs/images/parallel-tasks.png" alt="Web console: three agent tasks on one repository">
+<br><b>Web</b> (built-in) — the full console at <code>:8765</code>
+</td>
+<td align="center" valign="top" width="50%">
+<img src="docs/images/client-desktop.png" alt="macOS desktop app">
+<br><b>macOS desktop</b> — live task pills, chat, terminal and diffs (<a href="https://github.com/FutureMLS-Lab/loom-desktop">loom-desktop</a>)
+</td>
+</tr>
+<tr>
+<td align="center" valign="top" width="50%">
+<!-- Phone shot: drop it at docs/images/client-phone.png and uncomment.
+<img src="docs/images/client-phone.png" alt="Phone app">
+<br> -->
+<b>Phone</b> — the fleet and agent replies in your pocket (<a href="https://github.com/FutureMLS-Lab/loom-app">loom-app</a>) · <i>screenshot coming</i>
+</td>
+<td align="center" valign="top" width="50%">
+<img src="docs/images/client-watch.png" alt="Apple Watch app">
+<br><b>Watch</b> — what needs you, on your wrist, with tap-to-reply (<a href="https://github.com/FutureMLS-Lab/loom-desktop">loom-desktop</a>)
+</td>
+</tr>
+</table>
 
-```
-Paper Factory    /paper-factory     brief ─▶ ideas (citations verified vs OpenAlex) ─▶ papers
-                                    draft ─▶ your gate ─▶ rounds (panel review each round) ─▶ your gate
-Review Factory   /review-factory    any compiled PDF ─▶ three independent reports ─▶ lowest-rating verdict
-Rebuttal Factory /rebuttal-factory  venue policy ─▶ point-by-point responses ─▶ strict delivery bundle
-```
+Making it reachable from another device: [AGENT.md](AGENT.md) step 5
+(SSH tunnel / Tailscale / Cloudflare Tunnel / your own domain).
 
-**Paper Factory** — a studio mines what the field just published and proposes
-grounded ideas; each idea you keep becomes a paper that drafts itself in the
-venue's LaTeX, runs its own experiments, and argues with the reviewer panel
-round after round behind a hard readiness gate (no placeholders, real
-numbers, a page-one figure, clean build). Stalled authors are nudged back to
-work; you are only interrupted at the two gates. On final approval the
-manuscript is handed to the Rebuttal Factory automatically, so the reviews
-have somewhere to land. Needs `latexmk` + TeX Live; methodology lives in
-`loom/skills/ar/`.
+## MCP
 
-The Paper Factory can also ground ideation in a generated **researcher
-profile**. Select a local PDF export of a Google Scholar profile, add an
-optional note, and click Generate; Loom uploads the PDF, extracts the structured
-background, and activates it automatically. Strict, Balanced, and Exploratory
-fit remain Studio-level choices. Reusable profiles stay host-local under
-`~/.loom/researcher-profiles/`; each Studio stores a bounded snapshot so later
-profile edits do not silently change an existing run. Extraction runs through
-the configured Cursor model in an isolated workspace.
-
-**Review Factory** — the same three-model panel as a service: paste an arXiv
-/ OpenReview / PDF link (or a local directory), and the panel reviews to the
-venue's own form — thirty CORE-A* venues carry their real sections and score
-scales. Download `review.md` per run, or auto-fill the paper's OpenReview
-Official_Review form behind a preview-then-confirm. The Paper Factory calls
-this exact panel on every round.
-
-## Rebuttal Factory
-
-`/rebuttal-factory` — the same discipline pointed at the reviews you received:
-
-```
-Studio: CFP URL ─▶ policy draft ─▶ your gate
-Paper:  import package ─▶ concern matrix ─▶ responses ─▶ validation ─▶ your gate
-        ─▶ delivery agent ─▶ strict preflight ─▶ three-model figure check ─▶ your gate ─▶ bundle
-```
-
-One OpenReview forum link is the whole intake: the venue is read off the
-submission itself, the **conference studio** is found or created, and the
-venue's own author guide becomes a frozen, human-approved policy every paper
-under it inherits. A live agent atomizes each review into a concern matrix
-and drafts evidence-bounded point-by-point responses; deterministic
-validation, a strict rebuild-and-preflight harness (full body pages,
-anonymity, no placeholder values), and a unanimous three-model figure check
-stand between the drafts and a byte-exact `submission-bundle.zip`. Approvals
-bind to content hashes — change a file and the approval dies. Posting back
-to OpenReview is built in but never automatic: sign in, preview the exact
-plan, and an explicit confirm fires it.
-
-## OpenClaw notifications
-
-Flip **Notify** on a task and Loom pings you (e.g. in Slack, via an OpenClaw
-gateway) when its agent stops and waits for input — your reply is typed
-straight back into the pane. The
-Factory also reports drafts ready, rounds reviewed, and stalled authors.
+Agents and bots get their own door: Loom's tools over **MCP** — `POST /mcp`
+over HTTP, or `loom mcp` over stdio. Any MCP client can read and drive Loom
+with typed tools: tasks, agent conversations, tmux sessions and keys.
 
 ```bash
-loom web --project /path --openclaw \
-  --openclaw-url http://127.0.0.1:18789/hooks/agent \
-  --openclaw-token <gateway-token>
+export LOOM_AGENT_TOKEN=$(cat ~/.loom/agent/agent-token)  # minted when the server starts
+
+# Claude Code
+claude mcp add --scope user --transport http loom http://127.0.0.1:8765/mcp \
+  --header "Authorization: Bearer $LOOM_AGENT_TOKEN"
+
+# Codex
+codex mcp add loom --url http://127.0.0.1:8765/mcp --bearer-token-env-var LOOM_AGENT_TOKEN
+
+# Anything that launches stdio MCP servers (Claude Desktop, ...)
+LOOM_URL=http://127.0.0.1:8765 LOOM_WEB_AUTH_TOKEN=... loom mcp
 ```
+
+`loom agent-config` prints ready-to-paste setups for every client, including
+OpenClaw and ChatGPT (OAuth, revocable token for `/mcp` only). Full tool list
+and safety model: [docs/AGENT-GATEWAY.md](docs/AGENT-GATEWAY.md). To get
+pinged in Slack when an agent needs you instead: [docs/OPENCLAW.md](docs/OPENCLAW.md).
 
 ## Run options
 
@@ -204,32 +165,26 @@ loom web --project /path --openclaw \
 ## Going deeper
 
 - **[docs/PARALLEL-TASKS.md](docs/PARALLEL-TASKS.md)** — many tasks on one
-  repository: what a task is on disk, merging and conflicts, what is and is
-  not isolated, recipes, cleanup.
+repository: what a task is on disk, merging and conflicts, what is and is
+not isolated, recipes, cleanup.
 - **[AGENT.md](AGENT.md)** — one-file deploy runbook an agent can execute.
 - **[docs/API.md](docs/API.md)** — the HTTP API contract every client speaks
   (console, desktop, mobile, OpenClaw agents, your scripts), plus where
   everything lives on disk.
-- **[docs/PAPER-PIPELINE.md](docs/PAPER-PIPELINE.md)** — how a paper actually
-  gets written: studio steps, gates, the readiness gate, the reviewer panel.
 - **[docs/USAGE_BUDGETS.md](docs/USAGE_BUDGETS.md)** — opt-in context and
   turn limits (all off by default), cost-safe model defaults, AR round limits,
   and their environment overrides.
 - **[docs/OPENCLAW.md](docs/OPENCLAW.md)** — notifications in Slack and
-  replying to agents from there.
+replying to agents from there.
 - **[docs/AGENT-GATEWAY.md](docs/AGENT-GATEWAY.md)** — Loom over MCP: how
-  agents and bots query and drive Loom, the tool list, and the safety model.
-- **[docs/research-factory/arch.md](docs/research-factory/arch.md)** and
-  **[docs/rebuttal-factory/arch.md](docs/rebuttal-factory/arch.md)** — each
-  factory's full pipeline flowchart and module map, with its debt ledger
-  in the sibling `todos.md`.
+agents and bots query and drive Loom, the tool list, and the safety model.
 - **[docs/LOOM_CODEBASE_ARCHITECTURE.md](docs/LOOM_CODEBASE_ARCHITECTURE.md)**
-  and **[docs/FIGURE_SKILL_FLOW.md](docs/FIGURE_SKILL_FLOW.md)** — how the
-  codebase and the figure-skill pipeline are put together.
+and **[docs/FIGURE_SKILL_FLOW.md](docs/FIGURE_SKILL_FLOW.md)** — how the
+codebase and the figure-skill pipeline are put together.
 
 ## Licence
 
 Noncommercial use only, under the
 [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0)
-terms in [`LICENSE`](LICENSE). Commercial use needs a separate licence from
+terms in `[LICENSE](LICENSE)`. Commercial use needs a separate licence from
 FutureMLS-Lab.
