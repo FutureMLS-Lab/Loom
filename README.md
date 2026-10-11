@@ -1,4 +1,4 @@
-![Loom](loom/web_static/loom-logo.png)
+<img src="loom/web_static/loom-logo.png" alt="Loom" width="160">
 
 # Loom
 
