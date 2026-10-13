@@ -66,8 +66,13 @@ _INLINE_TEMPLATES = {
     "PLAN.md": """\
 # Plan
 
+<!-- loom:plan-revision=1 -->
+
 <!-- One-paragraph goal; the deep-interview pane rewrites it.
      Run `/goal` in Claude Code to act on it. -->
+
+## Active milestone
+<!-- - [ ] [stable-id] Concrete next action -->
 
 ## What we have done
 

@@ -63,6 +63,19 @@ was repeated tool turns inside very large conversations.
   compact handoff automatically, at most that many times per task in a
   rolling 24-hour window. AR paper rounds always remain paused because their
   continuation must preserve a round-specific completion-note contract.
+- **Ordinary-agent watchdog** (`LOOM_AGENT_WATCHDOG_MAX_NUDGES`, e.g. `6`).
+  After an ordinary `agent` pane was observed working and then remains idle,
+  Loom continues it only when `PLAN.md` declares one explicit revision and one
+  unchecked `[milestone-id]` under `## Active milestone`. A single-choice
+  terminal menu is answered only when exactly one non-high-impact option
+  matches that milestone; Recommended/default alone is not authorization.
+  Ambiguous menus, stale plan revisions, production or destructive actions,
+  external pushes/submissions, credentials and approvals stop for a human.
+  A send is counted only after Loom observes the pane working again. Missing
+  acknowledgements and transport failures get one bounded retry, then stop.
+  An acknowledged `(plan revision, milestone id)` cannot be automatically
+  continued twice; the Agent must advance the PLAN authority first. This is
+  the durable deduplication barrier for background jobs and experiments.
 
 ## Configuration
 
@@ -78,6 +91,9 @@ LOOM_SESSION_CONTEXT_BUDGET_MB=8
 LOOM_TURN_TOKEN_BUDGET=1500000
 LOOM_CONTEXT_PERCENT_BUDGET=50
 LOOM_AUTO_ROTATE_BUDGET_LIMIT=2
+LOOM_AGENT_WATCHDOG_MAX_NUDGES=6
+LOOM_AGENT_WATCHDOG_IDLE_SECONDS=180
+LOOM_AGENT_WATCHDOG_ACK_SECONDS=45
 ```
 
 `LOOM_SESSION_CONTEXT_BUDGET_MB` sets the per-session hard limit (default `0`,
@@ -97,6 +113,16 @@ than exact billing limits.
 `LOOM_AUTO_ROTATE_BUDGET_LIMIT` is the maximum number of unattended
 fresh-session continuations per task per rolling 24 hours (default `0`,
 maximum `20`). With `0`, a paused task stays paused until you continue it.
+
+`LOOM_AGENT_WATCHDOG_MAX_NUDGES` is the separate rolling daily cap for
+continuing a live ordinary session after it becomes idle (default `0`, maximum
+`20`). Auto-rotation and the watchdog solve different stalls and keep separate
+quotas. `LOOM_AGENT_WATCHDOG_IDLE_SECONDS` defaults to `180` and is clamped to
+30–3600 seconds. `LOOM_AGENT_WATCHDOG_ACK_SECONDS` defaults to `45` and is
+clamped to 8–300 seconds. The watchdog is edge-armed: Loom must first observe
+the pane working, so enabling it never sends a prompt into every task that was
+already idle. Its milestone, menu fingerprint, send, and acknowledgement state
+are durable, so a Loom web restart cannot forget a task that was in flight.
 
 The transcript budget applies to messages sent through Loom's compose box and
 workflow buttons. Raw keystrokes sent directly into the embedded terminal are
