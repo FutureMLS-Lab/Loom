@@ -21,6 +21,14 @@ Remove only the orphans your own change created.
 bug" becomes "write a failing test, make it pass"), state a short plan with
 a check per step, and loop until the checks pass.
 
+**Keep the active milestone authoritative.** `PLAN.md` contains a
+`loom:plan-revision` marker and an `## Active milestone` section. Before
+unattended work, keep exactly one unchecked item there in the form
+`- [ ] [stable-id] Concrete next action`. Bump the revision whenever that
+authority changes, move completed milestones into the history, and never
+leave competing or stale alternatives in the active section. The broader
+backlog may remain under `Future to do`.
+
 ## Project memory
 
 Every project keeps its hard-won lessons in `.RUD/MEMORY.md` at the project

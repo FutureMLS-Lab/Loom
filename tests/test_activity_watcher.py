@@ -210,7 +210,12 @@ def test_ordinary_agent_watchdog_continues_an_idle_plan(tmp_path, monkeypatch):
     (task / "task.json").write_text(
         json.dumps({"slug": "overnight-task", "title": "t", "kind": "agent"})
     )
-    (task / "PLAN.md").write_text("# Plan\n- [ ] Run the CPU work\n")
+    (task / "PLAN.md").write_text(
+        "# Plan\n"
+        "<!-- loom:plan-revision=1 -->\n"
+        "## Active milestone\n"
+        "- [ ] [cpu-work] Run the CPU work\n"
+    )
     monkeypatch.setenv("LOOM_AGENT_WATCHDOG_MAX_NUDGES", "3")
     monkeypatch.setenv("LOOM_AGENT_WATCHDOG_IDLE_SECONDS", "30")
     sent: list[tuple[str, str, bool]] = []
@@ -239,7 +244,16 @@ def test_ordinary_agent_watchdog_continues_an_idle_plan(tmp_path, monkeypatch):
     assert "Continue the accepted PLAN" in sent[0][1]
     assert sent[0][2] is True
     snapshot = watcher.snapshot()["tasks"]["p1/overnight-task"]
-    assert snapshot["watchdog"]["last_action"] == "nudge"
+    assert snapshot["watchdog"]["awaiting_progress"] is True
+    assert snapshot["watchdog"].get("nudge_epochs", []) == []
+
+    watcher._observe_pane(
+        "p1", project, "overnight-task", "loom-x:0.0", working, 54.0
+    )
+
+    acknowledged = watcher.snapshot()["tasks"]["p1/overnight-task"]["watchdog"]
+    assert acknowledged["last_action"] == "nudge"
+    assert acknowledged["nudge_epochs"] == [54.0]
 
 
 def test_watchdog_does_not_bypass_a_budget_rotation_marker(tmp_path, monkeypatch):
@@ -251,7 +265,12 @@ def test_watchdog_does_not_bypass_a_budget_rotation_marker(tmp_path, monkeypatch
     (task / "task.json").write_text(
         json.dumps({"slug": "paused-task", "title": "t", "kind": "agent"})
     )
-    (task / "PLAN.md").write_text("# Plan\n- [ ] Continue\n")
+    (task / "PLAN.md").write_text(
+        "# Plan\n"
+        "<!-- loom:plan-revision=1 -->\n"
+        "## Active milestone\n"
+        "- [ ] [continue] Continue the accepted work\n"
+    )
     monkeypatch.setenv("LOOM_AGENT_WATCHDOG_MAX_NUDGES", "3")
     monkeypatch.setenv("LOOM_AGENT_WATCHDOG_IDLE_SECONDS", "30")
     sent: list[str] = []

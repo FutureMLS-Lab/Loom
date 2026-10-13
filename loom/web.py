@@ -565,8 +565,14 @@ RUD workflow:
    acceptance, tests, risks, non-goals, and available worktrees.
 2. When the interview has enough information, write or overwrite
    {plan_path} with exactly this shape:
-   - Under the title, ONE paragraph: what success looks like, plus the
+   - Directly below the title, exactly one
+     ``<!-- loom:plan-revision=N -->`` marker. Start at 1 and increment N
+     whenever the active authority changes.
+   - Under that marker, ONE paragraph: what success looks like, plus the
      decisions and constraints the interview settled.
+   - "## Active milestone" - exactly one unchecked item in the form
+     ``- [ ] [stable-id] Concrete next action``. It is the only action Loom
+     may continue unattended; never leave alternatives or stale work here.
    - "## What we have done" - empty at this point.
    - "## Results" - an EMPTY table whose rows already name every number
      this task must produce (columns like metric / target / value).
@@ -580,9 +586,11 @@ RUD workflow:
    click RUD's "Run /goal" button (or type /goal) to execute {state_doc}.
 4. While executing: move finished checklist items from "Future to do"
    into "What we have done" (one concise line each), fill "Results"
-   cells as real numbers land, keep "Future to do" pointing at what is
-   actually next, and append dated one-liners to "Progress Log". Remove
-   obsolete noise, but preserve unrelated prior sections.
+   cells as real numbers land, promote exactly one next action into
+   "Active milestone", increment the plan revision whenever that authority
+   changes, keep "Future to do" pointing at later work, and append dated
+   one-liners to "Progress Log". Remove obsolete noise, but preserve
+   unrelated prior sections.
 
 Behavioural constraints:
 - {state_doc} is the ONLY task-state file. Do not create INTERVIEW.md,

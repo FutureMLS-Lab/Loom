@@ -1,7 +1,15 @@
 # Plan
 
+<!-- loom:plan-revision=1 -->
+
 <!-- One-paragraph goal: what success looks like, and the decisions the
      deep-interview settled. The interview rewrites this paragraph. -->
+
+## Active milestone
+<!-- Before unattended work, put exactly one item here as:
+     - [ ] [stable-milestone-id] Concrete next action
+     Bump loom:plan-revision whenever this authority changes. Move completed
+     milestones to What we have done; never leave stale alternatives here. -->
 
 ## What we have done
 <!-- Filled while running: one line per completed item, newest at the bottom. -->

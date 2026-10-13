@@ -16,6 +16,7 @@ from typing import Any, Callable
 import re
 
 from loom.agent_watchdog import (
+    acknowledge_progress,
     arm_watchdog,
     idle_decision,
     read_watchdog_state,
@@ -376,7 +377,35 @@ class AgentActivityWatcher:
             return
         root = task_root(project_root, slug)
         if working:
+            acknowledged = acknowledge_progress(root, target=target, now=now)
             arm_watchdog(root, target=target, now=now)
+            state = read_watchdog_state(root)
+            with self._lock:
+                entry = self._state.get((project_id, slug))
+                if entry is not None:
+                    entry["watchdog"] = state
+            if acknowledged is not None:
+                detail = (
+                    f"working acknowledged after "
+                    f"{acknowledged.get('attempts', 1)} attempt(s)"
+                )
+                print(f"[watchdog] {slug}: {detail}", flush=True)
+                if self.openclaw is not None:
+                    try:
+                        self.openclaw.emit(
+                            "agent-watchdog-continued",
+                            instruction=(
+                                f"Loom confirmed task {slug} resumed: {detail}."
+                            ),
+                            project_root=project_root,
+                            task_slug=slug,
+                            data={
+                                "event": "agent-watchdog-continued",
+                                **acknowledged,
+                            },
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[watchdog] {slug} emit error: {exc}", flush=True)
             return
         if read_budget_marker(root).get("rotate_required"):
             # The current session has already hit a context/turn fuse. Its only
@@ -432,37 +461,30 @@ class AgentActivityWatcher:
                 str(decision.get("prompt") or ""),
                 submit=True,
             )
-        state = record_action(root, action=action, ok=ok, error=error, now=now)
+        state = record_action(
+            root,
+            action=action,
+            ok=ok,
+            answer=str(decision.get("answer") or ""),
+            question_id=str(decision.get("question_id") or ""),
+            error=error,
+            now=now,
+        )
         with self._lock:
             entry = self._state.get((project_id, slug))
             if entry is not None:
                 entry["watchdog"] = state
         detail = (
-            f"answered {decision.get('answer')!r}"
+            f"answered {decision.get('answer')!r}; awaiting working acknowledgement"
             if action == "answer" and ok
-            else "sent the PLAN continuation"
+            else "sent the PLAN continuation; awaiting working acknowledgement"
             if ok
             else str(state.get("blocked_reason") or "")
             if state.get("blocked_reason")
             else f"could not continue - {error or 'unknown error'}"
         )
         print(f"[watchdog] {slug}: {detail}", flush=True)
-        if ok and self.openclaw is not None:
-            try:
-                self.openclaw.emit(
-                    "agent-watchdog-continued",
-                    instruction=f"Loom automatically continued task {slug}: {detail}.",
-                    project_root=project_root,
-                    task_slug=slug,
-                    data={
-                        "event": "agent-watchdog-continued",
-                        "action": action,
-                        "answer": str(decision.get("answer") or ""),
-                    },
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(f"[watchdog] {slug} emit error: {exc}", flush=True)
-        elif state.get("blocked_reason") and self.openclaw is not None:
+        if not ok and state.get("blocked_reason") and self.openclaw is not None:
             try:
                 self.openclaw.emit(
                     "agent-watchdog-blocked",
