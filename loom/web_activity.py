@@ -15,6 +15,13 @@ from typing import Any, Callable
 
 import re
 
+from loom.agent_watchdog import (
+    arm_watchdog,
+    idle_decision,
+    read_watchdog_state,
+    record_action,
+    watchdog_enabled,
+)
 from loom.openclaw import OpenClawClient
 from loom.rud_task import (
     DEFAULT_MONITOR_PATTERN,
@@ -24,10 +31,11 @@ from loom.rud_task import (
     task_root,
     write_task_monitor,
 )
-from loom.tmux_util import capture_pane, send_pane_key
+from loom.tmux_util import capture_pane, send_pane_key, send_pane_text
 from loom.usage_budget import (
     claim_auto_rotation,
     parse_pane_usage,
+    read_budget_marker,
     usage_budget_violation,
     write_budget_marker,
 )
@@ -301,6 +309,16 @@ class AgentActivityWatcher:
                     entry["working"] = False
                     entry["finished_at"] = now
 
+        self._observe_watchdog(
+            project_id,
+            project_root,
+            slug,
+            target,
+            text,
+            working=working,
+            now=now,
+        )
+
         if not should_interrupt:
             return
         marker = write_budget_marker(
@@ -338,6 +356,127 @@ class AgentActivityWatcher:
                 print(f"[budget] {slug} emit error: {exc}", flush=True)
         if ok:
             self._schedule_budget_rotation(project_root, project_id, slug, key)
+
+    def _observe_watchdog(
+        self,
+        project_id: str,
+        project_root: Path,
+        slug: str,
+        target: str,
+        pane_text: str,
+        *,
+        working: bool,
+        now: float,
+    ) -> None:
+        """Keep an opted-in ordinary task moving without crossing safety gates."""
+        if not watchdog_enabled():
+            return
+        meta = read_meta(project_root, slug)
+        if meta is None or str(getattr(meta, "kind", "agent")) != "agent":
+            return
+        root = task_root(project_root, slug)
+        if working:
+            arm_watchdog(root, target=target, now=now)
+            return
+        if read_budget_marker(root).get("rotate_required"):
+            # The current session has already hit a context/turn fuse. Its only
+            # safe continuation is the existing fresh-session rotation.
+            return
+        decision = idle_decision(
+            root,
+            target=target,
+            pane_text=pane_text,
+            now=now,
+        )
+        action = str(decision.get("action") or "none")
+        if action == "none":
+            return
+        if action == "blocked":
+            state = read_watchdog_state(root)
+            with self._lock:
+                entry = self._state.get((project_id, slug))
+                if entry is not None:
+                    entry["watchdog"] = state
+            reason = str(decision.get("reason") or "human input required")
+            print(f"[watchdog] {slug}: blocked - {reason}", flush=True)
+            if decision.get("notify") and self.openclaw is not None:
+                try:
+                    self.openclaw.emit(
+                        "agent-watchdog-blocked",
+                        instruction=(
+                            f"Loom left task {slug} paused because {reason}. "
+                            "Open the pane and make the decision; no automatic "
+                            "answer was sent."
+                        ),
+                        project_root=project_root,
+                        task_slug=slug,
+                        data={"event": "agent-watchdog-blocked", "reason": reason},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[watchdog] {slug} emit error: {exc}", flush=True)
+            return
+
+        ok = False
+        error = ""
+        if action == "answer":
+            for key in decision.get("keys") or []:
+                if key == "Enter":
+                    time.sleep(0.3)
+                ok, error = send_pane_key(target, str(key))
+                if not ok:
+                    break
+                time.sleep(0.14 if key == "Space" else 0.08)
+        elif action == "nudge":
+            ok, error = send_pane_text(
+                target,
+                str(decision.get("prompt") or ""),
+                submit=True,
+            )
+        state = record_action(root, action=action, ok=ok, error=error, now=now)
+        with self._lock:
+            entry = self._state.get((project_id, slug))
+            if entry is not None:
+                entry["watchdog"] = state
+        detail = (
+            f"answered {decision.get('answer')!r}"
+            if action == "answer" and ok
+            else "sent the PLAN continuation"
+            if ok
+            else str(state.get("blocked_reason") or "")
+            if state.get("blocked_reason")
+            else f"could not continue - {error or 'unknown error'}"
+        )
+        print(f"[watchdog] {slug}: {detail}", flush=True)
+        if ok and self.openclaw is not None:
+            try:
+                self.openclaw.emit(
+                    "agent-watchdog-continued",
+                    instruction=f"Loom automatically continued task {slug}: {detail}.",
+                    project_root=project_root,
+                    task_slug=slug,
+                    data={
+                        "event": "agent-watchdog-continued",
+                        "action": action,
+                        "answer": str(decision.get("answer") or ""),
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[watchdog] {slug} emit error: {exc}", flush=True)
+        elif state.get("blocked_reason") and self.openclaw is not None:
+            try:
+                self.openclaw.emit(
+                    "agent-watchdog-blocked",
+                    instruction=(
+                        f"Loom left task {slug} paused because {detail}. "
+                        "Inspect the pane and relay/tmux connection before "
+                        "continuing it."
+                    ),
+                    project_root=project_root,
+                    task_slug=slug,
+                    data={"event": "agent-watchdog-blocked", "reason": detail},
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[watchdog] {slug} emit error: {exc}", flush=True)
 
     def _schedule_budget_rotation(
         self,
@@ -437,6 +576,7 @@ class AgentActivityWatcher:
                     "finished_at": finished,
                     "usage": dict(entry.get("usage") or {}),
                     "budget_stop": dict(entry.get("budget_stop") or {}),
+                    "watchdog": dict(entry.get("watchdog") or {}),
                 }
                 if working or finished:
                     agg = projects.setdefault(pid, {"working": 0, "finished": 0})

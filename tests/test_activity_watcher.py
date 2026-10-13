@@ -201,3 +201,76 @@ def test_budget_stop_auto_rotates_an_ordinary_task(tmp_path, monkeypatch):
     watcher._observe_pane("p1", project, "overnight-task", "loom-x:0.0", pane, 10.0)
 
     assert rotated.wait(1.0)
+
+
+def test_ordinary_agent_watchdog_continues_an_idle_plan(tmp_path, monkeypatch):
+    project = tmp_path / "proj"
+    task = project / ".RUD" / "overnight-task"
+    task.mkdir(parents=True)
+    (task / "task.json").write_text(
+        json.dumps({"slug": "overnight-task", "title": "t", "kind": "agent"})
+    )
+    (task / "PLAN.md").write_text("# Plan\n- [ ] Run the CPU work\n")
+    monkeypatch.setenv("LOOM_AGENT_WATCHDOG_MAX_NUDGES", "3")
+    monkeypatch.setenv("LOOM_AGENT_WATCHDOG_IDLE_SECONDS", "30")
+    sent: list[tuple[str, str, bool]] = []
+    monkeypatch.setattr(
+        "loom.web_activity.send_pane_text",
+        lambda target, prompt, submit: (
+            sent.append((target, prompt, submit)),
+            (True, ""),
+        )[1],
+    )
+    watcher = AgentActivityWatcher(FakeRegistry([]))
+    working = "→ Add a follow-up  ctrl+c to stop\n"
+
+    watcher._observe_pane(
+        "p1", project, "overnight-task", "loom-x:0.0", working, 10.0
+    )
+    watcher._observe_pane(
+        "p1", project, "overnight-task", "loom-x:0.0", "idle", 20.0
+    )
+    watcher._observe_pane(
+        "p1", project, "overnight-task", "loom-x:0.0", "idle", 50.0
+    )
+
+    assert len(sent) == 1
+    assert sent[0][0] == "loom-x:0.0"
+    assert "Continue the accepted PLAN" in sent[0][1]
+    assert sent[0][2] is True
+    snapshot = watcher.snapshot()["tasks"]["p1/overnight-task"]
+    assert snapshot["watchdog"]["last_action"] == "nudge"
+
+
+def test_watchdog_does_not_bypass_a_budget_rotation_marker(tmp_path, monkeypatch):
+    from loom.usage_budget import write_budget_marker
+
+    project = tmp_path / "proj"
+    task = project / ".RUD" / "paused-task"
+    task.mkdir(parents=True)
+    (task / "task.json").write_text(
+        json.dumps({"slug": "paused-task", "title": "t", "kind": "agent"})
+    )
+    (task / "PLAN.md").write_text("# Plan\n- [ ] Continue\n")
+    monkeypatch.setenv("LOOM_AGENT_WATCHDOG_MAX_NUDGES", "3")
+    monkeypatch.setenv("LOOM_AGENT_WATCHDOG_IDLE_SECONDS", "30")
+    sent: list[str] = []
+    monkeypatch.setattr(
+        "loom.web_activity.send_pane_text",
+        lambda target, prompt, submit: (sent.append(prompt), (True, ""))[1],
+    )
+    watcher = AgentActivityWatcher(FakeRegistry([]))
+    watcher._observe_pane(
+        "p1",
+        project,
+        "paused-task",
+        "loom-x:0.0",
+        "→ Add a follow-up  ctrl+c to stop",
+        10.0,
+    )
+    write_budget_marker(task, target="loom-x:0.0", reason="limit", usage={})
+
+    watcher._observe_pane("p1", project, "paused-task", "loom-x:0.0", "idle", 20.0)
+    watcher._observe_pane("p1", project, "paused-task", "loom-x:0.0", "idle", 60.0)
+
+    assert sent == []
