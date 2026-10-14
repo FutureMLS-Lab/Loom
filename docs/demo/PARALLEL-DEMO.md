@@ -118,8 +118,9 @@ too; they take longer.
   ```
 
 - The end of beat 3 (three tasks working, dock open) makes a good still for
-  `docs/images/parallel-tasks.png`, the README image. Export it 1800 px wide
-  so it stays sharp at the README's 900.
+  `docs/images/parallel-tasks.png`, which the README shows as the web card.
+  Export it 1800 px wide so it stays sharp, then rebuild the cards with
+  `python3 docs/images/make-cards.py`.
 
 ## Reset for another attempt
 

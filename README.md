@@ -116,21 +116,21 @@ One server, same auth token — start on one screen, continue on another.
 <table>
 <tr>
 <td align="center" valign="top" width="50%">
-<img src="docs/images/parallel-tasks.png" alt="Web console: three agent tasks on one repository">
+<img src="docs/images/card-web.png" alt="Web console: three agent tasks on one repository">
 <br><b>Web</b> (built-in) — the full console at <code>:8765</code>
 </td>
 <td align="center" valign="top" width="50%">
-<img src="docs/images/client-desktop.png" alt="macOS desktop app">
+<img src="docs/images/card-desktop.png" alt="macOS desktop app">
 <br><b>macOS desktop</b> — live task pills, chat, terminal and diffs (<a href="https://github.com/FutureMLS-Lab/loom-desktop">loom-desktop</a>)
 </td>
 </tr>
 <tr>
 <td align="center" valign="top" width="50%">
-<img src="docs/images/client-phone.png" alt="Phone app: reply to an agent">
+<img src="docs/images/card-phone.png" alt="Phone app: reply to an agent">
 <br><b>Phone</b> — the fleet and agent replies in your pocket (<a href="https://github.com/FutureMLS-Lab/loom-app">loom-app</a>)
 </td>
 <td align="center" valign="top" width="50%">
-<img src="docs/images/client-watch.png" alt="Apple Watch app">
+<img src="docs/images/card-watch.png" alt="Apple Watch app">
 <br><b>Watch</b> — what needs you, on your wrist, with tap-to-reply (<a href="https://github.com/FutureMLS-Lab/loom-desktop">loom-desktop</a>)
 </td>
 </tr>
